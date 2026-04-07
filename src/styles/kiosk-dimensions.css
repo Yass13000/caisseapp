@@ -1,0 +1,84 @@
+/**
+ * Configuration adaptative pour PWA/Kiosk
+ * - Mode kiosk (écran >= 1080x1920) : dimensions fixes 1080x1920
+ * - Téléphone/Tablette : 100% de l'écran avec même ratio
+ */
+
+/* BASE : S'adapter à tous les écrans */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  position: fixed;
+  top: 0;
+  left: 0;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* KIOSK MODE : Forcer 1080x1920 UNIQUEMENT sur les grands écrans */
+@media (display-mode: standalone) and (min-width: 1080px) and (min-height: 1920px),
+       (display-mode: fullscreen) and (min-width: 1080px) and (min-height: 1920px) {
+  html, body {
+    width: 1080px !important;
+    height: 1920px !important;
+    min-width: 1080px !important;
+    min-height: 1920px !important;
+    max-width: 1080px !important;
+    max-height: 1920px !important;
+  }
+
+  /* Centrer l'application si l'écran est plus grand */
+  body {
+    margin: 0 auto;
+  }
+
+  #root {
+    width: 1080px !important;
+    height: 1920px !important;
+  }
+}
+
+/* Empêcher le zoom et les gestes tactiles non désirés */
+* {
+  touch-action: pan-y pan-x;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Permettre la sélection sur les inputs */
+input, textarea, select {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
+  user-select: text;
+}
+
+/* Désactiver le pull-to-refresh sur mobile */
+body {
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Cacher la scrollbar mais permettre le scroll */
+::-webkit-scrollbar {
+  width: 0px;
+  height: 0px;
+  background: transparent;
+}
+
+/* Pour Firefox */
+* {
+  scrollbar-width: none;
+}

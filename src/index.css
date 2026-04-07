@@ -1,0 +1,162 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =========================================
+   1. POLICES PERSONNALISÉES
+   ========================================= */
+@font-face {
+  font-family: 'DunkinSans';
+  src: url('/fonts/DunkinSans-ExtraBold.otf') format('opentype');
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'AesthetNova';
+  src: url('/fonts/fonnts.com-Aesthet-Nova-.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* =========================================
+   2. VARIABLES DE COULEURS (THEME)
+   ========================================= */
+@layer base {
+  :root {
+    --background: 45 53% 88%; 
+    --foreground: 25 25% 15%;
+    --white: 0 0% 100%;
+    --primary: 8 94% 57%; 
+    --primary-foreground: 0 0% 100%;
+    --secondary: 104 19% 21%; 
+    --secondary-foreground: 0 0% 100%;
+    --accent: 45 98% 51%; 
+    --accent-foreground: 104 19% 21%;
+    --cream: 0 0% 100%;
+    --card: 0 0% 100%;
+    --card-foreground: 25 25% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 25 25% 15%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 100%;
+    --muted: 35 50% 95%;
+    --muted-foreground: 25 15% 45%;
+    --border: 35 30% 90%;
+    --input: 35 30% 95%;
+    --ring: 8 86% 57%;
+    --radius: 0.5rem;
+  }
+}
+
+/* =========================================
+   3. RESET & STRUCTURE (OPTIMISÉ APK)
+   ========================================= */
+* {
+  box-sizing: border-box;
+  touch-action: manipulation !important;
+  -webkit-tap-highlight-color: transparent !important;
+  -webkit-touch-callout: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  /* Optimisation globale des performances de rendu */
+  text-rendering: optimizeSpeed;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: hsl(var(--background)); 
+  overflow: hidden;
+  overscroll-behavior-y: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+::-webkit-scrollbar { display: none; }
+
+img { 
+  pointer-events: none; 
+  -webkit-user-drag: none;
+  /* Évite le scintillement des images lors des animations */
+  image-rendering: -webkit-optimize-contrast;
+}
+
+/* =========================================
+   4. TURBO ANIMATIONS (FLUIDITÉ GPU)
+   ========================================= */
+
+/* Classe à appliquer sur tout élément qui bouge (modales, boutons, listes) */
+.force-gpu, .product-card, .popup-content {
+  transform: translate3d(0, 0, 0); /* Force le 3D layer */
+  backface-visibility: hidden;
+  perspective: 1000px;
+  will-change: transform, opacity; /* Prépare le navigateur */
+}
+
+/* Désactivation du flou sur tablette pour gagner en FPS */
+.backdrop-blur, .backdrop-filter {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-color: rgba(255, 255, 255, 0.95) !important; /* Remplacement par opacité solide */
+}
+
+/* Optimisation du scroll pour éviter les saccades lors du chargement des images */
+.overflow-y-auto {
+  scroll-behavior: auto !important; /* Les animations smooth-scroll rament sur WebView */
+  content-visibility: auto;
+}
+
+/* =========================================
+   5. COMPOSANTS
+   ========================================= */
+.back-btn {
+  background: hsl(var(--white) / 0.95);
+  border: 1px solid rgba(0,0,0,0.1);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #222;
+}
+
+.animate-scroll-reviews {
+  animation: scrollReviews 40s linear infinite;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+}
+
+@keyframes scrollReviews {
+  0% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(-50%, 0, 0); }
+}
+
+.category-icon-container img {
+  filter: brightness(0) saturate(100%) invert(21%) sepia(9%) saturate(1391%) hue-rotate(59deg) brightness(95%) contrast(91%);
+}
+
+/* =========================================
+   6. ANTI-FLOU & NETTETÉ (TEXTE)
+   ========================================= */
+p, span, h1, h2, h3, div, button {
+  -webkit-font-smoothing: antialiased !important;
+  text-rendering: optimizeLegibility !important;
+}
+
+/* Protection spécifique pour les prix pour éviter qu'ils ne "vibrent" pendant les transitions */
+.font-dunkin, .font-helvetica, .price-tag {
+  transform: translate3d(0, 0, 0) scale(1);
+  -webkit-font-smoothing: subpixel-antialiased;
+}

@@ -1,0 +1,80 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Production
+dist/
+build/
+
+# Electron
+release/
+out/
+*.exe
+*.dmg
+*.AppImage
+*.deb
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Vercel
+.vercel/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.log
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Temporary files
+*.tmp
+*.temp
+*.cache
+
+# Build artifacts
+vercel-build-*/
+dist-backup-*/
+public/images-backup/
+
+# Database scripts (keep only in documentation)
+*.sql
+!docs/**/*.sql
+
+# CSV data files
+*.csv
+
+# Debug/Check scripts
+check_*.js
+fix_*.js
+clean-*.js
+link_*.js
+
+# Lock files (keep package-lock.json)
+bun.lockb
+yarn.lock
+pnpm-lock.yaml
+
+# Documentation summaries (keep main docs only)
+*_SUMMARY.md
+*_FIXES_*.md
+*_OPTIMIZATIONS.md
+COMPLETION_*.md

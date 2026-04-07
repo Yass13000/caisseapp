@@ -1,0 +1,111 @@
+{
+  "name": "Borne Chrome Kiosk Configuration",
+  "version": "1.0.0",
+  "description": "Configuration pour le mode Chrome Kiosk de la borne restaurant",
+
+  "url": {
+    "development": "http://localhost:5173",
+    "local_production": "http://localhost:3000",
+    "production": "https://votre-domaine.com",
+    "current": "http://localhost:5173"
+  },
+
+  "chrome": {
+    "path_windows": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "path_windows_x86": "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    "user_data_dir": "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Kiosk"
+  },
+
+  "kiosk_flags": [
+    "--kiosk",
+    "--kiosk-printing",
+    "--no-first-run",
+    "--disable-session-crashed-bubble",
+    "--disable-infobars",
+    "--noerrdialogs",
+    "--disable-translate",
+    "--disable-features=TranslateUI",
+    "--disable-component-update",
+    "--disable-background-mode",
+    "--disable-breakpad",
+    "--disable-sync",
+    "--disable-default-apps",
+    "--no-default-browser-check",
+    "--disable-prompt-on-repost",
+    "--disable-restore-session-state",
+    "--overscroll-history-navigation=0",
+    "--disable-pinch",
+    "--touch-events=enabled",
+    "--force-device-scale-factor=1"
+  ],
+
+  "optional_flags": {
+    "disable_cache": "--disable-application-cache",
+    "disable_local_storage": "--disable-local-storage",
+    "disable_databases": "--disable-databases",
+    "incognito": "--incognito",
+    "start_maximized": "--start-maximized",
+    "auto_reload": "--reload-killed-tabs"
+  },
+
+  "windows_11": {
+    "disable_sleep": {
+      "command": "powercfg /change standby-timeout-ac 0 && powercfg /change monitor-timeout-ac 0",
+      "description": "Désactive la mise en veille automatique"
+    },
+    "hide_taskbar": {
+      "description": "Paramètres → Personnalisation → Barre des tâches → Masquer automatiquement",
+      "manual": true
+    },
+    "disable_notifications": {
+      "description": "Paramètres → Système → Notifications → Désactiver tout",
+      "manual": true
+    },
+    "auto_login": {
+      "command": "netplwiz",
+      "description": "Configurer la connexion automatique via netplwiz",
+      "manual": true
+    }
+  },
+
+  "troubleshooting": {
+    "clear_chrome_cache": {
+      "command_windows": "rd /s /q \"%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Kiosk\"",
+      "description": "Supprime le profil Chrome Kiosk et son cache"
+    },
+    "kill_chrome": {
+      "command_windows": "taskkill /F /IM chrome.exe",
+      "description": "Force la fermeture de toutes les instances Chrome"
+    },
+    "check_chrome_installed": {
+      "command_windows": "if exist \"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" echo Chrome installé",
+      "description": "Vérifie si Chrome est installé"
+    }
+  },
+
+  "recommended_setup": {
+    "step_1": "Installer Google Chrome",
+    "step_2": "Builder l'application React (npm run build)",
+    "step_3": "Servir l'application localement (serve -s dist -p 3000) ou déployer en ligne",
+    "step_4": "Modifier l'URL dans start-chrome-kiosk.bat ou .ps1",
+    "step_5": "Tester avec start-chrome-kiosk.bat",
+    "step_6": "Configurer auto-start avec start-chrome-kiosk.ps1 -InstallAutoStart",
+    "step_7": "Configurer Windows 11 (désactiver veille, masquer barre tâches, etc.)"
+  },
+
+  "performance_tips": [
+    "Utiliser un serveur local plutôt qu'en ligne pour de meilleures performances",
+    "Optimiser les images de l'application",
+    "Activer la compression gzip sur le serveur",
+    "Utiliser --disable-application-cache si vous voulez toujours la dernière version",
+    "Configurer Chrome pour vider le cache au démarrage si nécessaire"
+  ],
+
+  "security_tips": [
+    "Créer un compte Windows dédié pour la borne",
+    "Configurer le pare-feu pour autoriser uniquement les connexions nécessaires",
+    "Mettre à jour Chrome régulièrement",
+    "Utiliser HTTPS en production",
+    "Limiter l'accès physique à la machine"
+  ]
+}

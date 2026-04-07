@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test des Logs</title>
+</head>
+<body>
+    <h1>Test des Console Logs</h1>
+    <p>Ouvrez la console du navigateur (F12)</p>
+    <button onclick="testLogs()">Cliquez pour tester les logs</button>
+
+    <script>
+        console.log('🔴🔴🔴 PAGE TEST CHARGÉE 🔴🔴🔴');
+        console.log('🔴 Timestamp:', new Date().toISOString());
+
+        function testLogs() {
+            console.log('✅ BOUTON CLIQUÉ!');
+            console.log('✅ Date:', new Date());
+            alert('Regardez la console, vous devriez voir des logs!');
+        }
+
+        // Test automatique au chargement
+        setTimeout(() => {
+            console.log('⏰ Log automatique après 1 seconde');
+        }, 1000);
+    </script>
+</body>
+</html>
