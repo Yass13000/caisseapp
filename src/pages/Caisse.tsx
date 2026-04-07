@@ -9,7 +9,7 @@ import {
   Trash2, Plus, Minus, ShoppingBag, Settings, Printer, Lock, 
   ClipboardList, History, Delete, Package, Wifi, WifiOff, 
   UserRound, CalendarDays, LayoutDashboard, AlertTriangle,
-  CreditCard, Banknote, CheckCircle2
+  CreditCard, Banknote, CheckCircle2, Store
 } from 'lucide-react';
 
 import ProductCard from '@/features/menu/components/ProductCard';
@@ -73,6 +73,9 @@ const getFormattedOptions = (item: any) => {
   });
   return Object.values(grouped).map(g => ({ name: g.count > 1 ? `${g.count}x ${g.name}` : g.name, price: g.price * g.count }));
 };
+
+// La seule source de vérité pour l'ID du restaurant dans l'application Caisse
+const getActiveRestaurantId = () => localStorage.getItem('pos_restaurant_id');
 
 // --- MODAL DE PAIEMENT OPTIMISÉ ---
 const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing }) => {
@@ -167,6 +170,10 @@ const Caisse = () => {
   const { state: cartState, addToCart, removeFromCart, updateQuantity, clearCart } = useCart();
   const navigate = useNavigate();
 
+  // État de la configuration initiale de l'ID du restaurant
+  const [posRestoId, setPosRestoId] = useState<string | null>(localStorage.getItem('pos_restaurant_id') || null);
+  const [tempRestoId, setTempRestoId] = useState("");
+
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [pinCode, setPinCode] = useState("");
   const [restaurantLogo, setRestaurantLogo] = useState<string | null>(null);
@@ -242,10 +249,12 @@ const Caisse = () => {
   };
 
   useEffect(() => {
+    if (!posRestoId) return; // Ne pas charger l'application tant que l'ID n'est pas renseigné
+
     const init = async () => {
       setIsLoading(true);
       try {
-        const activeRestoId = localStorage.getItem('admin_override_restaurant_id') || RESTAURANT_ID;
+        const activeRestoId = getActiveRestaurantId();
         if (!activeRestoId || activeRestoId === 'undefined') throw new Error("ID manquant");
         const { data: restoData } = await supabase.from('restaurants').select('logo_url, theme_primary, theme_secondary, theme_accent').eq('id', activeRestoId).single();
         if (restoData) {
@@ -262,7 +271,7 @@ const Caisse = () => {
     init();
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = 'auto'; };
-  }, []);
+  }, [posRestoId]);
 
   // --- FONCTION RESTAURÉE POUR CHARGER UNE COMMANDE DEPUIS LE SUIVI ---
   const handleLoadOrderIntoCart = (items: any[], orderId: string | number) => {
@@ -300,7 +309,7 @@ const Caisse = () => {
     if (cartState.items.length === 0) return;
     setIsProcessing(true);
     try { 
-      const activeRestoId = localStorage.getItem('admin_override_restaurant_id') || RESTAURANT_ID;
+      const activeRestoId = getActiveRestaurantId();
       const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
       const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
 
@@ -325,6 +334,46 @@ const Caisse = () => {
     finally { setIsProcessing(false); }
   };
 
+  // --- ÉCRAN DE CONFIGURATION INITIALE SI L'ID N'EST PAS RENSEIGNÉ ---
+  if (!posRestoId) {
+    return (
+      <div className="flex flex-col h-screen w-full bg-gray-100 items-center justify-center font-helvetica select-none relative overflow-hidden">
+        <div className="absolute top-[-20%] left-[-10%] w-[50vw] h-[50vw] bg-blue-500/10 blur-[100px] rounded-full pointer-events-none"></div>
+        <div className="relative z-10 bg-white/80 backdrop-blur-xl p-10 rounded-[2.5rem] shadow-[0_20px_80px_-15px_rgba(0,0,0,0.1)] flex flex-col items-center border border-white max-w-[450px] w-full mx-4">
+          <div className="w-20 h-20 bg-blue-50 text-blue-500 rounded-[2rem] flex items-center justify-center mb-6 shadow-inner border border-blue-100">
+            <Store size={40} strokeWidth={2.5} />
+          </div>
+          <h2 className="text-secondary text-2xl font-black uppercase tracking-widest mb-2 text-center">Configuration</h2>
+          <p className="text-gray-400 font-bold text-xs mb-8 uppercase tracking-wider text-center">Liaison de la caisse au restaurant</p>
+          
+          <input 
+            type="text" 
+            placeholder="Collez l'ID du restaurant ici..." 
+            className="w-full bg-gray-50 border-2 border-gray-200 rounded-2xl px-6 py-5 mb-6 text-gray-700 font-bold focus:outline-none focus:border-blue-500 focus:bg-white transition-all text-center shadow-sm"
+            value={tempRestoId}
+            onChange={(e) => setTempRestoId(e.target.value)}
+          />
+          
+          <button 
+            onClick={() => {
+              if (tempRestoId.trim().length > 5) {
+                localStorage.setItem('pos_restaurant_id', tempRestoId.trim());
+                setPosRestoId(tempRestoId.trim());
+                toast.success("Caisse liée avec succès !");
+              } else {
+                toast.error("Veuillez entrer un ID valide.");
+              }
+            }}
+            className="w-full py-5 bg-blue-500 hover:bg-blue-600 text-white rounded-2xl font-black uppercase text-lg tracking-widest transition-all active:scale-95 shadow-lg shadow-blue-500/30"
+          >
+            Connecter la caisse
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // --- ÉCRAN DE VERROUILLAGE ---
   if (!isAuthenticated) {
     const pinBtnClass = "w-16 h-16 bg-white hover:bg-gray-100 rounded-2xl text-secondary font-black text-2xl active:scale-90 transition-all shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] border border-gray-100 flex items-center justify-center group";
     return (
@@ -504,7 +553,7 @@ const Caisse = () => {
       {isDashboardOpen && <OrdersDashboardModal onClose={() => setIsDashboardOpen(false)} />}
       {isOrderTrackerOpen && <OrderTrackerModal onClose={() => setIsOrderTrackerOpen(false)} onLoadOrder={handleLoadOrderIntoCart} />}
       {isHistoryOpen && <OrderHistoryModal onClose={() => setIsHistoryOpen(false)} />}
-      {isStockOpen && <StockModal onClose={() => { setIsStockOpen(false); loadMenuData(localStorage.getItem('admin_override_restaurant_id') || RESTAURANT_ID); }} />}
+      {isStockOpen && <StockModal onClose={() => { setIsStockOpen(false); loadMenuData(getActiveRestaurantId() || RESTAURANT_ID); }} />}
       {isSettingsOpen && <SettingsModal onClose={() => setIsSettingsOpen(false)} currentCategories={categories.map(c => c.name)} onCategoriesReorder={(newOrder) => { const reorderedCats = [...categories].sort((a, b) => { const iA = newOrder.indexOf(a.name), iB = newOrder.indexOf(b.name); return (iA > -1 ? iA : 999) - (iB > -1 ? iB : 999); }); setCategories(reorderedCats); }} />}
     </div>
   );
