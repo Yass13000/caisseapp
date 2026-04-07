@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
+import { supabase } from '@/lib/supabaseClient'; // RESTAURANT_ID retiré car inutile
 import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, FolderOpen, CreditCard, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -28,8 +28,15 @@ const OrderTrackerModal = ({ onClose, onLoadOrder }: OrderTrackerModalProps) => 
   const fetchPendingOrders = async () => {
     setIsLoading(true);
     try {
-      const activeRestoId = localStorage.getItem('admin_override_restaurant_id') || RESTAURANT_ID;
+      // UTILISATION DU NOUVEAU SYSTÈME D'ID POUR LA CAISSE
+      const activeRestoId = localStorage.getItem('pos_restaurant_id');
       
+      if (!activeRestoId) {
+        toast.error("Veuillez configurer la caisse (ID manquant)");
+        setIsLoading(false);
+        return;
+      }
+
       const [year, month, day] = filterDate.split('-').map(Number);
       
       const startOfDayLocal = new Date(year, month - 1, day, 0, 0, 0, 0);

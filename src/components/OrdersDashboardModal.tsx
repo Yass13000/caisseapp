@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, LayoutDashboard, Clock, ShoppingBag, CheckCircle2, Loader2 } from 'lucide-react';
-import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
+import { supabase } from '@/lib/supabaseClient'; // RESTAURANT_ID retiré
 import { toast } from 'sonner';
 
 interface Order {
@@ -86,7 +86,14 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
   const loadOrders = async () => {
     try {
-      const activeRestoId = localStorage.getItem('admin_override_restaurant_id') || RESTAURANT_ID;
+      // UTILISATION DU NOUVEAU SYSTÈME D'ID CAISSE
+      const activeRestoId = localStorage.getItem('pos_restaurant_id');
+      
+      if (!activeRestoId) {
+        toast.error("Veuillez configurer la caisse (ID manquant)");
+        setIsLoading(false);
+        return;
+      }
       
       const today = new Date();
       const startOfLocalDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
