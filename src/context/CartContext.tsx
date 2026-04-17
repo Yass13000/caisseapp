@@ -22,11 +22,17 @@ const cartReducer = (state: any, action: any) => {
       const existingItemIndex = state.items.findIndex((item: any) => {
         if (!item) return false;
         
+        // 1. Si on a injecté une customKey stricte depuis la Caisse, on l'utilise en priorité absolue
+        if (payload.customKey && item.customKey) {
+            return item.customKey === payload.customKey;
+        }
+        
         const itemProductId = item.product ? item.product.id : item.id;
         
-        // Comparaison de l'ID et des options choisies (pour grouper les mêmes articles)
+        // 2. Sinon, on compare l'ID ET les deux formats d'options possibles (selections ET selectedSubOptions)
         return itemProductId === payloadProductId && 
-               JSON.stringify(item.selections || {}) === JSON.stringify(payload.selections || {});
+               JSON.stringify(item.selections || {}) === JSON.stringify(payload.selections || {}) &&
+               JSON.stringify(item.selectedSubOptions || []) === JSON.stringify(payload.selectedSubOptions || []);
       });
 
       if (existingItemIndex > -1) {

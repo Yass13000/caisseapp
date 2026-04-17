@@ -26,7 +26,6 @@ import { calculateCartSubtotal } from '@/lib/cartCalculations';
 export interface Product { id: number; name: string; price: number; category: string; is_available: boolean; }
 interface Category { name: string; }
 
-// --- CONSTANTES ET UTILITAIRES PURS ---
 const ORDER_TYPE_IDS = {
   'SUR PLACE': '633425b1-f86c-4c17-8cba-b258906ad317',
   'EMPORTER': '2cac3f10-73e2-40a5-a7e0-053bd861b4d9',
@@ -48,36 +47,121 @@ const hexToHslString = (hex: string) => {
   return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
 };
 
-const extractOptions = (item: any) => {
-  const opts: {name: string, price: number}[] = [];
-  const dynOpts = item.selectedSubOptions || item.selections;
-  if (!dynOpts) return opts;
-  const addOpts = (arr: any[]) => arr.forEach(o => opts.push({ name: o.name, price: parseFloat(o.price || 0) }));
-  if (Array.isArray(dynOpts)) dynOpts.forEach(g => Array.isArray(g.options) && addOpts(g.options));
-  else if (typeof dynOpts === 'object') Object.values(dynOpts).forEach((arr: any) => Array.isArray(arr) && addOpts(arr));
-  return opts;
+// --- MOTEUR OPTIMISÉ POUR LECTURE DE L'ORDRE ---
+const getFormattedOptions = (item: any) => {
+  let rawOptions: any[] = [];
+  const dynOpts = item.selectedSubOptions || item.selections || item.options || [];
+
+  if (item.boisson) rawOptions.push({ name: item.boisson.name || item.boisson, price: parseFloat(item.boisson.price || 0), _print_order: -2 });
+  if (item.accompagnement) rawOptions.push({ name: item.accompagnement.name || item.accompagnement, price: parseFloat(item.accompagnement.price || 0), _print_order: -1 });
+
+  if (Array.isArray(dynOpts)) {
+    rawOptions.push(...dynOpts);
+  } else if (typeof dynOpts === 'object' && dynOpts !== null) {
+    Object.values(dynOpts).forEach((val: any) => {
+      if (Array.isArray(val)) rawOptions.push(...val);
+      else rawOptions.push(val);
+    });
+  }
+
+  const formattedList = rawOptions.map((opt, i) => {
+    const order = opt._print_order !== undefined ? opt._print_order : i;
+    if (typeof opt === 'string') return { name: opt.trim().toLowerCase(), price: 0, order };
+    return { 
+      name: (opt.name || opt.title || opt.value || "").trim().toLowerCase(), 
+      price: parseFloat(opt.price || 0), 
+      order 
+    };
+  }).filter(o => o.name && o.name !== 'option' && o.name !== 'options');
+
+  formattedList.sort((a, b) => a.order - b.order);
+
+  const finalOptions: { name: string, price: number, qty: number }[] = [];
+  formattedList.forEach(opt => {
+    const existing = finalOptions.find(o => o.name === opt.name);
+    if (existing) {
+      existing.qty += 1;
+      existing.price += opt.price;
+    } else {
+      finalOptions.push({ name: opt.name, price: opt.price, qty: 1 });
+    }
+  });
+
+  return finalOptions.map(o => ({
+    name: o.qty > 1 ? `${o.qty}x ${o.name}` : o.name,
+    price: o.price
+  }));
 };
 
 const getItemTotal = (item: any) => {
   const basePrice = parseFloat(item.product?.price || item.price || 0);
-  const optsPrice = extractOptions(item).reduce((sum, o) => sum + o.price, 0);
+  const optsPrice = getFormattedOptions(item).reduce((sum, o) => sum + o.price, 0);
   return (basePrice + optsPrice) * (item.quantity || 1);
 };
 
-const getFormattedOptions = (item: any) => {
-  const grouped: Record<string, {name: string, price: number, count: number}> = {};
-  extractOptions(item).forEach(o => {
-    const n = o.name || "Option";
-    if (!grouped[n]) grouped[n] = { name: n, price: o.price, count: 0 };
-    grouped[n].count += 1;
-  });
-  return Object.values(grouped).map(g => ({ name: g.count > 1 ? `${g.count}x ${g.name}` : g.name, price: g.price * g.count }));
-};
-
-// La seule source de vérité pour l'ID du restaurant dans l'application Caisse
 const getActiveRestaurantId = () => localStorage.getItem('pos_restaurant_id');
 
-// --- MODAL DE PAIEMENT OPTIMISÉ ---
+// --- FONCTION D'IMPRESSION SILENCIEUSE (VIA ELECTRON) ---
+const generateAndPrintReceipt = async (orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, cashAmount: number) => {
+  if (!window.electronAPI) return;
+
+  const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const isCash = paymentMethod === 'counter';
+  const changeDue = Math.max(0, cashAmount - subtotal);
+
+  const itemsHtml = items.map(item => {
+    const itemTotal = getItemTotal(item);
+    let html = `
+      <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+        <span class="bold">${item.quantity}x ${item.product?.name || item.name}</span>
+        <span class="bold">${itemTotal.toFixed(2)} €</span>
+      </div>
+    `;
+    const options = getFormattedOptions(item);
+    if (options.length > 0) {
+      options.forEach(opt => {
+        html += `
+          <div style="display: flex; justify-content: space-between; font-size: 10px; color: #333; padding-left: 10px;">
+            <span>- ${opt.name}</span>
+            <span>${opt.price > 0 ? '+' + opt.price.toFixed(2) + '€' : ''}</span>
+          </div>
+        `;
+      });
+    }
+    return html;
+  }).join('');
+
+  const receiptHtml = `
+    <div style="text-align: center; margin-bottom: 10px;">
+      <h2 style="margin: 0; font-size: 18px; font-weight: bold; text-transform: uppercase;">VOTRE RESTAURANT</h2>
+      <p style="margin: 2px 0; font-size: 12px;">${date}</p>
+      <p style="margin: 5px 0; font-size: 14px; font-weight: bold; padding: 3px; border: 1px solid black;">COMMANDE : ${orderNumber}</p>
+      <p style="margin: 5px 0; font-size: 14px; font-weight: bold;">${orderType}</p>
+    </div>
+    <hr style="border-top: 1px dashed black; margin: 10px 0;" />
+    <div style="margin-bottom: 10px;">${itemsHtml}</div>
+    <hr style="border-top: 1px dashed black; margin: 10px 0;" />
+    <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: bold; margin-bottom: 5px;">
+      <span>TOTAL A PAYER</span><span>${subtotal.toFixed(2)} €</span>
+    </div>
+    ${isCash ? `
+      <div style="display: flex; justify-content: space-between; font-size: 12px; color: #555;"><span>Espèces reçues</span><span>${cashAmount.toFixed(2)} €</span></div>
+      <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold; margin-top: 2px;"><span>Monnaie rendue</span><span>${changeDue.toFixed(2)} €</span></div>
+    ` : `
+      <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold;"><span>Payé par</span><span>CARTE BANCAIRE</span></div>
+    `}
+    <div style="text-align: center; margin-top: 20px; font-size: 12px;">
+      <p style="margin: 0;">Merci de votre visite !</p>
+      <p style="margin: 2px 0;">A bientot.</p>
+    </div>
+  `;
+
+  try {
+    const result = await window.electronAPI.printReceipt(receiptHtml);
+    if (!result.success) toast.error("Erreur avec l'imprimante !");
+  } catch (error) { console.error("Erreur API impression :", error); }
+};
+
 const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing }) => {
   const [tenderedStr, setTenderedStr] = useState('');
   const roundedSubtotal = parseFloat(subtotal.toFixed(2));
@@ -96,8 +180,7 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
   };
 
   const handleAddAmount = (amount: number) => {
-    const newTotal = ((parseFloat(tenderedStr) || 0) + amount).toFixed(2).replace(/\.00$/, ''); 
-    setTenderedStr(newTotal);
+    setTenderedStr(((parseFloat(tenderedStr) || 0) + amount).toFixed(2).replace(/\.00$/, ''));
   };
 
   const numpadBtnClass = "h-12 bg-gray-100 hover:bg-gray-200 text-secondary text-xl font-black rounded-xl active:scale-95 transition-all shadow-sm";
@@ -107,7 +190,6 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
     <div className="fixed inset-0 z-[9999999] bg-black/70 backdrop-blur-md flex items-center justify-center p-4 font-helvetica select-none">
       <div className="bg-white w-[900px] h-[520px] max-w-[95vw] max-h-[95vh] rounded-[2rem] shadow-2xl flex overflow-hidden border border-white/20 animate-in fade-in zoom-in-95 duration-200">
         
-        {/* COLONNE GAUCHE */}
         <div className="w-[30%] bg-gray-50 border-r border-gray-200 flex flex-col p-6 justify-between relative overflow-hidden">
           <div className="absolute top-[-20%] left-[-20%] w-[150%] h-[150%] bg-gradient-to-br from-gray-100 to-gray-50 rounded-full opacity-50 pointer-events-none"></div>
           <div className="relative z-10 flex flex-col items-center text-center mt-2">
@@ -121,7 +203,6 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
           <button onClick={onClose} disabled={isProcessing} className="relative z-10 w-full py-3 rounded-xl border-2 border-gray-200 text-gray-500 font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all disabled:opacity-50 text-sm">Retour</button>
         </div>
 
-        {/* COLONNE DROITE */}
         <div className="flex-1 bg-white flex flex-col relative">
           <div className="flex items-center gap-3 p-4 border-b border-gray-100">
             <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-secondary"><Banknote size={20} /></div>
@@ -165,12 +246,10 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
   );
 };
 
-// --- COMPOSANT PRINCIPAL ---
 const Caisse = () => {
   const { state: cartState, addToCart, removeFromCart, updateQuantity, clearCart } = useCart();
   const navigate = useNavigate();
 
-  // État de la configuration initiale de l'ID du restaurant
   const [posRestoId, setPosRestoId] = useState<string | null>(localStorage.getItem('pos_restaurant_id') || null);
   const [tempRestoId, setTempRestoId] = useState("");
 
@@ -249,13 +328,13 @@ const Caisse = () => {
   };
 
   useEffect(() => {
-    if (!posRestoId) return; // Ne pas charger l'application tant que l'ID n'est pas renseigné
+    if (!posRestoId) return; 
 
     const init = async () => {
       setIsLoading(true);
       try {
         const activeRestoId = getActiveRestaurantId();
-        if (!activeRestoId || activeRestoId === 'undefined') throw new Error("ID manquant");
+        if (!activeRestoId) throw new Error("ID manquant");
         const { data: restoData } = await supabase.from('restaurants').select('logo_url, theme_primary, theme_secondary, theme_accent').eq('id', activeRestoId).single();
         if (restoData) {
           if (restoData.logo_url) setRestaurantLogo(restoData.logo_url);
@@ -273,17 +352,18 @@ const Caisse = () => {
     return () => { document.body.style.overflow = 'auto'; };
   }, [posRestoId]);
 
-  // --- FONCTION RESTAURÉE POUR CHARGER UNE COMMANDE DEPUIS LE SUIVI ---
   const handleLoadOrderIntoCart = (items: any[], orderId: string | number) => {
     setLoadedOrderId(orderId);
     clearCart(); 
     setTimeout(() => {
-      items.forEach(item => {
+      items.forEach((item, idx) => {
+        const baseId = item.product?.id || item.id;
         const formattedItem = { 
           ...item, 
+          id: `${baseId}-loaded-${idx}`, // ID UNIQUE POUR EVITER FUSION
           product: item.product || { id: item.id, name: item.name, price: item.price }, 
           quantity: item.quantity || 1, 
-          _cartKey: `loaded-${Math.random()}` 
+          _cartKey: `loaded-${orderId}-${idx}-${Math.random()}` 
         };
         addToCart(formattedItem);
       });
@@ -296,10 +376,55 @@ const Caisse = () => {
     try {
       const { data: variants } = await supabase.from('product_variants').select('id').eq('product_id', product.id).eq('available', true).limit(1);
       if (variants?.length) { setSelectedProductForVariants(product); setIsVariantsModalOpen(true); return; }
+      
       const { data: optionGroups } = await supabase.from('product_option_groups').select('id').eq('product_id', product.id).limit(1);
       if (optionGroups?.length) { setSelectedProduct(product); setIsOptionsModalOpen(true); } 
-      else { addToCart({ product, quantity: 1, _cartKey: Date.now() }); }
-    } catch (err) { addToCart({ product, quantity: 1, _cartKey: Date.now() }); }
+      else { 
+        // PRODUIT SANS OPTION : ID UNIQUE POUR EVITER FUSION
+        const uniqueId = `${product.id}-no-opts`;
+        addToCart({ id: uniqueId, product, quantity: 1, _cartKey: uniqueId, customKey: uniqueId }); 
+      }
+    } catch (err) { 
+      const uniqueId = `${product.id}-no-opts`;
+      addToCart({ id: uniqueId, product, quantity: 1, _cartKey: uniqueId, customKey: uniqueId }); 
+    }
+  };
+
+  // --- LA MAGIE EST ICI : HASH UNIQUE SUR LES OPTIONS POUR EMPÊCHER LE PANIER DE FUSIONNER A TORT ---
+  const handleAddToCartFromModal = (p: Product, selections: any) => {
+    const flatOptions: any[] = [];
+    let printOrder = 1;
+
+    if (Array.isArray(selections)) {
+      selections.forEach(opt => flatOptions.push({ ...opt, _print_order: printOrder++ }));
+    } else if (typeof selections === 'object' && selections !== null) {
+      const sortedKeys = Object.keys(selections).sort((a, b) => parseInt(a) - parseInt(b));
+      sortedKeys.forEach(key => {
+        const val = selections[key];
+        const arr = Array.isArray(val) ? val : [val];
+        arr.forEach((opt: any) => {
+          if (typeof opt === 'object') flatOptions.push({ ...opt, _print_order: printOrder++ });
+          else if (typeof opt === 'string') flatOptions.push({ name: opt, price: 0, _print_order: printOrder++ });
+        });
+      });
+    }
+
+    // ON GÉNÈRE UN ID BASÉ SUR LE PRODUIT + SES OPTIONS
+    const optionsString = flatOptions.map(o => o.name).join('-');
+    const optionsHash = btoa(encodeURIComponent(optionsString)).substring(0, 15);
+    const uniqueCartKey = `${p.id}-${optionsHash}`;
+
+    addToCart({ 
+      id: uniqueCartKey, // On force le panier à voir un produit "différent" si les options changent
+      product: p, 
+      selectedSubOptions: flatOptions,
+      quantity: 1, 
+      _cartKey: uniqueCartKey,
+      customKey: uniqueCartKey
+    });
+    
+    setIsOptionsModalOpen(false);
+    setSelectedProduct(null);
   };
 
   const subtotal = calculateCartSubtotal(cartState.items);
@@ -312,29 +437,37 @@ const Caisse = () => {
       const activeRestoId = getActiveRestaurantId();
       const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
       const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
+      
+      let targetOrderNumber = '';
 
       if (loadedOrderId) {
         await supabase.from('orders').update({ is_paid: true, payment_status: 'paid', status: 'En cours', payment_method: method, cash_amount: cashAmount, order_type_id: currentOrderTypeId || undefined }).eq('id', loadedOrderId);
+        const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
+        targetOrderNumber = orderData?.order_number || String(loadedOrderId);
       } else {
         const startOfDay = new Date(new Date().setHours(0,0,0,0)).toISOString(); 
         const { data: lastOrders } = await supabase.from('orders').select('order_number').eq('restaurant_id', activeRestoId).gte('created_at', startOfDay).ilike('order_number', 'C%').order('created_at', { ascending: false }).limit(1);
         let nextNum = 1;
         if (lastOrders?.[0]?.order_number) nextNum = (parseInt(lastOrders[0].order_number.replace(/\D/g, ''), 10) || 0) + 1;
         
+        targetOrderNumber = `C${nextNum.toString().padStart(2, '0')}`;
+        
         await supabase.from('orders').insert({
           restaurant_id: activeRestoId, total_price: parseFloat(subtotal.toFixed(2)), is_paid: true, payment_status: 'paid',
           status: 'En cours', payment_method: method, cash_amount: cashAmount, order_origin: 'caisse',
-          order_type_id: currentOrderTypeId, order_details: cleanOrderDetails, customer_name: 'Client Caisse', order_number: `C${nextNum.toString().padStart(2, '0')}` 
+          order_type_id: currentOrderTypeId, order_details: cleanOrderDetails, customer_name: 'Client Caisse', order_number: targetOrderNumber
         });
       }
+      
       customToast(`Encaissé : ${subtotal.toFixed(2)}€`, 'success'); 
+      await generateAndPrintReceipt(targetOrderNumber, orderType, method, cartState.items, subtotal, cashAmount);
+      
       clearCart(); setLoadedOrderId(null); setIsPaymentModalOpen(false);
     } 
     catch (e) { customToast("Erreur d'enregistrement BDD", 'error'); } 
     finally { setIsProcessing(false); }
   };
 
-  // --- ÉCRAN DE CONFIGURATION INITIALE SI L'ID N'EST PAS RENSEIGNÉ ---
   if (!posRestoId) {
     return (
       <div className="flex flex-col h-screen w-full bg-gray-100 items-center justify-center font-helvetica select-none relative overflow-hidden">
@@ -373,7 +506,6 @@ const Caisse = () => {
     );
   }
 
-  // --- ÉCRAN DE VERROUILLAGE ---
   if (!isAuthenticated) {
     const pinBtnClass = "w-16 h-16 bg-white hover:bg-gray-100 rounded-2xl text-secondary font-black text-2xl active:scale-90 transition-all shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] border border-gray-100 flex items-center justify-center group";
     return (
@@ -412,7 +544,6 @@ const Caisse = () => {
   return (
     <div className="flex flex-col h-screen w-full bg-gray-100 font-helvetica overflow-hidden select-none">
       
-      {/* TOP BAR */}
       <div className="flex-shrink-0 h-8 text-white/90 flex justify-between items-center px-4 text-[11px] font-bold tracking-widest uppercase z-50 shadow-md" style={{ backgroundColor: themeColors.secondary }}>
         <div className="flex items-center gap-4">
           <div className={isOnline ? 'text-green-400' : 'text-red-500 animate-pulse'}>{isOnline ? <Wifi size={16} /> : <WifiOff size={16} />}</div>
@@ -425,7 +556,6 @@ const Caisse = () => {
 
       <div className="flex flex-1 overflow-hidden">
         
-        {/* GRILLE PRODUITS */}
         <div className="flex-1 flex flex-col h-full bg-[#F3F4F6] relative min-w-0">
           <div className="bg-white border-b border-gray-200 shadow-sm flex-shrink-0 z-20">
             <div className="flex p-2 gap-2 bg-gray-100">
@@ -448,7 +578,6 @@ const Caisse = () => {
           </div>
         </div>
 
-        {/* TICKET DE CAISSE */}
         <div className="w-[260px] bg-white border-l border-gray-200 flex flex-col h-full z-30 shadow-xl flex-shrink-0">
           <div className="p-3 border-b border-gray-100 bg-gray-50 flex-shrink-0 flex justify-between items-center">
             <span className="font-black text-sm uppercase" style={{ color: themeColors.secondary }}>Ticket {loadedOrderId && "• Borne"}</span>
@@ -464,7 +593,16 @@ const Caisse = () => {
                   <div className="flex justify-between items-start gap-1">
                     <div className="flex-1 min-w-0 pr-1">
                       <h4 className="font-bold text-gray-800 text-[11px] leading-tight line-clamp-2">{item.product?.name || item.name}</h4>
-                      {options.length > 0 && <div className="mt-0.5 space-y-0.5">{options.map((opt, i) => <div key={i} className="text-[9px] text-gray-500 flex justify-between font-bold"><span className="truncate pr-1">- {opt.name}</span>{opt.price > 0 && <span className="flex-shrink-0">+{opt.price.toFixed(2)}€</span>}</div>)}</div>}
+                      {options.length > 0 && (
+                        <div className="mt-0.5 space-y-0.5">
+                          {options.map((opt, i) => (
+                            <div key={i} className="text-[9px] text-gray-500 flex justify-between font-bold">
+                              <span className="truncate pr-1">- {opt.name}</span>
+                              {opt.price > 0 && <span className="flex-shrink-0">+{opt.price.toFixed(2)}€</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div className="font-black text-[12px] whitespace-nowrap" style={{ color: themeColors.secondary }}>{getItemTotal(item).toFixed(2)}€</div>
                   </div>
@@ -493,10 +631,8 @@ const Caisse = () => {
           </div>
         </div>
 
-        {/* BARRE LATÉRALE OPTIMISÉE (TAILLES RÉDUITES) */}
         <div className="w-[74px] flex flex-col items-center py-3 z-40 shadow-[-5px_0_15px_rgba(0,0,0,0.2)] flex-shrink-0 justify-between" style={{ backgroundColor: themeColors.secondary }}>
            <div className="flex flex-col gap-2 w-full px-2">
-              {/* BOUTON RAPIDE CB */}
               <button disabled={cartItemCount === 0 || isProcessing} onClick={() => finalizePayment('carte bancaire', 0)} className={`w-full aspect-square flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} title="Paiement Rapide CB">
                  <CreditCard size={26} />
                  <span className="text-[9px] font-black uppercase mt-0.5 tracking-wider">Rapide</span>
@@ -505,7 +641,13 @@ const Caisse = () => {
               <button onClick={() => setIsDashboardOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><LayoutDashboard size={26} /></button>
               <button onClick={() => setIsOrderTrackerOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><ClipboardList size={26} /></button>
               <button onClick={() => setIsHistoryOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><History size={26} /></button>
-              <button className={rightBarBtnClass} style={{ color: themeColors.primary }}><Printer size={26} /></button>
+              <button onClick={() => {
+                if (cartState.items.length > 0) {
+                  generateAndPrintReceipt('TEST', orderType, 'counter', cartState.items, subtotal, subtotal);
+                } else {
+                  toast.info("Le panier est vide");
+                }
+              }} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Printer size={26} /></button>
               <button onClick={() => setIsStockOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Package size={26} /></button>
               <button onClick={() => setIsSettingsOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Settings size={26} /></button>
            </div>
@@ -517,7 +659,6 @@ const Caisse = () => {
         </div>
       </div>
 
-      {/* MODALS */}
       {isPaymentModalOpen && <PaymentModal subtotal={subtotal} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={finalizePayment} isProcessing={isProcessing} />}
       
       {showClearConfirm && (
@@ -548,7 +689,14 @@ const Caisse = () => {
         </div>
       )}
 
-      {isOptionsModalOpen && selectedProduct && <OptionsModal product={selectedProduct} onClose={() => { setIsOptionsModalOpen(false); setSelectedProduct(null); }} onAddToCart={(p, s) => { addToCart({ product: p, selections: s, quantity: 1, _cartKey: Date.now() }); setIsOptionsModalOpen(false); setSelectedProduct(null); }} />}
+      {isOptionsModalOpen && selectedProduct && (
+        <OptionsModal 
+          product={selectedProduct} 
+          onClose={() => { setIsOptionsModalOpen(false); setSelectedProduct(null); }} 
+          onAddToCart={(p, s) => handleAddToCartFromModal(p, s)} 
+        />
+      )}
+      
       {isVariantsModalOpen && selectedProductForVariants && <ProductVariantsModal product={selectedProductForVariants} isOpen={isVariantsModalOpen} onClose={() => { setIsVariantsModalOpen(false); setSelectedProductForVariants(null); }} onSelectVariant={(v: any) => { setSelectedProductForVariants(null); setIsVariantsModalOpen(false); setSelectedProduct({ ...selectedProductForVariants, price: v.price || selectedProductForVariants.price, name: `${selectedProductForVariants.name} - ${v.variant_name}` }); setIsOptionsModalOpen(true); }} directSubOptions={[]} />}
       {isDashboardOpen && <OrdersDashboardModal onClose={() => setIsDashboardOpen(false)} />}
       {isOrderTrackerOpen && <OrderTrackerModal onClose={() => setIsOrderTrackerOpen(false)} onLoadOrder={handleLoadOrderIntoCart} />}

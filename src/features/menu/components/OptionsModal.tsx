@@ -15,19 +15,17 @@ const OptionsModal = ({ product, onAddToCart, onClose }: any) => {
   useEffect(() => {
     const fetchRules = async () => {
       try {
-        // NOUVEAU : On ajoute 'is_available' dans le select des options
         const { data, error } = await supabase
           .from('product_option_groups')
           .select(`id, min_choices, max_choices, step_order, option_groups (name, option_group_links (options (id, name, price, is_available)))`)
           .eq('product_id', product.id)
           .order('step_order');
           
-        if (error || !data || data.length === 0) { onAddToCart(product, {}); return; }
+        if (error || !data || data.length === 0) { onAddToCart(product, []); return; }
 
         let formattedSteps = data.map((rule: any) => {
           const rawOptions = rule.option_groups?.option_group_links?.map((l: any) => l.options) || [];
           
-          // NOUVEAU : On filtre pour ne garder que les options qui sont "is_available === true"
           const validOptions = rawOptions
             .filter((opt: any) => opt && opt.is_available !== false)
             .map((opt: any) => ({
@@ -37,7 +35,6 @@ const OptionsModal = ({ product, onAddToCart, onClose }: any) => {
             
           return { 
             id: rule.id, 
-            // Sécurité : on empêche min_choices d'être plus grand que le nombre d'options dispo
             min_choices: Math.min(rule.min_choices, validOptions.length), 
             max_choices: rule.max_choices, 
             step_order: rule.step_order, 
@@ -46,21 +43,43 @@ const OptionsModal = ({ product, onAddToCart, onClose }: any) => {
           };
         });
 
-        // NOUVEAU : On supprime les étapes (groupes) qui se retrouveraient vides à cause des ruptures
         formattedSteps = formattedSteps.filter(s => s.options.length > 0);
 
         if (product.isSolo) formattedSteps = formattedSteps.filter(s => !['boisson', 'accompagnement', 'frite'].some(m => s.group_name.toLowerCase().includes(m)));
 
         if (formattedSteps.length > 0) {
+          // On s'assure que les étapes sont bien triées chronologiquement par 'step_order'
+          formattedSteps.sort((a, b) => a.step_order - b.step_order);
           setSteps(formattedSteps);
           const initSels: any = {};
           formattedSteps.forEach((_, i) => initSels[i] = []);
           setStepSelections(initSels);
-        } else { onAddToCart(product, {}); }
-      } catch (e) { onAddToCart(product, {}); } finally { setIsLoading(false); }
+        } else { onAddToCart(product, []); }
+      } catch (e) { onAddToCart(product, []); } finally { setIsLoading(false); }
     };
     fetchRules();
   }, [product]);
+
+  // LA FONCTION MAGIQUE QUI COMPILE L'ORDRE STRICTEMENT
+  const compileFinalOptionsAndSubmit = (currentSelections: Record<number, CustomizationOption[]>) => {
+    const flatOrderedOptions: any[] = [];
+    let absoluteOrder = 1;
+
+    // Puisque 'steps' est déjà trié par chronologie (step_order)...
+    steps.forEach((stepData, idx) => {
+      const selectedForThisStep = currentSelections[idx] || [];
+      selectedForThisStep.forEach(opt => {
+        flatOrderedOptions.push({
+          ...opt,
+          step_order: stepData.step_order, // On fige l'étape
+          _print_order: absoluteOrder++    // On fige l'ordre de clic absolu
+        });
+      });
+    });
+
+    // On envoie un TABLEAU PLAT, pas un dictionnaire ! Postgres ne pourra plus jamais le retrier à l'envers.
+    onAddToCart(product, flatOrderedOptions);
+  };
 
   const toggleOption = (option: CustomizationOption) => {
     const stepData = steps[currentStep];
@@ -83,9 +102,7 @@ const OptionsModal = ({ product, onAddToCart, onClose }: any) => {
       setTimeout(() => {
         if (currentStep < steps.length - 1) setCurrentStep(s => s + 1);
         else {
-          const final: any = {};
-          Object.entries(newStepSelections).forEach(([idx, opts]) => { final[steps[parseInt(idx)].id] = opts; });
-          onAddToCart(product, final);
+          compileFinalOptionsAndSubmit(newStepSelections);
         }
       }, 150);
     }
@@ -124,9 +141,7 @@ const OptionsModal = ({ product, onAddToCart, onClose }: any) => {
                 onClick={() => {
                    if (currentStep < steps.length - 1) setCurrentStep(s => s + 1);
                    else {
-                      const final: any = {};
-                      Object.entries(stepSelections).forEach(([idx, opts]) => { final[steps[parseInt(idx)].id] = opts; });
-                      onAddToCart(product, final);
+                      compileFinalOptionsAndSubmit(stepSelections);
                    }
                 }}
                 className={`px-10 py-4 rounded-xl font-black text-xl uppercase tracking-widest shadow-lg transition-all active:scale-95 ${canProceed ? 'bg-[#04B855] text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}

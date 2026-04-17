@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, LayoutDashboard, Clock, ShoppingBag, CheckCircle2, Loader2 } from 'lucide-react';
-import { supabase } from '@/lib/supabaseClient'; // RESTAURANT_ID retiré
+import { supabase } from '@/lib/supabaseClient';
 import { toast } from 'sonner';
 
 interface Order {
@@ -43,7 +43,6 @@ const isOrderClosed = (status: string) => {
   return s === 'fermé' || s === 'ferme' || s === 'terminée' || s === 'terminee';
 };
 
-// Analyseur de détails ultra-robuste
 const parseOrderDetails = (details: any): any[] => {
   if (Array.isArray(details)) return details;
   if (typeof details === 'string') {
@@ -86,7 +85,6 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
   const loadOrders = async () => {
     try {
-      // UTILISATION DU NOUVEAU SYSTÈME D'ID CAISSE
       const activeRestoId = localStorage.getItem('pos_restaurant_id');
       
       if (!activeRestoId) {
@@ -127,7 +125,6 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // Validation avec le terme exact attendu par Supabase
   const handleCompleteOrder = async (orderId: string | number) => {
     try {
       const { error } = await supabase
@@ -144,27 +141,55 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
     }
   };
 
+  // --- LECTURE SIMPLE AVEC LE NUMÉRO D'ORDRE ESTAMPILLÉ (MÊME CODE QUE LA CAISSE) ---
   const getFormattedOptions = (item: any) => {
-    const opts: {name: string}[] = [];
-    const dynOpts = item.selectedSubOptions || item.selections;
-    if (dynOpts) {
-      if (Array.isArray(dynOpts)) {
-        dynOpts.forEach((g: any) => {
-          if (Array.isArray(g.options)) opts.push(...g.options.map((o: any) => ({ name: o.name })));
-        });
-      } else if (typeof dynOpts === 'object') {
-        Object.values(dynOpts).forEach((arr: any) => {
-          if (Array.isArray(arr)) opts.push(...arr.map((o: any) => ({ name: o.name })));
-        });
-      }
+    let rawOptions: any[] = [];
+    const dynOpts = item.selectedSubOptions || item.selections || item.options || [];
+
+    // Prise en charge des très anciennes commandes (rétro-compatibilité)
+    if (item.boisson) rawOptions.push({ name: item.boisson.name || item.boisson, _print_order: -2 });
+    if (item.accompagnement) rawOptions.push({ name: item.accompagnement.name || item.accompagnement, _print_order: -1 });
+
+    // On extrait les options du tableau
+    if (Array.isArray(dynOpts)) {
+      rawOptions.push(...dynOpts);
+    } else if (typeof dynOpts === 'object' && dynOpts !== null) {
+      Object.keys(dynOpts).forEach(k => {
+        const val = dynOpts[k];
+        if (Array.isArray(val)) rawOptions.push(...val);
+        else rawOptions.push(val);
+      });
     }
-    const grouped: Record<string, {name: string, count: number}> = {};
-    opts.forEach(o => {
-      const n = o.name || "Option";
-      if (!grouped[n]) grouped[n] = { name: n, count: 0 };
-      grouped[n].count += 1;
+
+    // On met en forme
+    const formattedList = rawOptions.map((opt, i) => {
+      let name = "";
+      // C'EST ICI QU'ON LIT LE NUMÉRO EXACT (s'il n'y en a pas, on prend l'index)
+      let order = opt._print_order !== undefined ? opt._print_order : i;
+
+      if (typeof opt === 'string') {
+        name = opt;
+      } else {
+        name = opt.name || opt.title || opt.variant_name || opt.value || "";
+      }
+      return { name: name.trim().toLowerCase(), order };
+    }).filter(o => o.name && o.name !== 'option' && o.name !== 'options');
+
+    // LE TRI : On trie strictement sur NOTRE numéro _print_order
+    formattedList.sort((a, b) => a.order - b.order);
+
+    // On regroupe (ex: 2x Ketchup)
+    const finalOptions: { name: string, qty: number }[] = [];
+    formattedList.forEach(opt => {
+      const existing = finalOptions.find(o => o.name === opt.name);
+      if (existing) {
+        existing.qty += 1;
+      } else {
+        finalOptions.push({ name: opt.name, qty: 1 });
+      }
     });
-    return Object.values(grouped).map(g => g.count > 1 ? `${g.count}x ${g.name}` : g.name);
+
+    return finalOptions.map(o => o.qty > 1 ? `${o.qty}x ${o.name}` : o.name);
   };
 
   const activeOrders = orders.filter(o => !isOrderClosed(o.status));
@@ -231,7 +256,6 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                         <h3 className="text-lg font-black text-secondary truncate leading-none">
                           {order.order_number || `#${order.id.toString().slice(-4)}`}
                         </h3>
-                        {/* Sécurisation stricte de l'affichage Non Payé */}
                         {!order.is_paid && (
                           <span className="bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest leading-none flex-shrink-0 animate-pulse">
                             Non Payé

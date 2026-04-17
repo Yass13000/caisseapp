@@ -1,146 +1,107 @@
-const { app, BrowserWindow, screen, globalShortcut } = require('electron');
-const path = require('path');
-const isDev = process.env.NODE_ENV === 'development';
+import { app, BrowserWindow, ipcMain } from 'electron';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 let mainWindow;
 
-// Configuration du mode kiosque
-const KIOSK_CONFIG = {
-  fullscreen: true,
-  kiosk: true,
-  autoHideMenuBar: true,
-  frame: false,
-};
-
 function createWindow() {
-  // Récupérer les dimensions de l'écran principal
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width, height } = primaryDisplay.bounds;
-
-  // Créer la fenêtre du navigateur
   mainWindow = new BrowserWindow({
-    width,
-    height,
-    ...KIOSK_CONFIG,
-    backgroundColor: '#1a1410', // Couleur de fond pendant le chargement
+    width: 1080,
+    height: 1920, // Format portrait pour une borne
+    show: false,
+    kiosk: process.env.NODE_ENV !== 'development', // Plein écran bloqué en prod
+    autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
       nodeIntegration: false,
-      enableRemoteModule: false,
-      sandbox: true,
-      // Optimisations pour les écrans tactiles
-      scrollBounce: true,
-      // Désactiver le zoom par pincement
-      zoomFactor: 1.0,
-    },
-    // Support des écrans tactiles
-    enableLargerThanScreen: false,
-    useContentSize: true,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js') // On relie le script douanier
+    }
   });
 
-  // Charger l'application
-  if (isDev) {
-    // En développement, charger depuis le serveur Vite
+  // Chargement de l'URL de dev ou des fichiers buildés
+  if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:5173');
-    // Ouvrir les DevTools en développement
-    mainWindow.webContents.openDevTools();
   } else {
-    // En production, charger depuis les fichiers buildés
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  // Désactiver le zoom
-  mainWindow.webContents.setZoomFactor(1.0);
-  mainWindow.webContents.on('zoom-changed', () => {
-    mainWindow.webContents.setZoomFactor(1.0);
-  });
+  // 👇 MODIFICATION ICI : On force l'ouverture des DevTools pour débugger l'écran blanc
+  mainWindow.webContents.openDevTools();
 
-  // Empêcher la navigation externe
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    const appUrl = isDev ? 'http://localhost:5173' : 'file://';
-    if (!url.startsWith(appUrl)) {
-      event.preventDefault();
-    }
-  });
-
-  // Gérer la fermeture de la fenêtre
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-
-  // Logs pour le débogage
-  mainWindow.webContents.on('did-finish-load', () => {
-    console.log('Application chargée avec succès');
-  });
-
-  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-    console.error('Erreur de chargement:', errorCode, errorDescription);
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
   });
 }
 
-// Désactiver les raccourcis clavier dangereux en mode kiosque
-function setupKioskShortcuts() {
-  // Désactiver tous les raccourcis par défaut
-  globalShortcut.register('CommandOrControl+R', () => false); // Rechargement
-  globalShortcut.register('F5', () => false); // Rechargement
-  globalShortcut.register('CommandOrControl+Shift+R', () => false); // Rechargement forcé
-  globalShortcut.register('CommandOrControl+Q', () => false); // Quitter
-  globalShortcut.register('CommandOrControl+W', () => false); // Fermer fenêtre
-  globalShortcut.register('Alt+F4', () => false); // Fermer (Windows)
-  globalShortcut.register('F11', () => false); // Plein écran
-  globalShortcut.register('Escape', () => false); // Échap
-
-  // Raccourci secret pour quitter (Ctrl+Shift+Alt+Q)
-  globalShortcut.register('CommandOrControl+Shift+Alt+Q', () => {
-    app.quit();
-  });
-
-  // Raccourci secret pour les DevTools en production (Ctrl+Shift+Alt+D)
-  if (!isDev) {
-    globalShortcut.register('CommandOrControl+Shift+Alt+D', () => {
-      if (mainWindow) {
-        mainWindow.webContents.toggleDevTools();
-      }
-    });
-  }
-}
-
-// Quand Electron a fini de s'initialiser
 app.whenReady().then(() => {
   createWindow();
-  setupKioskShortcuts();
 
-  app.on('activate', () => {
-    // Sur macOS, recréer une fenêtre quand on clique sur l'icône du dock
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+  app.on('activate', function () {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
-// Quitter quand toutes les fenêtres sont fermées (sauf sur macOS)
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
-// Libérer les raccourcis globaux à la fermeture
-app.on('will-quit', () => {
-  globalShortcut.unregisterAll();
+// --- LOGIQUE D'IMPRESSION SILENCIEUSE ---
+ipcMain.handle('print-receipt', async (event, printContent) => {
+  try {
+    // 1. Créer une fenêtre cachée spécialement pour l'impression
+    let printWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { nodeIntegration: true }
+    });
+
+    // 2. Charger le contenu HTML (le ticket de caisse) dans cette fenêtre cachée
+    const htmlContent = `
+      <html>
+        <head>
+          <style>
+            body { font-family: monospace; font-size: 12px; margin: 0; padding: 10px; width: 80mm; }
+            .center { text-align: center; }
+            .right { text-align: right; }
+            .bold { font-weight: bold; }
+            hr { border-top: 1px dashed black; }
+          </style>
+        </head>
+        <body>
+          ${printContent}
+        </body>
+      </html>
+    `;
+
+    await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
+
+    // 3. Envoyer l'ordre d'impression silencieuse
+    printWindow.webContents.print({
+      silent: true,
+      printBackground: true,
+      deviceName: '', // Laisse vide pour utiliser l'imprimante par défaut de Windows, ou mets le nom exact de l'imprimante EPSON/Star
+      margins: { marginType: 'none' }
+    }, (success, failureReason) => {
+      printWindow.close(); // Détruire la fenêtre cachée après l'impression
+      if (!success) console.error("Erreur d'impression:", failureReason);
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error('Erreur IPC Print:', error);
+    return { success: false, error: error.message };
+  }
 });
 
-// Désactiver le menu de l'application
-app.on('browser-window-created', (_, window) => {
-  window.setMenu(null);
-});
-
-// Gestion des erreurs non capturées
-process.on('uncaughtException', (error) => {
-  console.error('Erreur non capturée:', error);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Promesse rejetée non gérée:', promise, 'raison:', reason);
+// Permet au front-end de récupérer la liste des imprimantes installées sur Windows
+ipcMain.handle('get-printers', async (event) => {
+  if (mainWindow) {
+    const printers = await mainWindow.webContents.getPrintersAsync();
+    return printers;
+  }
+  return [];
 });

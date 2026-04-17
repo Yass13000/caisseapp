@@ -3,7 +3,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+// 👇 CHANGEMENT ICI : On importe HashRouter au lieu de BrowserRouter
+import { HashRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import { CartProvider } from "@/context/CartContext";
 import { ConfigProvider } from "@/context/ConfigContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -53,7 +54,8 @@ const App = () => {
                 <Sonner position="top-center" />
                 
                 <div className="flex-1 flex flex-col w-full relative">
-                  <BrowserRouter>
+                  {/* 👇 CHANGEMENT ICI : On utilise <Router> (qui est notre HashRouter) */}
+                  <Router>
                     <Suspense fallback={<PageLoader />}>
                       <Routes>
                         {/* Redirection par défaut vers la caisse */}
@@ -66,7 +68,7 @@ const App = () => {
                         <Route path="*" element={<NotFound />} />
                       </Routes>
                     </Suspense>
-                  </BrowserRouter>
+                  </Router>
                 </div>
                 
               </main>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Package, Search, ChevronDown, ChevronRight, Layers, AlertOctagon } from 'lucide-react';
+// Note: RESTAURANT_ID est gardé juste en dernier recours, mais on priorise le localStorage
 import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
 import { toast } from 'sonner';
 
@@ -36,8 +37,15 @@ const StockModal = ({ onClose }: StockModalProps) => {
   const loadStock = async () => {
     setIsLoading(true);
     try {
-      const activeRestoId = localStorage.getItem('admin_override_restaurant_id') || RESTAURANT_ID;
+      // CORRECTION ICI : On utilise en priorité l'ID de la caisse (pos_restaurant_id)
+      const activeRestoId = localStorage.getItem('pos_restaurant_id') || localStorage.getItem('admin_override_restaurant_id') || RESTAURANT_ID;
       
+      if (!activeRestoId) {
+        toast.error("Veuillez configurer la caisse (ID restaurant manquant)");
+        setIsLoading(false);
+        return;
+      }
+
       const { data: productsData, error: productsError } = await supabase
         .from('product')
         .select('id, name, category, is_available, image')
@@ -143,7 +151,6 @@ const StockModal = ({ onClose }: StockModalProps) => {
     setSelectedCategory(category);
   };
 
-  // NOUVELLE CARTE CLIQUABLE (Verte/Rouge avec texte ajusté)
   const renderItemCard = (item: StockItem) => {
     const isProduct = item.type === 'product';
     const isAvailable = item.is_available;
@@ -158,7 +165,6 @@ const StockModal = ({ onClose }: StockModalProps) => {
             : 'bg-red-500 border-red-500 text-white hover:bg-red-600'
         }`}
       >
-        {/* IMAGE : Affichée UNIQUEMENT pour les produits */}
         {isProduct && (
           <div className="w-14 h-14 bg-white rounded-xl flex items-center justify-center overflow-hidden flex-shrink-0 shadow-sm">
             {item.image ? (
@@ -169,7 +175,6 @@ const StockModal = ({ onClose }: StockModalProps) => {
           </div>
         )}
 
-        {/* TEXTE : Taille ajustée et passage à la ligne autorisé */}
         <div className="flex-1 min-w-0">
           <h4 className={`font-black text-base uppercase leading-tight ${!isAvailable && 'line-through opacity-80'}`}>
             {item.name}

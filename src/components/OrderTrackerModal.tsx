@@ -1,8 +1,8 @@
 // @ts-nocheck
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { supabase } from '@/lib/supabaseClient'; // RESTAURANT_ID retiré car inutile
-import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, FolderOpen, CreditCard, Trash2 } from 'lucide-react';
+import { supabase } from '@/lib/supabaseClient';
+import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, CreditCard, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface OrderTrackerModalProps {
@@ -28,10 +28,10 @@ const OrderTrackerModal = ({ onClose, onLoadOrder }: OrderTrackerModalProps) => 
   const fetchPendingOrders = async () => {
     setIsLoading(true);
     try {
-      // UTILISATION DU NOUVEAU SYSTÈME D'ID POUR LA CAISSE
       const activeRestoId = localStorage.getItem('pos_restaurant_id');
       
-      if (!activeRestoId) {
+      // SÉCURITÉ ANTI-UNDEFINED
+      if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') {
         toast.error("Veuillez configurer la caisse (ID manquant)");
         setIsLoading(false);
         return;
@@ -50,7 +50,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder }: OrderTrackerModalProps) => 
         .select('*')
         .eq('restaurant_id', activeRestoId)
         .eq('is_paid', false) // UNIQUEMENT LES COMMANDES NON PAYÉES
-        .neq('status', 'Annulée') // ON EXCLUT LES COMMANDES ANNULÉES
+        .neq('status', 'Annulée') 
         .gte('created_at', startOfDay)
         .lte('created_at', endOfDay)
         .order('created_at', { ascending: sortOrder === 'asc' });
@@ -132,25 +132,25 @@ const OrderTrackerModal = ({ onClose, onLoadOrder }: OrderTrackerModalProps) => 
     }
   };
 
-  // FONCTION DE SUPPRESSION (SOFT DELETE) POUR ÉVITER L'ERREUR 409
   const handleDeleteOrder = async (e: React.MouseEvent, order: any) => {
     e.stopPropagation();
     
-    const confirmDelete = window.confirm(`Voulez-vous vraiment annuler la commande #${order.order_number || order.id.toString().slice(0, 4)} ?\nCette action la retirera de la liste en attente.`);
+    const confirmDelete = window.confirm(`Voulez-vous vraiment supprimer la commande #${order.order_number || order.id.toString().slice(0, 4)} ?\nCette action est définitive.`);
     if (!confirmDelete) return;
 
     try {
       const { error } = await supabase
         .from('orders')
-        .update({ status: 'Annulée' }) // Modification du statut au lieu de delete()
+        .delete() // ON LA SUPPRIME TOTALEMENT DE LA BASE
         .eq('id', order.id);
 
       if (error) throw error;
 
-      toast.success("Commande annulée avec succès");
+      toast.success("Commande supprimée avec succès");
       setOrders(prevOrders => prevOrders.filter(o => o.id !== order.id));
     } catch (err) {
-      toast.error("Erreur lors de l'annulation de la commande");
+      console.error(err);
+      toast.error("Erreur lors de la suppression de la commande");
     }
   };
 
@@ -265,9 +265,9 @@ const OrderTrackerModal = ({ onClose, onLoadOrder }: OrderTrackerModalProps) => 
                     <th className="p-4 w-[100px]">Heure</th>
                     <th className="p-4 w-[120px]">N° Cmd</th>
                     <th className="p-4">Client / Origine</th>
-                    <th className="p-4 w-[120px]">Statut</th>
+                    {/* Colonne Statut supprimée ici */}
                     <th className="p-4 text-right w-[100px]">Total</th>
-                    <th className="p-4 w-[320px] text-center">Actions</th>
+                    <th className="p-4 w-[300px] text-center">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -301,11 +301,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder }: OrderTrackerModalProps) => 
                             </span>
                           </td>
                           
-                          <td className="p-4">
-                            <span className="px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider inline-flex items-center justify-center shadow-sm bg-orange-100 text-orange-600 border border-orange-200">
-                              En attente
-                            </span>
-                          </td>
+                          {/* Cellule Statut supprimée ici */}
                           
                           <td className="p-4 text-right font-black text-lg text-secondary">
                             {order.total_price.toFixed(2)} €
@@ -315,7 +311,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder }: OrderTrackerModalProps) => 
                             <button 
                               onClick={(e) => handleDeleteOrder(e, order)}
                               className="w-10 h-10 flex items-center justify-center bg-red-100 text-red-600 rounded-lg hover:bg-red-200 active:scale-95 transition-all shadow-sm flex-shrink-0"
-                              title="Annuler la commande"
+                              title="Supprimer la commande"
                             >
                               <Trash2 size={18} />
                             </button>
@@ -326,12 +322,13 @@ const OrderTrackerModal = ({ onClose, onLoadOrder }: OrderTrackerModalProps) => 
                               {expandedOrderId === order.id ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
                             </div>
                             
+                            {/* Bouton Ouvrir modifié : suppression de l'icône et ajustement des marges */}
                             <button 
                               onClick={(e) => { e.stopPropagation(); handleSelectOrder(order); }}
-                              className="h-10 px-3 bg-secondary text-white rounded-lg font-black uppercase text-xs hover:bg-secondary/90 active:scale-95 transition-all shadow-sm flex items-center gap-1 flex-shrink-0"
+                              className="h-10 px-4 bg-secondary text-white rounded-lg font-black uppercase text-xs hover:bg-secondary/90 active:scale-95 transition-all shadow-sm flex items-center justify-center flex-shrink-0"
                               title="Ouvrir en caisse"
                             >
-                              <FolderOpen size={16} /> Ouvrir
+                              Ouvrir
                             </button>
 
                             <button 
@@ -346,7 +343,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder }: OrderTrackerModalProps) => 
 
                         {expandedOrderId === order.id && (
                           <tr className="bg-gray-50/30">
-                            <td colSpan={6} className="p-4 border-t border-gray-100">
+                            {/* colSpan ajusté de 6 à 5 suite à la suppression de la colonne statut */}
+                            <td colSpan={5} className="p-4 border-t border-gray-100">
                               {renderOrderDetails(order.order_details)}
                             </td>
                           </tr>
