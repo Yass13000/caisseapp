@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -52,13 +53,22 @@ app.on('window-all-closed', () => {
 // --- OUTILS PRO : RECHERCHE D'IMPRIMANTE & ENVOI DE CODES BRUTS ---
 // ============================================================================
 
-// 1. Trouve automatiquement l'imprimante Epson/TM ou celle par défaut
-async function getTargetPrinter() {
+// 1. Trouve l'imprimante demandée, ou bascule sur l'Epson/Par défaut en secours
+async function getTargetPrinter(desiredPrinterName) {
   if (!mainWindow) return null;
   const printers = await mainWindow.webContents.getPrintersAsync();
+  
+  // Si un nom spécifique est demandé, on essaie de le trouver en priorité
+  if (desiredPrinterName) {
+    const specificPrinter = printers.find(p => p.name === desiredPrinterName);
+    if (specificPrinter) return specificPrinter;
+  }
+
+  // Secours (Logique d'origine)
   let targetPrinter = printers.find(p => p.isDefault);
   if (!targetPrinter) targetPrinter = printers.find(p => p.name.toLowerCase().includes('tm') || p.name.toLowerCase().includes('epson'));
   if (!targetPrinter && printers.length > 0) targetPrinter = printers[0];
+  
   return targetPrinter;
 }
 
@@ -135,7 +145,8 @@ ipcMain.handle('get-printers', async () => {
 });
 
 // --- LOGIQUE D'IMPRESSION + MASSICOT AUTOMATIQUE ---
-ipcMain.handle('print-receipt', async (event, printContent) => {
+// Ajout de 'printerName' dans les arguments
+ipcMain.handle('print-receipt', async (event, printContent, printerName) => {
   try {
     let printWindow = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true } });
 
@@ -156,10 +167,14 @@ ipcMain.handle('print-receipt', async (event, printContent) => {
 
     await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
 
+    // On récupère l'imprimante exacte (ou par défaut)
+    const targetPrinter = await getTargetPrinter(printerName);
+    const deviceName = targetPrinter ? targetPrinter.name : '';
+
     printWindow.webContents.print({
       silent: true,
       printBackground: true,
-      deviceName: '', 
+      deviceName: deviceName, // On cible la bonne imprimante ici
       margins: { marginType: 'none' }
     }, async (success, failureReason) => {
       printWindow.close();
@@ -167,8 +182,6 @@ ipcMain.handle('print-receipt', async (event, printContent) => {
         console.error("Erreur d'impression:", failureReason);
       } else {
         // --- LE SECRET DES PROS : LE COUP DE MASSICOT ---
-        // Une fois l'HTML envoyé, on envoie la commande de coupe juste derrière !
-        const targetPrinter = await getTargetPrinter();
         if (targetPrinter && process.platform === 'win32') {
           console.log("Envoi du code de coupe (Massicot) à :", targetPrinter.name);
           // 29, 86, 66, 0 = Code universel (GS V 66 0) pour couper le papier proprement
@@ -185,9 +198,10 @@ ipcMain.handle('print-receipt', async (event, printContent) => {
 });
 
 // --- OUVERTURE DU TIROIR CAISSE ---
-ipcMain.handle('open-drawer', async () => {
+// On peut lui passer le nom de l'imprimante caisse
+ipcMain.handle('open-drawer', async (event, printerName) => {
   try {
-    const targetPrinter = await getTargetPrinter();
+    const targetPrinter = await getTargetPrinter(printerName);
 
     if (!targetPrinter) return { success: false, error: "Aucune imprimante détectée." };
 

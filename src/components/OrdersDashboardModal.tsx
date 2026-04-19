@@ -14,6 +14,7 @@ interface Order {
   order_details: any;
   order_type_id: string;
   is_paid?: boolean;
+  customer_name?: string; // Ajouté à l'interface
 }
 
 interface DashboardProps {
@@ -143,13 +144,12 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   };
 
   // --- LECTURE ABSOLUE DE L'ORDRE DU TABLEAU (COMME DANS LA CAISSE) ---
-  // --- LECTURE ABSOLUE DE L'ORDRE DU TABLEAU (COMME DANS LA CAISSE) ---
   const getFormattedOptions = (item: any) => {
     const dynOpts = item.selectedSubOptions || item.selections || item.options;
     if (!dynOpts) return [];
 
     const rawOptions: { name: string, order: number }[] = [];
-    let globalIndex = 0; // Compteur pour sceller l'ordre de choix du client
+    let globalIndex = 0; 
 
     const extractName = (o: any) => {
       if (!o) return "";
@@ -162,7 +162,6 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
       if (typeof node === 'string') {
         rawOptions.push({ name: node, order: globalIndex++ });
       } else if (Array.isArray(node)) {
-        // LECTURE DIRECTE DU TABLEAU : On conserve l'ordre naturel
         node.forEach(readNode);
       } else if (typeof node === 'object') {
         if (node.options && Array.isArray(node.options)) {
@@ -170,7 +169,6 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
         } else {
           const n = extractName(node);
           if (n && n.toLowerCase() !== 'option' && n.toLowerCase() !== 'options') {
-            // On prend le _print_order s'il existe, sinon on suit l'ordre du client
             const order = node._print_order !== undefined ? node._print_order : globalIndex++;
             rawOptions.push({ name: n, order: order });
           } else if (!n || n.toLowerCase() === 'option' || n.toLowerCase() === 'options') {
@@ -182,11 +180,8 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
     readNode(dynOpts);
 
-    // /!\ PLUS DE .reverse() ! /!\
-    // On trie uniquement par l'ordre d'insertion pour garantir le parcours
     rawOptions.sort((a, b) => a.order - b.order);
 
-    // Consolider les quantités dans l'ordre strict
     const finalOrdered: { name: string, qty: number }[] = [];
     rawOptions.forEach(opt => {
       const cleanName = typeof opt.name === 'string' ? opt.name.trim().toLowerCase() : "";
@@ -258,6 +253,12 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
               const s = order.status?.toLowerCase() || '';
               const isPrete = s === 'prête' || s === 'prete' || s === 'prêt' || s === 'pret';
 
+              // LOGIQUE POUR AFFICHER LE TYPE SP/EMP/LIV ET NOM CLIENT
+              let typeAbbr = 'SP'; 
+              if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') typeAbbr = 'EMP';
+              if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') typeAbbr = 'LIV';
+              const customerName = order.customer_name || "Client Caisse";
+
               return (
                 <div key={order.id} className="bg-white rounded-2xl shadow-sm border border-gray-200 flex flex-col h-[280px] overflow-hidden hover:shadow-md transition-shadow relative">
                   
@@ -273,6 +274,22 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                           </span>
                         )}
                       </div>
+                      
+                      {/* --- NOUVEAU BLOC : TYPE (SP/EMP/LIV) ET NOM DU CLIENT --- */}
+                      <div className="flex items-center gap-1.5 mt-1 mb-1.5">
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest leading-none flex-shrink-0 ${
+                          typeAbbr === 'LIV' ? 'bg-orange-100 text-orange-600' : 
+                          typeAbbr === 'EMP' ? 'bg-blue-100 text-blue-600' : 
+                          'bg-gray-200 text-gray-700'
+                        }`}>
+                          {typeAbbr}
+                        </span>
+                        <span className="text-xs font-bold text-gray-500 truncate leading-none">
+                          {customerName}
+                        </span>
+                      </div>
+                      {/* -------------------------------------------------------- */}
+
                       <div className="flex items-center gap-1.5 mt-1.5">
                         <Clock size={14} className="text-secondary" />
                         <span className="font-black text-secondary text-sm leading-none">{getTimeElapsed(order.created_at)}</span>

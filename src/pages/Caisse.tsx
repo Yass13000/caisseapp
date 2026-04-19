@@ -114,9 +114,11 @@ const openCashDrawer = async () => {
   } catch (error) { console.error("Erreur ouverture tiroir :", error); }
 };
 
-// --- FONCTION D'IMPRESSION SILENCIEUSE VIA ELECTRON ---
+// --- FONCTION D'IMPRESSION SILENCIEUSE VIA ELECTRON (CAISSE) ---
 const generateAndPrintReceipt = async (restaurantName: string, orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, cashAmount: number) => {
   if (!(window as any).electronAPI) return;
+  const printerName = localStorage.getItem('imprimante_caisse') || undefined;
+  
   const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   const isCash = paymentMethod === 'counter';
   const changeDue = Math.max(0, cashAmount - subtotal);
@@ -166,14 +168,16 @@ const generateAndPrintReceipt = async (restaurantName: string, orderNumber: stri
   `;
 
   try {
-    const result = await (window as any).electronAPI.printReceipt(receiptHtml);
-    if (!result.success) toast.error("Erreur avec l'imprimante !");
+    const result = await (window as any).electronAPI.printReceipt(receiptHtml, printerName);
+    if (!result.success) toast.error("Erreur avec l'imprimante caisse !");
   } catch (error) { console.error("Erreur API impression :", error); }
 };
 
 // --- FONCTION D'IMPRESSION CUISINE ---
 const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: string, items: any[]) => {
   if (!(window as any).electronAPI) return;
+  const printerName = localStorage.getItem('imprimante_cuisine') || undefined;
+  
   const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   const itemsHtml = items.map(item => {
@@ -207,7 +211,11 @@ const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: str
     </div>
   `;
 
-  try { await (window as any).electronAPI.printReceipt(receiptHtml); } catch (error) { console.error("Erreur API impression cuisine :", error); }
+  try { 
+    await (window as any).electronAPI.printReceipt(receiptHtml, printerName); 
+  } catch (error) { 
+    console.error("Erreur API impression cuisine :", error); 
+  }
 };
 
 // --- MODALE DE PAIEMENT ---
@@ -534,7 +542,16 @@ const Caisse = () => {
         // MAJ COMMANDE BORNE
         await supabase
           .from('orders')
-          .update({ is_paid: true, payment_status: 'paid', status: 'En cours', payment_method: method, cash_amount: cashAmount, order_type_id: currentOrderTypeId || undefined })
+          .update({ 
+            is_paid: true, 
+            payment_status: 'paid', 
+            status: 'En cours', 
+            payment_method: method, 
+            cash_amount: cashAmount, 
+            order_type_id: currentOrderTypeId || undefined,
+            order_details: cleanOrderDetails,
+            total_price: parseFloat(subtotal.toFixed(2))
+          })
           .eq('id', loadedOrderId);
 
         const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
@@ -789,6 +806,7 @@ const Caisse = () => {
             <button onClick={() => setIsOrderTrackerOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><ClipboardList size={26} /></button>
             <button onClick={() => setIsHistoryOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><History size={26} /></button>
             <button onClick={openCashDrawer} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Ouvrir le tiroir caisse"><ArchiveRestore size={26} /></button>
+            <button onClick={() => setIsStockOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Gérer les stocks"><Package size={26} /></button>
             <button onClick={() => setIsSettingsOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Settings size={26} /></button>
           </div>
           

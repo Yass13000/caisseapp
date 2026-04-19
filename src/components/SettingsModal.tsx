@@ -28,6 +28,10 @@ const SettingsModal = ({ onClose, currentCategories = [], onCategoriesReorder }:
     return localStorage.getItem('print_kitchen_ticket') !== 'false';
   });
 
+  const [availablePrinters, setAvailablePrinters] = useState<any[]>([]);
+  const [caissePrinter, setCaissePrinter] = useState(localStorage.getItem('imprimante_caisse') || '');
+  const [kitchenPrinter, setKitchenPrinter] = useState(localStorage.getItem('imprimante_cuisine') || '');
+
   useEffect(() => {
     const savedOrder = localStorage.getItem('pos_category_order');
     if (savedOrder) {
@@ -42,6 +46,21 @@ const SettingsModal = ({ onClose, currentCategories = [], onCategoriesReorder }:
       setOrderedCategories([...currentCategories]);
     }
   }, [currentCategories]);
+
+  // Chargement des imprimantes si Electron est disponible
+  useEffect(() => {
+    const fetchPrinters = async () => {
+      if ((window as any).electronAPI) {
+        try {
+          const printers = await (window as any).electronAPI.getPrinters();
+          setAvailablePrinters(printers || []);
+        } catch (e) {
+          console.error("Erreur lors du chargement des imprimantes:", e);
+        }
+      }
+    };
+    fetchPrinters();
+  }, []);
 
   // --- HANDLERS SÉCURITÉ ---
   const handleSavePin = () => {
@@ -88,6 +107,22 @@ const SettingsModal = ({ onClose, currentCategories = [], onCategoriesReorder }:
     setPrintKitchenTicket(newValue);
     localStorage.setItem('print_kitchen_ticket', String(newValue));
     toast.success(newValue ? "Ticket Cuisine ACTIVÉ" : "Ticket Cuisine DÉSACTIVÉ");
+  };
+
+  const handleCaissePrinterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    setCaissePrinter(val);
+    if (val) localStorage.setItem('imprimante_caisse', val);
+    else localStorage.removeItem('imprimante_caisse');
+    toast.success("Imprimante Caisse mise à jour !");
+  };
+
+  const handleKitchenPrinterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    setKitchenPrinter(val);
+    if (val) localStorage.setItem('imprimante_cuisine', val);
+    else localStorage.removeItem('imprimante_cuisine');
+    toast.success("Imprimante Cuisine mise à jour !");
   };
 
   const menuItems = [
@@ -237,11 +272,10 @@ const SettingsModal = ({ onClose, currentCategories = [], onCategoriesReorder }:
                         Ticket Cuisine / Sac
                       </p>
                       <p className="text-sm font-bold text-gray-500 leading-relaxed">
-            
+                        Activer ou désactiver l'impression automatique en cuisine.
                       </p>
                     </div>
                     
-                    {/* Toggle Button */}
                     <button 
                       onClick={toggleKitchenTicket}
                       className={`relative inline-flex h-10 w-20 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none shadow-inner ${printKitchenTicket ? 'bg-[#04B855]' : 'bg-gray-300'}`}
@@ -251,6 +285,44 @@ const SettingsModal = ({ onClose, currentCategories = [], onCategoriesReorder }:
                       />
                     </button>
                   </div>
+
+                  {/* Configuration des Imprimantes Spécifiques (Seulement sous Electron) */}
+                  {(window as any).electronAPI && (
+                    <div className="mt-6 p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
+                      <h3 className="text-lg font-black text-secondary uppercase tracking-wide mb-4">Configuration Matériel</h3>
+                      
+                      <div className="grid grid-cols-2 gap-6">
+                        <div>
+                          <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Imprimante Caisse</label>
+                          <select 
+                            value={caissePrinter}
+                            onChange={handleCaissePrinterChange}
+                            className="w-full bg-white border-2 border-gray-200 rounded-xl px-4 py-3 text-sm font-bold text-secondary focus:outline-none focus:border-primary shadow-sm"
+                          >
+                            <option value="">-- Imprimante par défaut --</option>
+                            {availablePrinters.map((p, idx) => (
+                              <option key={idx} value={p.name}>{p.name}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Imprimante Cuisine</label>
+                          <select 
+                            value={kitchenPrinter}
+                            onChange={handleKitchenPrinterChange}
+                            disabled={!printKitchenTicket}
+                            className="w-full bg-white border-2 border-gray-200 rounded-xl px-4 py-3 text-sm font-bold text-secondary focus:outline-none focus:border-primary shadow-sm disabled:opacity-50"
+                          >
+                            <option value="">-- Imprimante par défaut --</option>
+                            {availablePrinters.map((p, idx) => (
+                              <option key={idx} value={p.name}>{p.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                 </div>
               </div>

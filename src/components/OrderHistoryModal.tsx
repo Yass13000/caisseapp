@@ -7,50 +7,76 @@ import { toast } from 'sonner';
 
 interface OrderHistoryModalProps {
   onClose: () => void;
-  restaurantName?: string; // Ajouté pour l'en-tête du ticket
+  restaurantName?: string; 
 }
 
-// --- LOGIQUE DE FORMATAGE POUR L'IMPRESSION (Copiée depuis Caisse.tsx pour être autonome) ---
+// --- LOGIQUE ULTRA-ROBUSTE EXTRAITE DU DASHBOARD ---
 const getFormattedOptions = (item: any) => {
-  let rawOptions: any[] = [];
-  const dynOpts = item.selectedSubOptions || item.selections || item.options || [];
+  const dynOpts = item.selectedSubOptions || item.selections || item.options || item.product?.options;
+  
+  const rawOptions: { name: string, price: number, order: number }[] = [];
+  let globalIndex = 0; // Compteur pour sceller l'ordre
 
-  if (item.boisson) rawOptions.push({ name: item.boisson.name || item.boisson, price: parseFloat(item.boisson.price || 0), _print_order: -2 });
-  if (item.accompagnement) rawOptions.push({ name: item.accompagnement.name || item.accompagnement, price: parseFloat(item.accompagnement.price || 0), _print_order: -1 });
+  // 1. On récupère les options fixes (boisson, accompagnement)
+  if (item.boisson) rawOptions.push({ name: item.boisson.name || item.boisson, price: parseFloat(item.boisson.price || 0), order: -2 });
+  if (item.accompagnement) rawOptions.push({ name: item.accompagnement.name || item.accompagnement, price: parseFloat(item.accompagnement.price || 0), order: -1 });
 
-  if (Array.isArray(dynOpts)) {
-    rawOptions.push(...dynOpts);
-  } else if (typeof dynOpts === 'object' && dynOpts !== null) {
-    Object.values(dynOpts).forEach((val: any) => {
-      if (Array.isArray(val)) rawOptions.push(...val);
-      else rawOptions.push(val);
-    });
+  // 2. Moteur de lecture récursive (comme sur le Dashboard)
+  const extractOption = (o: any) => {
+    if (!o) return { name: "", price: 0 };
+    if (typeof o === 'string') return { name: o, price: 0 };
+    const name = o.name || o.title || o.variant_name || o.value || "";
+    const price = parseFloat(o.price || o.price_supplement || 0);
+    return { name, price };
+  };
+
+  const readNode = (node: any) => {
+    if (!node) return;
+    if (typeof node === 'string') {
+      rawOptions.push({ name: node, price: 0, order: globalIndex++ });
+    } else if (Array.isArray(node)) {
+      // LECTURE DIRECTE DU TABLEAU : On conserve l'ordre naturel
+      node.forEach(readNode);
+    } else if (typeof node === 'object') {
+      if (node.options && Array.isArray(node.options)) {
+        node.options.forEach(readNode);
+      } else {
+        const { name, price } = extractOption(node);
+        if (name && name.toLowerCase() !== 'option' && name.toLowerCase() !== 'options') {
+          // On prend le _print_order s'il existe, sinon on suit l'ordre du client
+          const order = node._print_order !== undefined ? node._print_order : globalIndex++;
+          rawOptions.push({ name, price, order });
+        } else if (!name || name.toLowerCase() === 'option' || name.toLowerCase() === 'options') {
+          Object.values(node).forEach(readNode);
+        }
+      }
+    }
+  };
+
+  // On lance la lecture sur les options dynamiques
+  if (dynOpts) {
+    readNode(dynOpts);
   }
 
-  const formattedList = rawOptions.map((opt, i) => {
-    const order = opt._print_order !== undefined ? opt._print_order : i;
-    if (typeof opt === 'string') return { name: opt.trim().toLowerCase(), price: 0, order };
-    return { 
-      name: (opt.name || opt.title || opt.value || "").trim().toLowerCase(), 
-      price: parseFloat(opt.price || 0), 
-      order 
-    };
-  }).filter(o => o.name && o.name !== 'option' && o.name !== 'options');
+  // On trie uniquement par l'ordre d'insertion pour garantir le parcours
+  rawOptions.sort((a, b) => a.order - b.order);
 
-  formattedList.sort((a, b) => a.order - b.order);
-
-  const finalOptions: { name: string, price: number, qty: number }[] = [];
-  formattedList.forEach(opt => {
-    const existing = finalOptions.find(o => o.name === opt.name);
+  // Consolider les quantités dans l'ordre strict
+  const finalOrdered: { name: string, price: number, qty: number }[] = [];
+  rawOptions.forEach(opt => {
+    const cleanName = typeof opt.name === 'string' ? opt.name.trim().toLowerCase() : "";
+    if (!cleanName) return;
+    
+    const existing = finalOrdered.find(o => o.name === cleanName);
     if (existing) {
       existing.qty += 1;
       existing.price += opt.price;
     } else {
-      finalOptions.push({ name: opt.name, price: opt.price, qty: 1 });
+      finalOrdered.push({ name: cleanName, price: opt.price, qty: 1 });
     }
   });
 
-  return finalOptions.map(o => ({
+  return finalOrdered.map(o => ({
     name: o.qty > 1 ? `${o.qty}x ${o.name}` : o.name,
     price: o.price
   }));
@@ -115,6 +141,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
 
   useEffect(() => {
     fetchHistory();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterDate, sortOrder]);
 
   const changeDay = (days: number) => {
@@ -156,6 +183,19 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     return method;
   };
 
+  // --- EXTRACTION SÉCURISÉE DES ITEMS ---
+  const extractItemsSafely = (detailsRaw: any) => {
+    try {
+      let parsed = typeof detailsRaw === 'string' ? JSON.parse(detailsRaw) : detailsRaw;
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && Array.isArray(parsed.items)) return parsed.items;
+      if (parsed && parsed.cart && Array.isArray(parsed.cart.items)) return parsed.cart.items;
+      if (parsed && parsed.cart && Array.isArray(parsed.cart)) return parsed.cart;
+      if (parsed) return [parsed];
+      return [];
+    } catch(e) { return []; }
+  };
+
   // --- FONCTION D'IMPRESSION DEPUIS L'HISTORIQUE ---
   const handlePrintPastOrder = async (order: any) => {
     if (!window.electronAPI) {
@@ -164,9 +204,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     }
 
     try {
-      // Extraction des items
-      let items = typeof order.order_details === 'string' ? JSON.parse(order.order_details) : order.order_details;
-      if (!Array.isArray(items)) items = items.items || items.cart || [items];
+      const items = extractItemsSafely(order.order_details);
       if (!items || items.length === 0) {
           toast.error("Impossible d'imprimer : détails de commande vides.");
           return;
@@ -175,7 +213,6 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
       const date = new Date(order.created_at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const orderNumber = order.order_number || order.id.toString().slice(0, 4);
       
-      // Retrouver le type de commande si possible (sinon 'SUR PLACE' par défaut)
       let orderType = 'SUR PLACE';
       if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') orderType = 'EMPORTER';
       if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') orderType = 'LIVRAISON';
@@ -244,11 +281,10 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     }
   };
 
+  // --- AFFICHAGE À L'ÉCRAN ---
   const renderOrderDetails = (detailsRaw: any) => {
     try {
-      let items = typeof detailsRaw === 'string' ? JSON.parse(detailsRaw) : detailsRaw;
-      if (!Array.isArray(items)) items = items.items || items.cart || [items];
-
+      const items = extractItemsSafely(detailsRaw);
       if (!items || items.length === 0) return <p className="text-gray-400 italic">Aucun détail disponible</p>;
 
       return (
@@ -256,21 +292,37 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
           <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
             <ShoppingBag size={14} /> Contenu de la commande
           </h4>
-          <ul className="space-y-2">
+          <ul className="space-y-3">
             {items.map((item: any, idx: number) => {
               const productName = item.product?.name || item.name || 'Produit inconnu';
               const qty = item.quantity || 1;
-              const price = parseFloat(item.product?.price || item.price || 0);
+              const itemTotal = getItemTotal(item);
+              const options = getFormattedOptions(item); 
               
               return (
-                <li key={idx} className="flex justify-between items-start text-sm">
-                  <div className="font-bold text-gray-700">
-                    <span className="text-primary mr-2">{qty}x</span>
-                    {productName}
+                <li key={idx} className="flex flex-col border-b border-gray-100 last:border-0 pb-2 last:pb-0">
+                  <div className="flex justify-between items-start text-sm w-full">
+                    <div className="font-bold text-gray-700">
+                      <span className="text-primary mr-2">{qty}x</span>
+                      {productName}
+                    </div>
+                    <div className="font-black text-secondary">
+                      {itemTotal.toFixed(2)} €
+                    </div>
                   </div>
-                  <div className="font-black text-secondary">
-                    {(price * qty).toFixed(2)} €
-                  </div>
+                  
+                  {/* --- AFFICHAGE DES OPTIONS SOUS LE PRODUIT --- */}
+                  {options.length > 0 && (
+                    <div className="pl-6 mt-1 space-y-0.5">
+                      {options.map((opt, oIdx) => (
+                        <div key={oIdx} className="flex justify-between items-center text-[11px] text-gray-500 font-medium">
+                          <span>- {opt.name}</span>
+                          {opt.price > 0 && <span>+{opt.price.toFixed(2)} €</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  
                 </li>
               );
             })}
@@ -393,7 +445,6 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
                         
                         <td className="p-4 text-right">
                           <div className="flex items-center justify-end gap-3">
-                            {/* BOUTON IMPRESSION */}
                             <button 
                               onClick={(e) => { e.stopPropagation(); handlePrintPastOrder(order); }}
                               className="p-2 border-2 border-gray-200 text-gray-500 rounded-lg hover:border-blue-500 hover:text-blue-500 hover:bg-blue-50 transition-all active:scale-95"
