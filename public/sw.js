@@ -1,6 +1,6 @@
-const CACHE_NAME = 'detroit-pwa-v7';
-const RUNTIME_CACHE = 'detroit-runtime-v7';
-const IMAGE_CACHE = 'detroit-images-v7';
+const CACHE_NAME = 'Caisse-pwa-v7';
+const RUNTIME_CACHE = 'Caisse-runtime-v7';
+const IMAGE_CACHE = 'Caisse-images-v7';
 
 // Ressources critiques à mettre en cache immédiatement - optimisé pour Lighthouse
 const PRECACHE_ASSETS = [

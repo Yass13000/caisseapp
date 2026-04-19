@@ -46,9 +46,9 @@ export default defineConfig({
         ],
       },
       manifest: {
-        name: 'Detroit Borne',
-        short_name: 'Detroit',
-        description: 'Borne de commande Detroit DBHD',
+        name: 'Module Caisse',
+        short_name: 'Caisse',
+        description: 'Caisse',
         theme_color: '#E2E8F0',
         icons: [
           {

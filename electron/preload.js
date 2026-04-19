@@ -6,5 +6,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   printReceipt: (htmlContent) => ipcRenderer.invoke('print-receipt', htmlContent),
   
   // Obtenir la liste des imprimantes Windows
-  getPrinters: () => ipcRenderer.invoke('get-printers')
-});  
+  getPrinters: () => ipcRenderer.invoke('get-printers'),
+
+  // NOUVEAU : Fonction pour ouvrir le tiroir-caisse
+  openDrawer: () => ipcRenderer.invoke('open-drawer')
+});

@@ -1,20 +1,73 @@
 // @ts-nocheck
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { supabase } from '@/lib/supabaseClient'; // RESTAURANT_ID retiré
-import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight } from 'lucide-react';
+import { supabase } from '@/lib/supabaseClient';
+import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, Printer } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface OrderHistoryModalProps {
   onClose: () => void;
+  restaurantName?: string; // Ajouté pour l'en-tête du ticket
 }
 
-const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
+// --- LOGIQUE DE FORMATAGE POUR L'IMPRESSION (Copiée depuis Caisse.tsx pour être autonome) ---
+const getFormattedOptions = (item: any) => {
+  let rawOptions: any[] = [];
+  const dynOpts = item.selectedSubOptions || item.selections || item.options || [];
+
+  if (item.boisson) rawOptions.push({ name: item.boisson.name || item.boisson, price: parseFloat(item.boisson.price || 0), _print_order: -2 });
+  if (item.accompagnement) rawOptions.push({ name: item.accompagnement.name || item.accompagnement, price: parseFloat(item.accompagnement.price || 0), _print_order: -1 });
+
+  if (Array.isArray(dynOpts)) {
+    rawOptions.push(...dynOpts);
+  } else if (typeof dynOpts === 'object' && dynOpts !== null) {
+    Object.values(dynOpts).forEach((val: any) => {
+      if (Array.isArray(val)) rawOptions.push(...val);
+      else rawOptions.push(val);
+    });
+  }
+
+  const formattedList = rawOptions.map((opt, i) => {
+    const order = opt._print_order !== undefined ? opt._print_order : i;
+    if (typeof opt === 'string') return { name: opt.trim().toLowerCase(), price: 0, order };
+    return { 
+      name: (opt.name || opt.title || opt.value || "").trim().toLowerCase(), 
+      price: parseFloat(opt.price || 0), 
+      order 
+    };
+  }).filter(o => o.name && o.name !== 'option' && o.name !== 'options');
+
+  formattedList.sort((a, b) => a.order - b.order);
+
+  const finalOptions: { name: string, price: number, qty: number }[] = [];
+  formattedList.forEach(opt => {
+    const existing = finalOptions.find(o => o.name === opt.name);
+    if (existing) {
+      existing.qty += 1;
+      existing.price += opt.price;
+    } else {
+      finalOptions.push({ name: opt.name, price: opt.price, qty: 1 });
+    }
+  });
+
+  return finalOptions.map(o => ({
+    name: o.qty > 1 ? `${o.qty}x ${o.name}` : o.name,
+    price: o.price
+  }));
+};
+
+const getItemTotal = (item: any) => {
+  const basePrice = parseFloat(item.product?.price || item.price || 0);
+  const optsPrice = getFormattedOptions(item).reduce((sum, o) => sum + o.price, 0);
+  return (basePrice + optsPrice) * (item.quantity || 1);
+};
+
+
+const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: OrderHistoryModalProps) => {
   const [orders, setOrders] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expandedOrderId, setExpandedOrderId] = useState<string | number | null>(null);
   
-  // Utilitaire pour obtenir la date locale correcte (YYYY-MM-DD)
   const getLocalToday = () => {
     const today = new Date();
     const offset = today.getTimezoneOffset() * 60000;
@@ -27,7 +80,6 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
   const fetchHistory = async () => {
     setIsLoading(true);
     try {
-      // UTILISATION DU NOUVEAU SYSTÈME D'ID CAISSE
       const activeRestoId = localStorage.getItem('pos_restaurant_id');
       
       if (!activeRestoId) {
@@ -36,22 +88,18 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
         return;
       }
       
-      // --- CORRECTION DU FUSEAU HORAIRE ---
       const [year, month, day] = filterDate.split('-').map(Number);
-      
       const startOfDayLocal = new Date(year, month - 1, day, 0, 0, 0, 0);
       const endOfDayLocal = new Date(year, month - 1, day, 23, 59, 59, 999);
 
-      // On convertit en UTC pour la base de données
       const startOfDay = startOfDayLocal.toISOString();
       const endOfDay = endOfDayLocal.toISOString();
-      // ------------------------------------
 
       const { data, error } = await supabase
         .from('orders')
         .select('*')
         .eq('restaurant_id', activeRestoId)
-        .eq('is_paid', true) // Uniquement les commandes payées
+        .eq('is_paid', true)
         .gte('created_at', startOfDay)
         .lte('created_at', endOfDay)
         .order('created_at', { ascending: sortOrder === 'asc' });
@@ -74,7 +122,6 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
     const date = new Date(year, month - 1, day + days);
     const newDateString = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     
-    // Bloquer les jours dans le futur
     const localToday = getLocalToday();
     if (newDateString > localToday) return;
 
@@ -101,13 +148,100 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
     setExpandedOrderId(prev => prev === id ? null : id);
   };
 
-  // NOUVEAU : Traduire les méthodes de paiement pour un affichage propre
   const getPaymentMethodLabel = (method: string) => {
     if (!method) return 'N/A';
     const m = method.toLowerCase();
     if (m === 'counter' || m === 'espèces') return 'Espèces';
     if (m === 'card' || m === 'carte bancaire') return 'Carte Bancaire';
     return method;
+  };
+
+  // --- FONCTION D'IMPRESSION DEPUIS L'HISTORIQUE ---
+  const handlePrintPastOrder = async (order: any) => {
+    if (!window.electronAPI) {
+        toast.error("Impression non disponible sur la version Web.");
+        return;
+    }
+
+    try {
+      // Extraction des items
+      let items = typeof order.order_details === 'string' ? JSON.parse(order.order_details) : order.order_details;
+      if (!Array.isArray(items)) items = items.items || items.cart || [items];
+      if (!items || items.length === 0) {
+          toast.error("Impossible d'imprimer : détails de commande vides.");
+          return;
+      }
+
+      const date = new Date(order.created_at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const orderNumber = order.order_number || order.id.toString().slice(0, 4);
+      
+      // Retrouver le type de commande si possible (sinon 'SUR PLACE' par défaut)
+      let orderType = 'SUR PLACE';
+      if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') orderType = 'EMPORTER';
+      if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') orderType = 'LIVRAISON';
+
+      const isCash = order.payment_method?.toLowerCase() === 'counter' || order.payment_method?.toLowerCase() === 'espèces';
+      const subtotal = order.total_price || 0;
+      const cashAmount = order.cash_amount || subtotal;
+      const changeDue = Math.max(0, cashAmount - subtotal);
+
+      const itemsHtml = items.map((item: any) => {
+        const itemTotal = getItemTotal(item);
+        let html = `
+          <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+            <span class="bold" style="max-width: 75%; word-wrap: break-word;">${item.quantity || 1}x ${item.product?.name || item.name || 'Produit'}</span>
+            <span class="bold" style="white-space: nowrap;">${itemTotal.toFixed(2)} €</span>
+          </div>
+        `;
+        const options = getFormattedOptions(item);
+        if (options.length > 0) {
+          options.forEach(opt => {
+            html += `
+              <div style="display: flex; justify-content: space-between; font-size: 11px; color: #333; padding-left: 10px;">
+                <span style="max-width: 75%; word-wrap: break-word;">- ${opt.name}</span>
+                <span style="white-space: nowrap;">${opt.price > 0 ? '+' + opt.price.toFixed(2) + '€' : ''}</span>
+              </div>
+            `;
+          });
+        }
+        return html;
+      }).join('');
+
+      const receiptHtml = `
+        <div style="width: 72mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px;">
+          <div style="text-align: center; margin-bottom: 10px;">
+            <h2 style="margin: 0; font-size: 18px; font-weight: bold; text-transform: uppercase;">${restaurantName}</h2>
+            <p style="margin: 2px 0; font-size: 12px;">${date}</p>
+            <p style="margin: 5px 0; font-size: 15px; font-weight: bold; padding: 3px; border: 1px solid black;">DUPLICATA : ${orderNumber}</p>
+            <p style="margin: 5px 0; font-size: 14px; font-weight: bold;">${orderType}</p>
+          </div>
+          <hr style="border-top: 1px dashed black; margin: 10px 0;" />
+          <div style="margin-bottom: 10px;">${itemsHtml}</div>
+          <hr style="border-top: 1px dashed black; margin: 10px 0;" />
+          <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: bold; margin-bottom: 5px;">
+            <span>TOTAL</span><span>${subtotal.toFixed(2)} €</span>
+          </div>
+          ${isCash ? `
+            <div style="display: flex; justify-content: space-between; font-size: 12px; color: #555;"><span>Espèces</span><span>${cashAmount.toFixed(2)} €</span></div>
+            <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold; margin-top: 2px;"><span>Rendu</span><span>${changeDue.toFixed(2)} €</span></div>
+          ` : `
+            <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold;"><span>Payé par</span><span>CARTE</span></div>
+          `}
+          <div style="text-align: center; margin-top: 20px; font-size: 12px;">
+            <p style="margin: 0;">Merci de votre visite !</p>
+            <p style="margin: 2px 0;">A bientot.</p>
+          </div>
+        </div>
+      `;
+
+      const result = await window.electronAPI.printReceipt(receiptHtml);
+      if (!result.success) toast.error("Erreur avec l'imprimante !");
+      else toast.success("Duplicata imprimé");
+
+    } catch (err) {
+        console.error("Erreur impression historique :", err);
+        toast.error("Erreur lors de la génération du ticket");
+    }
   };
 
   const renderOrderDetails = (detailsRaw: any) => {
@@ -154,7 +288,6 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
     <div className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 font-helvetica select-none">
       <div className="bg-[#F3F4F6] w-[1200px] h-[750px] max-w-[95vw] max-h-[95vh] rounded-[1.5rem] shadow-2xl flex flex-col overflow-hidden border border-white/20">
         
-        {/* EN-TÊTE : Titre et Filtres */}
         <div className="bg-white border-b border-gray-200 p-6 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-6">
             <h2 className="text-2xl font-black text-secondary uppercase tracking-tight">Historique des Ventes</h2>
@@ -176,7 +309,6 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
                   </span>
                 </div>
 
-                {/* Bouton pour aller vers le futur désactivé si on est déjà "Aujourd'hui" */}
                 <button 
                   onClick={() => !isToday && changeDay(1)} 
                   disabled={isToday}
@@ -201,7 +333,6 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
           </button>
         </div>
 
-        {/* CORPS : Tableau de l'historique */}
         <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
           {isLoading ? (
             <div className="h-full flex flex-col items-center justify-center space-y-3">
@@ -223,7 +354,7 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
                     <th className="p-4">Client / Origine</th>
                     <th className="p-4 w-[180px]">Paiement</th>
                     <th className="p-4 text-right w-[150px]">Total</th>
-                    <th className="p-4 w-[80px]"></th>
+                    <th className="p-4 w-[140px] text-center">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -252,7 +383,6 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
                           </span>
                         </td>
                         
-                        {/* Affiche "Espèces" ou "Carte Bancaire" proprement */}
                         <td className="p-4 font-bold text-gray-500 text-sm uppercase">
                           {getPaymentMethodLabel(order.payment_method)}
                         </td>
@@ -262,10 +392,21 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
                         </td>
                         
                         <td className="p-4 text-right">
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all shadow-sm inline-flex ${
-                            expandedOrderId === order.id ? 'bg-primary text-white' : 'bg-gray-100 text-gray-400'
-                          }`}>
-                            {expandedOrderId === order.id ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                          <div className="flex items-center justify-end gap-3">
+                            {/* BOUTON IMPRESSION */}
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); handlePrintPastOrder(order); }}
+                              className="p-2 border-2 border-gray-200 text-gray-500 rounded-lg hover:border-blue-500 hover:text-blue-500 hover:bg-blue-50 transition-all active:scale-95"
+                              title="Imprimer un duplicata"
+                            >
+                              <Printer size={18} />
+                            </button>
+                            
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all shadow-sm inline-flex ${
+                              expandedOrderId === order.id ? 'bg-primary text-white' : 'bg-gray-100 text-gray-400'
+                            }`}>
+                              {expandedOrderId === order.id ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -285,7 +426,6 @@ const OrderHistoryModal = ({ onClose }: OrderHistoryModalProps) => {
           )}
         </div>
 
-        {/* PIED DE PAGE : Statistiques */}
         <div className="p-6 bg-white border-t border-gray-200 flex items-center justify-center flex-shrink-0">
             <div className="flex gap-16 items-center bg-gray-50 px-8 py-4 rounded-2xl border border-gray-200 shadow-inner">
                 <div className="flex flex-col items-center">

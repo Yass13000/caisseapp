@@ -43,6 +43,7 @@ const isOrderClosed = (status: string) => {
   return s === 'fermé' || s === 'ferme' || s === 'terminée' || s === 'terminee';
 };
 
+// Analyseur de détails ultra-robuste
 const parseOrderDetails = (details: any): any[] => {
   if (Array.isArray(details)) return details;
   if (typeof details === 'string') {
@@ -141,55 +142,65 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
     }
   };
 
-  // --- LECTURE SIMPLE AVEC LE NUMÉRO D'ORDRE ESTAMPILLÉ (MÊME CODE QUE LA CAISSE) ---
+  // --- LECTURE ABSOLUE DE L'ORDRE DU TABLEAU (COMME DANS LA CAISSE) ---
+  // --- LECTURE ABSOLUE DE L'ORDRE DU TABLEAU (COMME DANS LA CAISSE) ---
   const getFormattedOptions = (item: any) => {
-    let rawOptions: any[] = [];
-    const dynOpts = item.selectedSubOptions || item.selections || item.options || [];
+    const dynOpts = item.selectedSubOptions || item.selections || item.options;
+    if (!dynOpts) return [];
 
-    // Prise en charge des très anciennes commandes (rétro-compatibilité)
-    if (item.boisson) rawOptions.push({ name: item.boisson.name || item.boisson, _print_order: -2 });
-    if (item.accompagnement) rawOptions.push({ name: item.accompagnement.name || item.accompagnement, _print_order: -1 });
+    const rawOptions: { name: string, order: number }[] = [];
+    let globalIndex = 0; // Compteur pour sceller l'ordre de choix du client
 
-    // On extrait les options du tableau
-    if (Array.isArray(dynOpts)) {
-      rawOptions.push(...dynOpts);
-    } else if (typeof dynOpts === 'object' && dynOpts !== null) {
-      Object.keys(dynOpts).forEach(k => {
-        const val = dynOpts[k];
-        if (Array.isArray(val)) rawOptions.push(...val);
-        else rawOptions.push(val);
-      });
-    }
+    const extractName = (o: any) => {
+      if (!o) return "";
+      if (typeof o === 'string') return o;
+      return o.name || o.title || o.variant_name || o.value || "";
+    };
 
-    // On met en forme
-    const formattedList = rawOptions.map((opt, i) => {
-      let name = "";
-      // C'EST ICI QU'ON LIT LE NUMÉRO EXACT (s'il n'y en a pas, on prend l'index)
-      let order = opt._print_order !== undefined ? opt._print_order : i;
-
-      if (typeof opt === 'string') {
-        name = opt;
-      } else {
-        name = opt.name || opt.title || opt.variant_name || opt.value || "";
+    const readNode = (node: any) => {
+      if (!node) return;
+      if (typeof node === 'string') {
+        rawOptions.push({ name: node, order: globalIndex++ });
+      } else if (Array.isArray(node)) {
+        // LECTURE DIRECTE DU TABLEAU : On conserve l'ordre naturel
+        node.forEach(readNode);
+      } else if (typeof node === 'object') {
+        if (node.options && Array.isArray(node.options)) {
+          node.options.forEach(readNode);
+        } else {
+          const n = extractName(node);
+          if (n && n.toLowerCase() !== 'option' && n.toLowerCase() !== 'options') {
+            // On prend le _print_order s'il existe, sinon on suit l'ordre du client
+            const order = node._print_order !== undefined ? node._print_order : globalIndex++;
+            rawOptions.push({ name: n, order: order });
+          } else if (!n || n.toLowerCase() === 'option' || n.toLowerCase() === 'options') {
+            Object.values(node).forEach(readNode);
+          }
+        }
       }
-      return { name: name.trim().toLowerCase(), order };
-    }).filter(o => o.name && o.name !== 'option' && o.name !== 'options');
+    };
 
-    // LE TRI : On trie strictement sur NOTRE numéro _print_order
-    formattedList.sort((a, b) => a.order - b.order);
+    readNode(dynOpts);
 
-    // On regroupe (ex: 2x Ketchup)
-    const finalOptions: { name: string, qty: number }[] = [];
-    formattedList.forEach(opt => {
-      const existing = finalOptions.find(o => o.name === opt.name);
+    // /!\ PLUS DE .reverse() ! /!\
+    // On trie uniquement par l'ordre d'insertion pour garantir le parcours
+    rawOptions.sort((a, b) => a.order - b.order);
+
+    // Consolider les quantités dans l'ordre strict
+    const finalOrdered: { name: string, qty: number }[] = [];
+    rawOptions.forEach(opt => {
+      const cleanName = typeof opt.name === 'string' ? opt.name.trim().toLowerCase() : "";
+      if (!cleanName) return;
+      
+      const existing = finalOrdered.find(o => o.name === cleanName);
       if (existing) {
         existing.qty += 1;
       } else {
-        finalOptions.push({ name: opt.name, qty: 1 });
+        finalOrdered.push({ name: cleanName, qty: 1 });
       }
     });
 
-    return finalOptions.map(o => o.qty > 1 ? `${o.qty}x ${o.name}` : o.name);
+    return finalOrdered.map(o => o.qty > 1 ? `${o.qty}x ${o.name}` : o.name);
   };
 
   const activeOrders = orders.filter(o => !isOrderClosed(o.status));

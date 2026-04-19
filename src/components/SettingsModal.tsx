@@ -1,7 +1,8 @@
+// @ts-nocheck
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { 
-  X, Lock, Save, ShieldCheck, Monitor, ChevronRight, ChevronUp, ChevronDown
+  X, Lock, Save, ShieldCheck, Monitor, ChevronRight, ChevronUp, ChevronDown, Printer, Settings
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -21,6 +22,11 @@ const SettingsModal = ({ onClose, currentCategories = [], onCategoriesReorder }:
 
   // --- ÉTATS AFFICHAGE (Catégories) ---
   const [orderedCategories, setOrderedCategories] = useState<string[]>([]);
+
+  // --- ÉTAT IMPRESSION ---
+  const [printKitchenTicket, setPrintKitchenTicket] = useState(() => {
+    return localStorage.getItem('print_kitchen_ticket') !== 'false';
+  });
 
   useEffect(() => {
     const savedOrder = localStorage.getItem('pos_category_order');
@@ -49,7 +55,7 @@ const SettingsModal = ({ onClose, currentCategories = [], onCategoriesReorder }:
     setCurrentPin(''); setNewPin(''); setConfirmPin('');
   };
 
-  // --- HANDLERS CLASSIQUES HAUT/BAS ---
+  // --- HANDLERS AFFICHAGE ---
   const moveUp = (index: number) => {
     if (index === 0) return;
     const newOrder = [...orderedCategories];
@@ -76,8 +82,17 @@ const SettingsModal = ({ onClose, currentCategories = [], onCategoriesReorder }:
     toast.success("Ordre enregistré avec succès !");
   };
 
+  // --- HANDLERS IMPRESSION ---
+  const toggleKitchenTicket = () => {
+    const newValue = !printKitchenTicket;
+    setPrintKitchenTicket(newValue);
+    localStorage.setItem('print_kitchen_ticket', String(newValue));
+    toast.success(newValue ? "Ticket Cuisine ACTIVÉ" : "Ticket Cuisine DÉSACTIVÉ");
+  };
+
   const menuItems = [
     { id: 'display', icon: Monitor, label: 'Affichage', description: 'Ordre des catégories' },
+    { id: 'printing', icon: Printer, label: 'Impression', description: 'Tickets et matériels' },
     { id: 'security', icon: ShieldCheck, label: 'Sécurité', description: 'Code PIN d\'accès' },
   ];
 
@@ -88,7 +103,7 @@ const SettingsModal = ({ onClose, currentCategories = [], onCategoriesReorder }:
       <div className="bg-white h-24 border-b border-gray-200 flex items-center justify-between px-10 flex-shrink-0 shadow-sm z-10">
         <div className="flex items-center gap-5">
           <div className="w-14 h-14 bg-secondary text-white rounded-2xl flex items-center justify-center shadow-md">
-            <Monitor size={32} />
+            <Settings size={32} />
           </div>
           <div>
             <h1 className="text-3xl font-black text-secondary uppercase tracking-tight leading-none">Réglages</h1>
@@ -198,6 +213,45 @@ const SettingsModal = ({ onClose, currentCategories = [], onCategoriesReorder }:
                     <Save size={24} />
                     Sauvegarder l'ordre
                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ONGLET IMPRESSION */}
+          {activeTab === 'printing' && (
+            <div className="max-w-3xl animate-in fade-in duration-300">
+              <div className="mb-8">
+                <h2 className="text-3xl font-black text-secondary uppercase">Impression</h2>
+                <p className="text-gray-500 font-bold mt-2">Gérez les comportements d'impression des tickets.</p>
+              </div>
+
+              <div className="bg-white rounded-[2rem] shadow-sm border border-gray-200 overflow-hidden">
+                <div className="p-8">
+                  
+                  {/* Option Ticket Cuisine */}
+                  <div className="flex items-center justify-between p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm">
+                    <div className="pr-6">
+                      <p className="text-xl font-black text-secondary uppercase tracking-wide mb-1 flex items-center gap-3">
+                        <Printer className="text-gray-400" size={24} />
+                        Ticket Cuisine / Sac
+                      </p>
+                      <p className="text-sm font-bold text-gray-500 leading-relaxed">
+            
+                      </p>
+                    </div>
+                    
+                    {/* Toggle Button */}
+                    <button 
+                      onClick={toggleKitchenTicket}
+                      className={`relative inline-flex h-10 w-20 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none shadow-inner ${printKitchenTicket ? 'bg-[#04B855]' : 'bg-gray-300'}`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-9 w-9 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${printKitchenTicket ? 'translate-x-10' : 'translate-x-0'}`}
+                      />
+                    </button>
+                  </div>
+
                 </div>
               </div>
             </div>

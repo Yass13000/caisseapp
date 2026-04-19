@@ -1,7 +1,7 @@
 {
-  "name": "Detroit - Commande en ligne",
-  "short_name": "Detroit",
-  "description": "Application Detroit - commande en ligne de vos produits préférés",
+  "name": "Caisse",
+  "short_name": "Caisse",
+  "description": "Application",
   "start_url": "/",
   "scope": "/",
   "display": "fullscreen",
