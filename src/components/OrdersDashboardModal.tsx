@@ -1,7 +1,7 @@
 // @ts-nocheck
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { X, LayoutDashboard, Clock, ShoppingBag, CheckCircle2, Loader2 } from 'lucide-react';
+import { X, LayoutDashboard, Clock, ShoppingBag, CheckCircle2, Loader2, Plus } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { toast } from 'sonner';
 
@@ -65,6 +65,11 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'en_cours' | 'fermees'>('en_cours');
   const [now, setNow] = useState(new Date());
+  
+  // Nouveaux states pour gérer l'agrandissement et le scroll
+  const [expandedOrder, setExpandedOrder] = useState<Order | null>(null);
+  const [scrollableStates, setScrollableStates] = useState<Record<string, boolean>>({});
+  const listRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 30000);
@@ -126,6 +131,38 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
     return () => { supabase.removeChannel(channel); };
   }, []);
+
+  // Détection du scroll pour chaque commande
+  useEffect(() => {
+    const checkScroll = () => {
+      setScrollableStates(prev => {
+        const next = { ...prev };
+        let changed = false;
+        
+        orders.forEach(order => {
+          const el = listRefs.current[order.id];
+          if (el) {
+            // tolérance de 2px pour éviter les faux positifs liés aux bordures
+            const isScrollable = el.scrollHeight > el.clientHeight + 2; 
+            if (next[order.id] !== isScrollable) {
+              next[order.id] = isScrollable;
+              changed = true;
+            }
+          }
+        });
+        
+        return changed ? next : prev;
+      });
+    };
+
+    const timer = setTimeout(checkScroll, 50); // Laisse le temps au DOM de se dessiner
+    window.addEventListener('resize', checkScroll);
+    
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', checkScroll);
+    };
+  }, [orders, activeTab]);
 
   const handleCompleteOrder = async (orderId: string | number) => {
     try {
@@ -301,32 +338,49 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                     </div>
                   </div>
 
-                  <div className="flex-1 overflow-y-auto p-3 custom-scrollbar bg-white">
-                    <ul className="space-y-2.5">
-                      {detailsList.map((item: any, index: number) => {
-                        const options = getFormattedOptions(item);
-                        return (
-                          <li key={index} className="flex flex-col border-b border-gray-50 pb-2.5 last:border-0 last:pb-0">
-                            <div className="flex items-start gap-2">
-                              <span className="font-black text-sm text-secondary min-w-[20px]">{item.quantity}x</span>
-                              <div className="flex-1 min-w-0">
-                                <span className="font-bold text-sm text-gray-800 leading-tight block">{item.product?.name || item.name}</span>
-                                {options.length > 0 && (
-                                  <div className="mt-0.5 space-y-0.5">
-                                    {options.map((opt, i) => (
-                                      <div key={i} className="text-[10px] font-bold text-blue-500 uppercase tracking-wider leading-tight">+ {opt}</div>
-                                    ))}
-                                  </div>
-                                )}
+                  {/* Wrapper conteneur repensé pour bouton flottant sans casser la structure */}
+                  <div className="flex-1 relative min-h-0 bg-white">
+                    <div 
+                      ref={el => { listRefs.current[order.id] = el; }}
+                      className="absolute inset-0 overflow-y-auto p-3 custom-scrollbar"
+                    >
+                      <ul className="space-y-2.5">
+                        {detailsList.map((item: any, index: number) => {
+                          const options = getFormattedOptions(item);
+                          return (
+                            <li key={index} className="flex flex-col border-b border-gray-50 pb-2.5 last:border-0 last:pb-0">
+                              <div className="flex items-start gap-2">
+                                <span className="font-black text-sm text-secondary min-w-[20px]">{item.quantity}x</span>
+                                <div className="flex-1 min-w-0">
+                                  <span className="font-bold text-sm text-gray-800 leading-tight block">{item.product?.name || item.name}</span>
+                                  {options.length > 0 && (
+                                    <div className="mt-0.5 space-y-0.5">
+                                      {options.map((opt, i) => (
+                                        <div key={i} className="text-[10px] font-bold text-blue-500 uppercase tracking-wider leading-tight">+ {opt}</div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                    
+                    {/* BOUTON + FLOTTANT APPARENT SEULEMENT SI ÇA SCROLL */}
+                    {scrollableStates[order.id] && (
+                      <button
+                        onClick={() => setExpandedOrder(order)}
+                        className="absolute bottom-2 right-2 w-8 h-8 bg-secondary text-white rounded-full flex items-center justify-center shadow-md hover:scale-105 active:scale-95 transition-all z-10 border-2 border-white"
+                        title="Agrandir la commande"
+                      >
+                        <Plus size={18} strokeWidth={3} />
+                      </button>
+                    )}
                   </div>
 
-                  <div className={`p-3 flex justify-between items-center ${getStatusFooterStyles(order.status)}`}>
+                  <div className={`p-3 flex justify-between items-center z-10 ${getStatusFooterStyles(order.status)}`}>
                     <div className="flex flex-col">
                       <span className="font-bold text-[10px] uppercase tracking-widest opacity-90">Total</span>
                       <span className="text-lg font-black leading-none">{order.total_price?.toFixed(2)} €</span>
@@ -348,6 +402,106 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
           </div>
         )}
       </div>
+
+      {/* --- MODALE D'AGRANDISSEMENT DE LA COMMANDE --- */}
+      {expandedOrder && (() => {
+        const detailsList = parseOrderDetails(expandedOrder.order_details);
+        let typeAbbr = 'SP'; 
+        if (expandedOrder.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') typeAbbr = 'EMP';
+        if (expandedOrder.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') typeAbbr = 'LIV';
+        const customerName = expandedOrder.customer_name || "Client Caisse";
+        const s = expandedOrder.status?.toLowerCase() || '';
+        const isPrete = s === 'prête' || s === 'prete' || s === 'prêt' || s === 'pret';
+
+        return (
+          <div className="fixed inset-0 z-[100000] bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-6 sm:p-10" onClick={() => setExpandedOrder(null)}>
+            <div className="bg-white rounded-2xl shadow-2xl flex flex-col w-full max-w-3xl max-h-full overflow-hidden animate-in fade-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+              
+              <div className="p-5 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
+                <div>
+                  <div className="flex items-center gap-3 mb-1">
+                    <h2 className="text-2xl font-black text-secondary leading-none">
+                      Commande {expandedOrder.order_number || `#${expandedOrder.id.toString().slice(-4)}`}
+                    </h2>
+                    <div className={`px-3 py-1 rounded-lg border-b-2 font-black text-[12px] uppercase tracking-wider ${getStatusBadgeStyles(expandedOrder.status)}`}>
+                      {expandedOrder.status || 'Nouvelle'}
+                    </div>
+                    {!expandedOrder.is_paid && (
+                      <span className="bg-red-100 text-red-600 border border-red-200 px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest leading-none flex-shrink-0 animate-pulse">
+                        Non Payé
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 mt-2">
+                     <span className={`px-2 py-1 rounded text-[11px] font-black uppercase tracking-widest leading-none ${
+                          typeAbbr === 'LIV' ? 'bg-orange-100 text-orange-600' : 
+                          typeAbbr === 'EMP' ? 'bg-blue-100 text-blue-600' : 
+                          'bg-gray-200 text-gray-700'
+                        }`}>
+                          {typeAbbr}
+                     </span>
+                     <span className="text-sm font-bold text-gray-500">
+                       {customerName}
+                     </span>
+                     <span className="text-gray-300 font-black px-1">•</span>
+                     <span className="font-bold text-secondary text-sm">
+                       {getTimeElapsed(expandedOrder.created_at)}
+                     </span>
+                  </div>
+                </div>
+                <button onClick={() => setExpandedOrder(null)} className="w-12 h-12 bg-white border border-gray-200 text-gray-500 rounded-xl flex items-center justify-center hover:bg-red-50 hover:text-red-600 hover:border-red-100 transition-all shadow-sm">
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 custom-scrollbar bg-white">
+                <ul className="space-y-4">
+                  {detailsList.map((item: any, index: number) => {
+                    const options = getFormattedOptions(item);
+                    return (
+                      <li key={index} className="flex flex-col border-b border-gray-100 pb-4 last:border-0 last:pb-0">
+                        <div className="flex items-start gap-3">
+                          <span className="font-black text-lg text-secondary min-w-[35px] bg-gray-100 text-center py-1 rounded-md">{item.quantity}x</span>
+                          <div className="flex-1 min-w-0 pt-1">
+                            <span className="font-black text-lg text-gray-800 leading-tight block">{item.product?.name || item.name}</span>
+                            {options.length > 0 && (
+                              <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                {options.map((opt, i) => (
+                                  <div key={i} className="text-[11px] font-bold text-blue-600 uppercase tracking-wider bg-blue-50 px-2 py-1.5 rounded-md border border-blue-100">+ {opt}</div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+
+              <div className={`p-5 flex justify-between items-center ${getStatusFooterStyles(expandedOrder.status)}`}>
+                <div className="flex flex-col">
+                  <span className="font-bold text-xs uppercase tracking-widest opacity-90">Total de la commande</span>
+                  <span className="text-2xl font-black leading-none mt-1">{expandedOrder.total_price?.toFixed(2)} €</span>
+                </div>
+                
+                {isPrete && (
+                  <button
+                    onClick={() => { 
+                      handleCompleteOrder(expandedOrder.id); 
+                      setExpandedOrder(null); 
+                    }}
+                    className="bg-white text-[#04B855] px-6 py-3 rounded-xl font-black uppercase text-sm tracking-wider hover:bg-gray-50 active:scale-95 transition-all shadow-md flex items-center gap-2 border border-white/20"
+                  >
+                    <CheckCircle2 size={20} strokeWidth={3} /> Terminer la commande
+                  </button>
+                )}
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
 
     </div>,
     document.body

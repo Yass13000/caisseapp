@@ -367,7 +367,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         .update({ 
           is_paid: true,
           payment_status: 'paid',
-          status: 'Fermé',
           payment_method: 'Carte bancaire'
         })
         .eq('id', order.id);

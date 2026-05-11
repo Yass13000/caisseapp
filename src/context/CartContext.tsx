@@ -3,39 +3,74 @@ import React, { createContext, useContext, useReducer, useEffect } from 'react';
 
 const CartContext = createContext<any>(null);
 
+// --- GÉNÉRATEUR DE SIGNATURE (ANTI-FUSION) ---
+// Cette fonction extrait l'ID produit et TOUS les IDs des options/sous-options
+// pour créer une signature infaillible peu importe l'ordre de sélection.
+const generateCartKey = (payload: any) => {
+    const productId = payload.product ? payload.product.id : payload.id;
+    const optIds: string[] = [];
+
+    // Fonction récursive pour trouver tous les champs "id" dans les sélections
+    const extractIds = (data: any) => {
+        if (!data) return;
+        if (Array.isArray(data)) {
+            data.forEach(item => {
+                // On récupère l'ID de l'option
+                if (item && item.id) optIds.push(String(item.id));
+                // On fouille au cas où il y a des sous-options imbriquées
+                if (item && item.sub_options) extractIds(item.sub_options);
+                if (item && item.selectedSubOptions) extractIds(item.selectedSubOptions);
+            });
+        } else if (typeof data === 'object') {
+            Object.values(data).forEach(val => {
+                if (Array.isArray(val)) extractIds(val);
+            });
+        }
+    };
+
+    // On scanne tous les champs possibles utilisés pour stocker tes options
+    extractIds(payload.selections);
+    extractIds(payload.selectedSubOptions);
+    extractIds(payload.options);
+
+    // On trie les IDs pour que l'ordre de clic du client ne casse pas la fusion
+    optIds.sort();
+
+    return `${productId}_opts_${optIds.join('-')}`;
+};
+
 const cartReducer = (state: any, action: any) => {
   switch (action.type) {
     case 'ADD_TO_CART': {
-      const payload = action.payload;
+      const payload = { ...action.payload };
       
       // SÉCURITÉ 1 : On ignore totalement si l'objet est vide
       if (!payload) return state;
 
-      // SÉCURITÉ 2 : On récupère l'ID en vérifiant que l'objet product existe bien
+      // SÉCURITÉ 2 : On vérifie que le produit a bien un ID
       const payloadProductId = payload.product ? payload.product.id : payload.id;
-      
       if (payloadProductId === undefined || payloadProductId === null) {
           console.warn("Tentative d'ajout d'un produit sans ID ignorée");
           return state;
       }
 
+      // --- NOUVEAU : LA CLÉ DE PANIER ---
+      // On génère la signature exacte du produit + ses sous-options
+      const cartKey = generateCartKey(payload);
+      
+      // On utilise cette signature comme clé absolue
+      payload.customKey = cartKey;
+      payload._cartKey = cartKey;
+
       const existingItemIndex = state.items.findIndex((item: any) => {
         if (!item) return false;
-        
-        // 1. Si on a injecté une customKey stricte depuis la Caisse, on l'utilise en priorité absolue
-        if (payload.customKey && item.customKey) {
-            return item.customKey === payload.customKey;
-        }
-        
-        const itemProductId = item.product ? item.product.id : item.id;
-        
-        // 2. Sinon, on compare l'ID ET les deux formats d'options possibles (selections ET selectedSubOptions)
-        return itemProductId === payloadProductId && 
-               JSON.stringify(item.selections || {}) === JSON.stringify(payload.selections || {}) &&
-               JSON.stringify(item.selectedSubOptions || []) === JSON.stringify(payload.selectedSubOptions || []);
+        // On compare la signature du nouvel article avec ceux du panier
+        const itemKey = item.customKey || item._cartKey || generateCartKey(item);
+        return itemKey === cartKey;
       });
 
       if (existingItemIndex > -1) {
+        // FUSION : Mêmes options / Mêmes sous-options exactes -> On additionne la quantité
         const newItems = [...state.items];
         newItems[existingItemIndex] = {
             ...newItems[existingItemIndex],
@@ -44,7 +79,7 @@ const cartReducer = (state: any, action: any) => {
         return { ...state, items: newItems };
       }
 
-      // Nouvel article
+      // PAS DE FUSION : Options différentes -> On crée une nouvelle ligne dans le panier
       return { 
           ...state, 
           items: [...state.items, { ...payload, quantity: payload.quantity || 1 }] 
@@ -56,9 +91,8 @@ const cartReducer = (state: any, action: any) => {
         ...state, 
         items: state.items.filter((item: any) => {
             if (!item) return false;
-            const key1 = item.customKey;
-            const key2 = item._cartKey;
-            return key1 !== action.payload && key2 !== action.payload;
+            const itemKey = item.customKey || item._cartKey || generateCartKey(item);
+            return itemKey !== action.payload;
         }) 
       };
       
@@ -67,9 +101,8 @@ const cartReducer = (state: any, action: any) => {
         ...state,
         items: state.items.map((item: any) => {
           if (!item) return item;
-          const key1 = item.customKey;
-          const key2 = item._cartKey;
-          if (key1 === action.payload.key || key2 === action.payload.key) {
+          const itemKey = item.customKey || item._cartKey || generateCartKey(item);
+          if (itemKey === action.payload.key) {
             return { ...item, quantity: Math.max(1, action.payload.quantity) };
           }
           return item;
@@ -92,7 +125,7 @@ const initCart = () => {
       const parsed = JSON.parse(localData);
       if (parsed && Array.isArray(parsed.items)) {
         
-        // SÉCURITÉ 3 : Nettoyage agressif des produits corrompus du localStorage
+        // Nettoyage agressif des produits corrompus du localStorage
         parsed.items = parsed.items.filter((item: any) => {
             if (!item) return false;
             const pid = item.product ? item.product.id : item.id;
@@ -104,7 +137,7 @@ const initCart = () => {
     }
   } catch (e) {
     console.error("Erreur de lecture du panier, réinitialisation.", e);
-    localStorage.removeItem('cart'); // On vide le cache si le JSON est complètement cassé
+    localStorage.removeItem('cart');
   }
   return { items: [] };
 };
@@ -112,7 +145,6 @@ const initCart = () => {
 export const CartProvider = ({ children }: { children: React.ReactNode }) => {
   const [state, dispatch] = useReducer(cartReducer, { items: [] }, initCart);
 
-  // Sauvegarde automatique du panier à chaque changement
   useEffect(() => {
     try {
         localStorage.setItem('cart', JSON.stringify(state));

@@ -9,7 +9,8 @@ import {
   Trash2, Delete, ShoppingBag, Settings, Lock, 
   ClipboardList, History, Package, Wifi, WifiOff,
   UserRound, CalendarDays, LayoutDashboard, AlertTriangle,
-  CreditCard, Banknote, CheckCircle2, Store, ArchiveRestore
+  CreditCard, Banknote, CheckCircle2, Store, ArchiveRestore,
+  Calculator, Hourglass 
 } from 'lucide-react';
 
 // Composants
@@ -22,6 +23,10 @@ import SettingsModal from '@/components/SettingsModal';
 import StockModal from '@/components/StockModal';
 import OrdersDashboardModal from '@/components/OrdersDashboardModal';
 import NewtonsCradleLoader from '@/components/NewtonsCradleLoader';
+import CashSessionModal from '@/components/CashSessionModal';
+
+// IMPORT DE LA NOUVELLE MODALE LIVRAISON
+import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse'; 
 
 export interface Product {
   id: number;
@@ -61,7 +66,6 @@ const hexToHslString = (hex: string) => {
   return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
 };
 
-// --- MOTEUR OPTIMISÉ POUR LECTURE DE L'ORDRE DES OPTIONS ---
 const getFormattedOptions = (item: any) => {
   let rawOptions: any[] = [];
   const dynOpts = item.selectedSubOptions || item.selections || item.options;
@@ -104,7 +108,6 @@ const getItemTotal = (item: any) => {
 
 const getActiveRestaurantId = () => localStorage.getItem('pos_restaurant_id');
 
-// --- FONCTION D'OUVERTURE DU TIROIR CAISSE ---
 const openCashDrawer = async () => {
   if (!(window as any).electronAPI) { toast.error("Non disponible sur la version Web."); return; }
   try {
@@ -114,14 +117,14 @@ const openCashDrawer = async () => {
   } catch (error) { console.error("Erreur ouverture tiroir :", error); }
 };
 
-// --- FONCTION D'IMPRESSION SILENCIEUSE VIA ELECTRON (CAISSE) ---
-const generateAndPrintReceipt = async (restaurantName: string, orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, cashAmount: number) => {
+const generateAndPrintReceipt = async (restaurantName: string, orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, deliveryFee: number, finalTotal: number, cashAmount: number) => {
   if (!(window as any).electronAPI) return;
   const printerName = localStorage.getItem('imprimante_caisse') || undefined;
   
   const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   const isCash = paymentMethod === 'counter';
-  const changeDue = Math.max(0, cashAmount - subtotal);
+  const isPending = paymentMethod === 'en attente';
+  const changeDue = Math.max(0, cashAmount - finalTotal);
 
   const itemsHtml = items.map(item => {
     const itemTotal = getItemTotal(item);
@@ -152,10 +155,22 @@ const generateAndPrintReceipt = async (restaurantName: string, orderNumber: stri
       <hr style="border-top: 1px dashed black; margin: 10px 0;">
       <div style="margin-bottom: 10px;">${itemsHtml}</div>
       <hr style="border-top: 1px dashed black; margin: 10px 0;">
-      <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: bold; margin-bottom: 5px;">
-        <span>TOTAL</span><span>${subtotal.toFixed(2)} €</span>
+      
+      ${deliveryFee > 0 ? `
+      <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px;">
+        <span>Frais Livraison</span><span>${deliveryFee.toFixed(2)} €</span>
       </div>
-      ${isCash ? `
+      ` : ''}
+
+      <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: bold; margin-bottom: 5px;">
+        <span>TOTAL</span><span>${finalTotal.toFixed(2)} €</span>
+      </div>
+      
+      ${isPending ? `
+      <div style="display: flex; justify-content: center; font-size: 16px; font-weight: bold; margin-top: 10px; padding: 5px; border: 2px solid black;">
+        RESTE À PAYER : ${finalTotal.toFixed(2)} €
+      </div>
+      ` : isCash ? `
       <div style="display: flex; justify-content: space-between; font-size: 12px; color: #555;"><span>Espèces</span><span>${cashAmount.toFixed(2)} €</span></div>
       <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold; margin-top: 2px;"><span>Rendu</span><span>${changeDue.toFixed(2)} €</span></div>
       ` : `
@@ -173,7 +188,6 @@ const generateAndPrintReceipt = async (restaurantName: string, orderNumber: stri
   } catch (error) { console.error("Erreur API impression :", error); }
 };
 
-// --- FONCTION D'IMPRESSION CUISINE ---
 const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: string, items: any[]) => {
   if (!(window as any).electronAPI) return;
   const printerName = localStorage.getItem('imprimante_cuisine') || undefined;
@@ -218,7 +232,6 @@ const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: str
   }
 };
 
-// --- MODALE DE PAIEMENT ---
 const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing }: any) => {
   const [tenderedStr, setTenderedStr] = useState("");
   const roundedSubtotal = parseFloat(subtotal.toFixed(2));
@@ -298,7 +311,6 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
   );
 };
 
-// --- COMPOSANT PRINCIPAL CAISSE ---
 const Caisse = () => {
   const { state: cartState, addToCart, removeFromCart, updateQuantity, clearCart } = useCart();
   const navigate = useNavigate();
@@ -327,6 +339,9 @@ const Caisse = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isStockOpen, setIsStockOpen] = useState(false);
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
+  
+  const [isCashSessionModalOpen, setIsCashSessionModalOpen] = useState(false);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
   const [loadedOrderId, setLoadedOrderId] = useState<string | number | null>(null);
 
@@ -340,10 +355,14 @@ const Caisse = () => {
   const [selectedProductForVariants, setSelectedProductForVariants] = useState<Product | null>(null);
   
   const [orderType, setOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>('SUR PLACE');
+  const [activeOrderTypes, setActiveOrderTypes] = useState<string[]>(['SUR PLACE', 'EMPORTER', 'LIVRAISON']);
+  
+  const [isDeliveryModalOpen, setIsDeliveryModalOpen] = useState(false);
+  const [clientInfo, setClientInfo] = useState<{name: string, phone: string, address: string, additionalInfo: string, fee: number} | null>(null);
+  const [deliveryFee, setDeliveryFee] = useState<number>(0);
 
   const customToast = (msg: string, type: 'success' | 'error' = 'success') => toast[type](msg);
 
-  // --- HORLOGE ET RÉSEAU ---
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     const handleOnline = () => setIsOnline(true);
@@ -353,21 +372,53 @@ const Caisse = () => {
     return () => { clearInterval(timer); window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
   }, []);
 
-  // --- DÉVERROUILLAGE CAISSE ---
   useEffect(() => {
     if (pinCode.length === 4) {
       if (pinCode === (localStorage.getItem('pos_pin') || '1234')) {
         setIsAuthenticated(true);
         setPinCode("");
+
+        if (cartState.items.length > 0) {
+          clearCart();
+          setLoadedOrderId(null);
+          setDeliveryFee(0);
+          setClientInfo(null);
+        }
+
         customToast("Caisse déverrouillée", "success");
       } else {
         customToast("Code incorrect", "error");
         setTimeout(() => setPinCode(""), 300);
       }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pinCode]);
 
-  // --- CHARGEMENT DES PRODUITS ET CATÉGORIES ---
+  useEffect(() => {
+    if (isAuthenticated && posRestoId) {
+      const checkCashSession = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('cash_sessions')
+            .select('id')
+            .eq('status', 'OPEN')
+            .order('opened_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (data) {
+            setCurrentSessionId(data.id);
+          } else {
+            setIsCashSessionModalOpen(true);
+          }
+        } catch (e) {
+          setIsCashSessionModalOpen(true);
+        }
+      };
+      checkCashSession();
+    }
+  }, [isAuthenticated, posRestoId, currentSessionId]);
+
   const loadMenuData = async (activeRestoId: string) => {
     const [categoriesResponse, productsResponse] = await Promise.all([
       supabase.from('categories').select('*').eq('restaurant_id', activeRestoId).order('sort_order', { ascending: true, nullsFirst: false }).order('name', { ascending: true }),
@@ -403,7 +454,6 @@ const Caisse = () => {
     }
   };
 
-  // --- INITIALISATION ---
   useEffect(() => {
     if (!posRestoId) return;
 
@@ -413,7 +463,7 @@ const Caisse = () => {
         const activeRestoId = getActiveRestaurantId();
         if (!activeRestoId) throw new Error("ID manquant");
         
-        const { data: restoData } = await supabase.from('restaurants').select('name, logo_url, theme_primary, theme_secondary, theme_accent').eq('id', activeRestoId).single();
+        const { data: restoData } = await supabase.from('restaurants').select('name, logo_url, theme_primary, theme_secondary, theme_accent, allow_dine_in, allow_takeaway, allow_delivery').eq('id', activeRestoId).single();
         if (restoData) {
           if (restoData.name) setRestaurantName(restoData.name);
           if (restoData.logo_url) setRestaurantLogo(restoData.logo_url);
@@ -426,6 +476,16 @@ const Caisse = () => {
           if (restoData.theme_primary) document.documentElement.style.setProperty('--primary', hexToHslString(restoData.theme_primary));
           if (restoData.theme_secondary) document.documentElement.style.setProperty('--secondary', hexToHslString(restoData.theme_secondary));
           if (restoData.theme_accent) document.documentElement.style.setProperty('--accent', hexToHslString(restoData.theme_accent));
+
+          const types: string[] = [];
+          if (restoData.allow_dine_in !== false) types.push('SUR PLACE');
+          if (restoData.allow_takeaway !== false) types.push('EMPORTER');
+          if (restoData.allow_delivery !== false) types.push('LIVRAISON');
+          
+          if (types.length === 0) types.push('SUR PLACE');
+          
+          setActiveOrderTypes(types);
+          setOrderType(types[0] as any);
         }
 
         await loadMenuData(activeRestoId);
@@ -441,16 +501,32 @@ const Caisse = () => {
     return () => { document.body.style.overflow = 'auto'; };
   }, [posRestoId]);
 
-  // --- RÉCUPÉRER UNE COMMANDE BORNE DANS LE PANIER ---
+  const handleOrderTypeChange = (type: any) => {
+    setOrderType(type);
+    if (type === 'LIVRAISON') {
+      setIsDeliveryModalOpen(true);
+    } else {
+      setDeliveryFee(0);
+    }
+  };
+
+  const handleClientConfirm = (data: any) => {
+    setClientInfo(data);
+    setDeliveryFee(data.fee || 0);
+    toast.success(`Client ${data.name} enregistré !`);
+  };
+
   const handleLoadOrderIntoCart = (items: any[], orderId: string | number) => {
     setLoadedOrderId(orderId);
     clearCart();
+    setDeliveryFee(0);
+    setClientInfo(null);
     setTimeout(() => {
       items.forEach((item, idx) => {
         const baseId = item.product?.id || item.id;
         const formattedItem = {
           ...item,
-          id: `${baseId}-loaded-${idx}`, // ID UNIQUE POUR EVITER FUSION
+          id: `${baseId}-loaded-${idx}`,
           product: { id: item.id, name: item.name, price: item.price },
           quantity: item.quantity || 1,
           cartKey: `loaded-${orderId}-${idx}-${Math.random()}`
@@ -461,7 +537,6 @@ const Caisse = () => {
     }, 150);
   };
 
-  // --- SÉLECTION D'UN PRODUIT DEPUIS LA GRILLE ---
   const handleSelectProduct = async (product: Product) => {
     if (!product.is_available) { customToast("Produit indisponible", "error"); return; }
     try {
@@ -486,7 +561,6 @@ const Caisse = () => {
     }
   };
 
-  // --- AJOUT AU PANIER DEPUIS MODALE D'OPTIONS ---
   const handleAddToCartFromModal = (p: Product, selections: any) => {
     const flatOptions: any[] = [];
     let printOrder = 1;
@@ -522,13 +596,21 @@ const Caisse = () => {
     setSelectedProduct(null);
   };
 
-  // --- GESTION DU TOTAL (Corrigée avec getItemTotal) ---
   const subtotal = cartState.items.reduce((total, item) => total + getItemTotal(item), 0);
   const cartItemCount = cartState.items.reduce((sum, item) => sum + (item.quantity || 1), 0);
+  const activeDeliveryFee = orderType === 'LIVRAISON' ? deliveryFee : 0;
+  const finalTotal = subtotal + activeDeliveryFee;
 
-  // --- PAIEMENT ---
   const finalizePayment = async (method: 'carte bancaire' | 'counter', cashAmount: number = 0) => {
     if (cartState.items.length === 0) return;
+    
+    if (!currentSessionId) {
+      customToast("Veuillez ouvrir la caisse d'abord !", "error");
+      setIsCashSessionModalOpen(true);
+      setIsPaymentModalOpen(false);
+      return;
+    }
+
     setIsProcessing(true);
     
     try {
@@ -539,7 +621,6 @@ const Caisse = () => {
       let targetOrderNumber = '';
 
       if (loadedOrderId) {
-        // MAJ COMMANDE BORNE
         await supabase
           .from('orders')
           .update({ 
@@ -550,14 +631,15 @@ const Caisse = () => {
             cash_amount: cashAmount, 
             order_type_id: currentOrderTypeId || undefined,
             order_details: cleanOrderDetails,
-            total_price: parseFloat(subtotal.toFixed(2))
+            total_price: parseFloat(finalTotal.toFixed(2)),
+            delivery_fee: activeDeliveryFee,
+            session_id: currentSessionId 
           })
           .eq('id', loadedOrderId);
 
         const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
         targetOrderNumber = orderData?.order_number || String(loadedOrderId);
       } else {
-        // NOUVELLE COMMANDE
         try {
           const { data: nextNum, error: rpcError } = await supabase.rpc('get_next_order_number', { prefix: 'C' });
           if (!rpcError && nextNum) targetOrderNumber = nextNum;
@@ -568,7 +650,8 @@ const Caisse = () => {
 
         await supabase.from('orders').insert([{
           restaurant_id: activeRestoId,
-          total_price: parseFloat(subtotal.toFixed(2)),
+          total_price: parseFloat(finalTotal.toFixed(2)),
+          delivery_fee: activeDeliveryFee, 
           is_paid: true,
           payment_status: 'paid',
           status: 'En cours',
@@ -577,26 +660,32 @@ const Caisse = () => {
           order_origin: 'caisse',
           order_type_id: currentOrderTypeId,
           order_details: cleanOrderDetails,
-          customer_name: 'Client Caisse',
-          order_number: targetOrderNumber
+          
+          customer_name: clientInfo?.name || 'Client Caisse',
+          customer_phone: clientInfo?.phone || null,
+          customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
+          
+          order_number: targetOrderNumber,
+          session_id: currentSessionId 
         }]);
       }
 
-      customToast(`Encaissé ${subtotal.toFixed(2)}€`, "success");
+      customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
 
-      // IMPRESSION
-      await generateAndPrintReceipt(restaurantName, targetOrderNumber, orderType, method, cartState.items, subtotal, cashAmount);
+      await generateAndPrintReceipt(restaurantName, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount);
       
       const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
-      if (isKitchenTicketEnabled) {
+      
+      if (isKitchenTicketEnabled && !loadedOrderId) {
         setTimeout(async () => {
           await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items);
         }, 500);
       }
 
-      // NETTOYAGE
       clearCart();
       setLoadedOrderId(null);
+      setDeliveryFee(0);
+      setClientInfo(null);
       setIsPaymentModalOpen(false);
 
     } catch (e) {
@@ -607,11 +696,97 @@ const Caisse = () => {
     }
   };
 
-  // ==========================================
-  // RENDUS
-  // ==========================================
+  const processPendingOrder = async () => {
+    if (cartState.items.length === 0) return;
+    
+    if (!currentSessionId) {
+      customToast("Veuillez ouvrir la caisse d'abord !", "error");
+      setIsCashSessionModalOpen(true);
+      return;
+    }
 
-  // --- ÉCRAN DE LIAISON RESTAURANT ---
+    setIsProcessing(true);
+    
+    try {
+      const activeRestoId = getActiveRestaurantId();
+      const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
+      const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
+
+      let targetOrderNumber = '';
+
+      if (loadedOrderId) {
+        await supabase
+          .from('orders')
+          .update({ 
+            is_paid: false, 
+            payment_status: 'pending', 
+            status: 'En cours', 
+            payment_method: 'en attente', 
+            cash_amount: 0, 
+            order_type_id: currentOrderTypeId || undefined,
+            order_details: cleanOrderDetails,
+            total_price: parseFloat(finalTotal.toFixed(2)),
+            delivery_fee: activeDeliveryFee, 
+            session_id: currentSessionId 
+          })
+          .eq('id', loadedOrderId);
+
+        const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
+        targetOrderNumber = orderData?.order_number || String(loadedOrderId);
+      } else {
+        try {
+          const { data: nextNum, error: rpcError } = await supabase.rpc('get_next_order_number', { prefix: 'C' });
+          if (!rpcError && nextNum) targetOrderNumber = nextNum;
+          else targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
+        } catch (err) {
+          targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
+        }
+
+        await supabase.from('orders').insert([{
+          restaurant_id: activeRestoId,
+          total_price: parseFloat(finalTotal.toFixed(2)),
+          delivery_fee: activeDeliveryFee, 
+          is_paid: false,
+          payment_status: 'pending',
+          status: 'En cours',
+          payment_method: 'en attente',
+          cash_amount: 0,
+          order_origin: 'caisse',
+          order_type_id: currentOrderTypeId,
+          order_details: cleanOrderDetails,
+          
+          customer_name: clientInfo?.name || 'Client Caisse',
+          customer_phone: clientInfo?.phone || null,
+          customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
+          
+          order_number: targetOrderNumber,
+          session_id: currentSessionId 
+        }]);
+      }
+
+      customToast(`Commande en attente de ${finalTotal.toFixed(2)}€`, "success");
+      
+      const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
+      
+      if (isKitchenTicketEnabled && !loadedOrderId) {
+        setTimeout(async () => {
+          await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items);
+        }, 500);
+      }
+
+      clearCart();
+      setLoadedOrderId(null);
+      setDeliveryFee(0);
+      setClientInfo(null);
+
+    } catch (e) {
+      console.error("Erreur Catch Pending:", e);
+      customToast("Erreur d'enregistrement BDD", "error");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   if (!posRestoId) {
     return (
       <div className="flex flex-col h-screen w-full bg-gray-100 items-center justify-center font-helvetica select-none relative overflow-hidden">
@@ -637,7 +812,6 @@ const Caisse = () => {
     );
   }
 
-  // --- ÉCRAN DE DÉVERROUILLAGE (PIN) ---
   if (!isAuthenticated) {
     const pinBtnClass = "w-16 h-16 bg-white hover:bg-gray-100 rounded-2xl text-secondary font-black text-2xl active:scale-90 transition-all shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] border border-gray-100 flex items-center justify-center group";
     
@@ -678,12 +852,10 @@ const Caisse = () => {
     );
   }
 
-  const rightBarBtnClass = "w-full aspect-square flex flex-col items-center justify-center text-primary rounded-xl hover:bg-white/10 active:scale-95 transition-all shadow-sm";
-  const ordTypes = ['SUR PLACE', 'EMPORTER', 'LIVRAISON'];
+  const rightBarBtnClass = "w-[56px] h-[56px] flex flex-col items-center justify-center text-primary rounded-xl hover:bg-white/10 active:scale-95 transition-all shadow-sm mx-auto";
 
   if (isLoading) return <NewtonsCradleLoader />;
 
-  // --- INTERFACE PRINCIPALE CAISSE ---
   return (
     <div className="flex flex-col h-screen w-full bg-gray-100 font-helvetica overflow-hidden select-none">
       
@@ -704,16 +876,16 @@ const Caisse = () => {
         <div className="flex-1 flex flex-col h-full bg-[#F3F4F6] relative min-w-0">
           
           <div className="bg-white border-b border-gray-200 shadow-sm flex-shrink-0 z-20">
-            {/* Mode Consommation */}
-            <div className="flex p-2 gap-2 bg-gray-100">
-              {ordTypes.map(type => (
-                <button key={type} onClick={() => setOrderType(type as any)} className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all shadow-sm ${orderType === type ? 'text-white scale-[1.02]' : 'bg-white text-gray-500 hover:bg-gray-50'}`} style={orderType === type ? { backgroundColor: themeColors.secondary } : undefined}>
-                  {type === 'SUR PLACE' ? 'Sur Place' : type === 'EMPORTER' ? 'À Emporter' : 'Livraison'}
-                </button>
-              ))}
-            </div>
+            {activeOrderTypes.length > 0 && (
+              <div className="flex p-2 gap-2 bg-gray-100">
+                {activeOrderTypes.map(type => (
+                  <button key={type} onClick={() => handleOrderTypeChange(type as any)} className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all shadow-sm ${orderType === type ? 'text-white scale-[1.02]' : 'bg-white text-gray-500 hover:bg-gray-50'}`} style={orderType === type ? { backgroundColor: themeColors.secondary } : undefined}>
+                    {type === 'SUR PLACE' ? 'Sur Place' : type === 'EMPORTER' ? 'À Emporter' : 'Livraison'}
+                  </button>
+                ))}
+              </div>
+            )}
 
-            {/* Catégories */}
             <div className="p-4 grid grid-cols-5 gap-3 border-t border-gray-200">
               {categories.map(cat => (
                 <button key={cat.name} onClick={() => setSelectedCategory(cat.name)} className={`h-[70px] rounded-xl font-black text-[13px] xl:text-[15px] uppercase tracking-wide transition-all border-4 ${selectedCategory === cat.name ? 'text-white shadow-md scale-[1.02]' : 'bg-gray-50 border-gray-100 hover:border-gray-300'}`} style={selectedCategory === cat.name ? { backgroundColor: themeColors.secondary, borderColor: themeColors.secondary } : { color: themeColors.secondary }}>
@@ -723,11 +895,10 @@ const Caisse = () => {
             </div>
           </div>
 
-          {/* Grille de Produits */}
           <div className="flex-1 p-6 overflow-y-auto custom-scrollbar">
             <div className="grid grid-cols-4 gap-4 content-start">
               {menuData.filter(p => p.category === selectedCategory).map(product => (
-                <ProductCard key={product.id} product={product} onSelectProduct={handleSelectProduct} />
+                <ProductCard key={product.id} product={product as any} onSelectProduct={handleSelectProduct as any} />
               ))}
             </div>
           </div>
@@ -737,16 +908,20 @@ const Caisse = () => {
         <div className="w-[260px] bg-white border-l border-gray-200 flex flex-col h-full z-30 shadow-xl flex-shrink-0">
           
           <div className="p-3 border-b border-gray-100 bg-gray-50 flex-shrink-0 flex justify-between items-center">
-            <span className="font-black text-sm uppercase" style={{ color: themeColors.secondary }}>Ticket {loadedOrderId && `Borne`}</span>
+            <div className="flex flex-col">
+              <span className="font-black text-sm uppercase" style={{ color: themeColors.secondary }}>Ticket {loadedOrderId && `Borne`}</span>
+              {clientInfo?.name && (
+                <button onClick={() => setIsDeliveryModalOpen(true)} className="text-[10px] text-primary font-bold text-left hover:underline">
+                  👤 {clientInfo.name}
+                </button>
+              )}
+            </div>
             <span className="flex items-center gap-1.5 bg-gray-200 px-2.5 py-1 rounded-lg font-black text-xs" style={{ color: themeColors.secondary }}><ShoppingBag size={14} /> {cartItemCount}</span>
           </div>
 
-                    <div className="flex-1 overflow-y-auto p-2 space-y-1.5 bg-gray-50/50 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5 bg-gray-50/50 custom-scrollbar">
             {cartState.items.map((item: any, index: number) => {
-              // CORRECTION ICI : On utilise LA MÊME logique d'ID que le CartContext (id du produit en premier recours)
-              // CartContext supprime généralement par 'item.customKey', 'item.cartKey' ou 'item.id'
               const itemKey = item.customKey || item.cartKey || item.id || String(item.product?.id);
-              
               const options = getFormattedOptions(item);
 
               return (
@@ -769,7 +944,6 @@ const Caisse = () => {
                   </div>
                   
                   <div className="mt-1.5 flex items-center justify-between">
-                    {/* CORRECTION ICI : removeFromCart attend généralement l'id ou le customKey selon ton CartContext */}
                     <button onClick={() => removeFromCart(itemKey)} className="p-1 text-red-500 hover:bg-red-50 rounded-md transition-colors"><Trash2 size={14} /></button>
                     <div className="flex items-center gap-1.5 bg-gray-100 rounded-full px-1 py-0.5">
                       <button className="w-5 h-5 flex items-center justify-center bg-white rounded-full shadow-sm font-bold text-xs" onClick={() => updateQuantity(itemKey, (item.quantity || 1) - 1)}>-</button>
@@ -783,35 +957,81 @@ const Caisse = () => {
           </div>
 
           <div className="p-4 border-t-2 border-gray-200 bg-white flex-shrink-0">
+            {orderType === 'LIVRAISON' && (
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-gray-400 font-bold text-xs uppercase tracking-wider">Frais Livraison</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={deliveryFee || ''}
+                    onChange={e => setDeliveryFee(parseFloat(e.target.value) || 0)}
+                    className="w-16 text-right font-black text-secondary bg-gray-100 border border-gray-200 rounded px-2 py-1 focus:bg-white focus:border-primary outline-none transition-colors"
+                  />
+                  <span className="text-gray-400 font-bold text-xs">€</span>
+                </div>
+              </div>
+            )}
+
             <div className="flex justify-between items-end mb-3">
               <span className="text-gray-400 font-bold text-xs uppercase tracking-wider">Total</span>
-              <span className="text-2xl font-black whitespace-nowrap" style={{ color: themeColors.secondary }}>{subtotal.toFixed(2)} €</span>
+              <span className="text-2xl font-black whitespace-nowrap" style={{ color: themeColors.secondary }}>{finalTotal.toFixed(2)} €</span>
             </div>
+            
             <div className="flex gap-2">
-              <button disabled={cartItemCount === 0 || isProcessing} onClick={() => setIsPaymentModalOpen(true)} className="flex-1 text-white font-black text-xl py-3 rounded-xl shadow-md active:scale-95 disabled:opacity-50 transition-transform uppercase tracking-wider" style={{ backgroundColor: themeColors.primary }}>PAYER</button>
-              <button disabled={cartItemCount === 0 || isProcessing} onClick={() => setShowClearConfirm(true)} className="w-16 bg-red-50 text-red-500 flex items-center justify-center rounded-xl hover:bg-red-100 active:scale-95 disabled:opacity-50 transition-all border border-red-100"><Trash2 size={24} /></button>
+              <button 
+                disabled={cartItemCount === 0 || isProcessing} 
+                onClick={processPendingOrder} 
+                className="w-16 bg-orange-50 text-orange-500 flex items-center justify-center rounded-xl hover:bg-orange-100 active:scale-95 disabled:opacity-50 transition-all border border-orange-100" 
+                title="Mettre en attente de paiement"
+              >
+                <Hourglass size={24} />
+              </button>
+              
+              <button 
+                disabled={cartItemCount === 0 || isProcessing} 
+                onClick={() => setIsPaymentModalOpen(true)} 
+                className="flex-1 text-white font-black text-xl py-3 rounded-xl shadow-md active:scale-95 disabled:opacity-50 transition-transform uppercase tracking-wider" 
+                style={{ backgroundColor: themeColors.primary }}
+              >
+                PAYER
+              </button>
+
+              <button 
+                disabled={cartItemCount === 0 || isProcessing} 
+                onClick={() => setShowClearConfirm(true)} 
+                className="w-16 bg-red-50 text-red-500 flex items-center justify-center rounded-xl hover:bg-red-100 active:scale-95 disabled:opacity-50 transition-all border border-red-100"
+              >
+                <Trash2 size={24} />
+              </button>
             </div>
           </div>
         </div>
 
         {/* --- OUTILS GAUCHE (BARRE NOIRE / SECONDAIRE) --- */}
         <div className="w-[74px] flex flex-col items-center py-3 z-40 shadow-[-5px_0_15px_rgba(0,0,0,0.2)] flex-shrink-0 justify-between" style={{ backgroundColor: themeColors.secondary }}>
-          <div className="flex flex-col gap-2 w-full px-2">
-            <button disabled={cartItemCount === 0 || isProcessing} onClick={() => finalizePayment('carte bancaire', 0)} className={`w-full aspect-square flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} title="Paiement Rapide CB">
-              <CreditCard size={26} />
-              <span className="text-[9px] font-black uppercase mt-0.5 tracking-wider">Rapide</span>
+          <div className="flex flex-col gap-1.5 w-full px-2 items-center">
+            
+            <button disabled={cartItemCount === 0 || isProcessing} onClick={() => finalizePayment('carte bancaire', 0)} className={`w-[56px] h-[56px] mx-auto flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} title="Paiement Rapide CB">
+              <CreditCard size={24} />
+              <span className="text-[8px] font-black uppercase mt-0.5 tracking-wider">Rapide</span>
             </button>
             <div className="w-full h-px bg-white/10 my-1"></div>
-            <button onClick={() => setIsDashboardOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><LayoutDashboard size={26} /></button>
-            <button onClick={() => setIsOrderTrackerOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><ClipboardList size={26} /></button>
-            <button onClick={() => setIsHistoryOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><History size={26} /></button>
-            <button onClick={openCashDrawer} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Ouvrir le tiroir caisse"><ArchiveRestore size={26} /></button>
-            <button onClick={() => setIsStockOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Gérer les stocks"><Package size={26} /></button>
-            <button onClick={() => setIsSettingsOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Settings size={26} /></button>
+            
+            <button onClick={() => setIsDashboardOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><LayoutDashboard size={24} /></button>
+            <button onClick={() => setIsOrderTrackerOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><ClipboardList size={24} /></button>
+            <button onClick={() => setIsHistoryOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><History size={24} /></button>
+            <button onClick={openCashDrawer} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Ouvrir le tiroir caisse"><ArchiveRestore size={24} /></button>
+            
+            <button onClick={() => setIsCashSessionModalOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Gestion Caisse (Ticket X/Z)"><Calculator size={24} /></button>
+            
+            <button onClick={() => setIsStockOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Gérer les stocks"><Package size={24} /></button>
+            <button onClick={() => setIsSettingsOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Settings size={24} /></button>
           </div>
           
           <div className="w-full px-2 pb-1">
-            <button onClick={() => { if (cartItemCount > 0) { setShowClearConfirm(true); } navigate('/'); }} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Lock size={24} className="text-red-400" /></button>
+            <button onClick={() => { if (cartItemCount > 0) { setShowClearConfirm(true); } else { setIsAuthenticated(false); } }} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Lock size={24} className="text-red-400" /></button>
           </div>
         </div>
 
@@ -821,7 +1041,31 @@ const Caisse = () => {
       {/* MODALES */}
       {/* ========================================== */}
 
-      {isPaymentModalOpen && <PaymentModal subtotal={subtotal} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={finalizePayment} isProcessing={isProcessing} />}
+      {isDeliveryModalOpen && (
+        <DeliveryModalCaisse 
+          isOpen={isDeliveryModalOpen}
+          onClose={() => setIsDeliveryModalOpen(false)}
+          onConfirm={handleClientConfirm}
+          initialData={clientInfo} 
+        />
+      )}
+
+      {isPaymentModalOpen && <PaymentModal subtotal={finalTotal} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={finalizePayment} isProcessing={isProcessing} />}
+
+      {isCashSessionModalOpen && (
+        <CashSessionModal 
+          onClose={(isSuccess?: boolean) => {
+            if (!currentSessionId && isSuccess !== true) {
+              customToast("Attention : Caisse non ouverte !", "error");
+            }
+            setIsCashSessionModalOpen(false);
+          }} 
+          currentSessionId={currentSessionId}
+          onSessionOpened={(id: string) => setCurrentSessionId(id)}
+          onSessionClosed={() => setCurrentSessionId(null)}
+          themeColors={themeColors}
+        />
+      )}
 
       {showClearConfirm && (
         <div className="fixed inset-0 z-[999999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
@@ -831,7 +1075,7 @@ const Caisse = () => {
             <p className="text-gray-500 font-bold mb-8">Tous les articles en cours seront supprimés.</p>
             <div className="flex gap-4 w-full">
               <button onClick={() => setShowClearConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all">Retour</button>
-              <button onClick={() => { clearCart(); setLoadedOrderId(null); setShowClearConfirm(false); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all">Oui, Annuler</button>
+              <button onClick={() => { clearCart(); setLoadedOrderId(null); setDeliveryFee(0); setClientInfo(null); setShowClearConfirm(false); setIsAuthenticated(false); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all">Oui, Annuler</button>
             </div>
           </div>
         </div>
@@ -845,7 +1089,7 @@ const Caisse = () => {
             <p className="text-gray-500 font-bold mb-8">Attention, une commande est en cours. Voulez-vous l'annuler et quitter ?</p>
             <div className="flex gap-4 w-full">
               <button onClick={() => setShowLogoutConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all">Rester</button>
-              <button onClick={() => { clearCart(); navigate('/'); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all leading-tight">Quitter et annuler</button>
+              <button onClick={() => { clearCart(); setIsAuthenticated(false); setDeliveryFee(0); setClientInfo(null); setShowLogoutConfirm(false); navigate('/'); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all leading-tight">Quitter et annuler</button>
             </div>
           </div>
         </div>
