@@ -113,7 +113,7 @@ const openCashDrawer = async () => {
   try {
     const result = await (window as any).electronAPI.openDrawer();
     if (!result.success) toast.error("Impossible d'ouvrir le tiroir.");
-    else toast.success("Tiroir ouvert");
+    else toast.success("Tiroir ouvert", { duration: 800 });
   } catch (error) { console.error("Erreur ouverture tiroir :", error); }
 };
 
@@ -361,7 +361,8 @@ const Caisse = () => {
   const [clientInfo, setClientInfo] = useState<{name: string, phone: string, address: string, additionalInfo: string, fee: number} | null>(null);
   const [deliveryFee, setDeliveryFee] = useState<number>(0);
 
-  const customToast = (msg: string, type: 'success' | 'error' = 'success') => toast[type](msg);
+  const customToast = (msg: string, type: 'success' | 'error' = 'success', options = {}) => 
+  toast[type](msg, { duration: 800, ...options });
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -385,7 +386,7 @@ const Caisse = () => {
           setClientInfo(null);
         }
 
-        customToast("Caisse déverrouillée", "success");
+        customToast("Caisse déverrouillée", "success", { duration: 800 });
       } else {
         customToast("Code incorrect", "error");
         setTimeout(() => setPinCode(""), 300);
@@ -516,11 +517,26 @@ const Caisse = () => {
     toast.success(`Client ${data.name} enregistré !`);
   };
 
-  const handleLoadOrderIntoCart = (items: any[], orderId: string | number) => {
+  // --- MODIFICATION ICI : Récupération du type de commande et infos client ---
+  const handleLoadOrderIntoCart = (items: any[], orderId: string | number, loadedOrderType?: string, loadedClientInfo?: any) => {
     setLoadedOrderId(orderId);
     clearCart();
     setDeliveryFee(0);
     setClientInfo(null);
+    
+    // On met à jour le type de commande automatiquement
+    if (loadedOrderType && activeOrderTypes.includes(loadedOrderType)) {
+      setOrderType(loadedOrderType as any);
+    }
+
+    // On remplit les informations clients et les frais de livraison s'ils existent
+    if (loadedClientInfo && Object.keys(loadedClientInfo).length > 0) {
+      setClientInfo(loadedClientInfo);
+      if (loadedClientInfo.fee) {
+        setDeliveryFee(parseFloat(loadedClientInfo.fee) || 0);
+      }
+    }
+
     setTimeout(() => {
       items.forEach((item, idx) => {
         const baseId = item.product?.id || item.id;
@@ -533,7 +549,7 @@ const Caisse = () => {
         };
         addToCart(formattedItem);
       });
-      customToast("Commande chargée", "success");
+      customToast(`Commande #${orderId} chargée (${loadedOrderType || 'SUR PLACE'})`, "success");
     }, 150);
   };
 

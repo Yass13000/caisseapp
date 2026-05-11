@@ -51,10 +51,11 @@ const App = () => {
               
               <main className="min-h-screen w-full flex flex-col bg-background relative overflow-x-hidden font-helvetica select-none">
                 <Toaster />
-                <Sonner position="top-center" />
+                {/* 👇 C'EST ICI : Ajout de duration={800} pour TOUTE l'application */}
+                <Sonner position="top-center" duration={800} />
                 
                 <div className="flex-1 flex flex-col w-full relative">
-                  {/* 👇 CHANGEMENT ICI : On utilise <Router> (qui est notre HashRouter) */}
+                  {/* On utilise <Router> (qui est notre HashRouter) */}
                   <Router>
                     <Suspense fallback={<PageLoader />}>
                       <Routes>

@@ -7,7 +7,8 @@ import { toast } from 'sonner';
 
 interface OrderTrackerModalProps {
   onClose: () => void;
-  onLoadOrder: (orderDetails: any[], orderId: string | number) => void;
+  // MODIFICATION ICI : On ajoute le type de commande et les infos clients dans les paramètres renvoyés
+  onLoadOrder: (orderDetails: any[], orderId: string | number, orderType?: string, clientInfo?: any) => void;
   restaurantName?: string;
 }
 
@@ -97,6 +98,13 @@ const extractProductPrice = (item: any) => {
   return 0;
 };
 
+// Dictionnaire pour traduire les ID de commande en texte lisible par la caisse
+const ORDER_TYPE_LABELS = {
+  '633425b1-f86c-4c17-8cba-b258906ad317': 'SUR PLACE',
+  '2cac3f10-73e2-40a5-a7e0-053bd861b4d9': 'EMPORTER',
+  'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d': 'LIVRAISON'
+};
+
 const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTAURANT" }: OrderTrackerModalProps) => {
   const [orders, setOrders] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -176,7 +184,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const toggleExpand = (id: string | number) => setExpandedOrderId(prev => prev === id ? null : id);
 
-  // --- CORRECTION MAJEURE : ANTIFUSION ET CORRECTION DES NOMS ---
+  // --- CORRECTION MAJEURE : On récupère le type de commande et le client ---
   const handleSelectOrder = (order: any) => {
     let items = [];
     try {
@@ -185,22 +193,20 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       
       items = items.map((item: any, index: number) => {
          const cleanOptions = getFormattedOptions(item);
-         
          const productName = extractProductName(item);
          const productPrice = extractProductPrice(item);
          const productId = item.product?.id || item.id || `prod-${index}`;
 
-         // EMPREINTE DIGITALE : Crée un ID unique garanti par produit + options + position dans la liste
          const optionsString = cleanOptions.map(o => o.name).join('-');
          const optionsHash = btoa(encodeURIComponent(optionsString)).substring(0, 15);
          const antiFusionId = `${productId}-${optionsHash}-${index}`;
 
          return {
              ...item,
-             id: antiFusionId,            // L'ID est complètement unique
-             customKey: antiFusionId,     // Empêche la fusion dans le panier
-             cartKey: antiFusionId,       // Empêche la fusion dans le panier
-             name: productName,           // Assure que le nom s'affiche bien
+             id: antiFusionId,            
+             customKey: antiFusionId,     
+             cartKey: antiFusionId,       
+             name: productName,           
              price: productPrice,
              product: { 
                id: productId, 
@@ -222,7 +228,19 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       return;
     }
 
-    onLoadOrder(items, order.id);
+    // Traduction de l'ID du type de commande
+    const resolvedOrderType = ORDER_TYPE_LABELS[order.order_type_id] || 'SUR PLACE';
+
+    // Construction de la fiche client
+    const clientInfo = {
+      name: order.customer_name || '',
+      phone: order.customer_phone || '',
+      address: order.customer_address || '',
+      fee: order.delivery_fee || 0
+    };
+
+    // ON ENVOIE TOUT A LA CAISSE !
+    onLoadOrder(items, order.id, resolvedOrderType, clientInfo);
     onClose();
   };
 
@@ -529,6 +547,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                     const isApp = order.order_origin?.toLowerCase() === 'app';
                     const originLabel = isApp ? 'App' : 'Borne';
                     const clientLabel = order.customer_name || `Client ${originLabel}`;
+                    const typeLabel = ORDER_TYPE_LABELS[order.order_type_id] || 'SUR PLACE';
 
                     return (
                       <React.Fragment key={order.id}>
@@ -543,9 +562,14 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                           </td>
                           <td className="p-4">
                             <div className="font-bold text-gray-800 text-base">{clientLabel}</div>
-                            <span className={`inline-block mt-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${isApp ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
-                              {originLabel}
-                            </span>
+                            <div className="flex gap-1 mt-1">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${isApp ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
+                                {originLabel}
+                                </span>
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${typeLabel === 'LIVRAISON' ? 'bg-purple-100 text-purple-600' : typeLabel === 'EMPORTER' ? 'bg-orange-100 text-orange-600' : 'bg-green-100 text-green-600'}`}>
+                                {typeLabel}
+                                </span>
+                            </div>
                           </td>
                           <td className="p-4 text-right font-black text-lg text-secondary">
                             {order.total_price.toFixed(2)} €

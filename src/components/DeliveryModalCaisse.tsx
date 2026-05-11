@@ -5,7 +5,6 @@ import { MapPin, Phone, User, Home, Check, X, Loader2, Search, Users, UserPlus, 
 import { toast } from 'sonner';
 import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
 
-// Générateur d'ID unique (UUID v4) pour les nouveaux clients créés en caisse
 const generateUUID = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -84,7 +83,7 @@ export const DeliveryModalCaisse = ({
       let rLng = resto?.longitude !== undefined && resto?.longitude !== null ? parseFloat(resto.longitude) : null;
 
       if ((rLat === null || isNaN(rLat)) && resto?.address) {
-        toast.info("Recherche du GPS du restaurant...", { id: 'geoloc' });
+        toast.info("Recherche du GPS...", { id: 'geoloc', duration: 800 });
         try {
           const safeQuery = encodeURIComponent(resto.address.replace(/,/g, ' ').trim());
           const res = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${safeQuery}&limit=1`);
@@ -92,7 +91,7 @@ export const DeliveryModalCaisse = ({
           if (data.features && data.features.length > 0) {
             rLng = data.features[0].geometry.coordinates[0];
             rLat = data.features[0].geometry.coordinates[1];
-            toast.success("GPS Restaurant localisé !", { id: 'geoloc' });
+            toast.success("GPS Restaurant localisé !", { id: 'geoloc', duration: 800 });
           }
         } catch (e) { console.error("Erreur géoloc resto", e); }
       }
@@ -203,10 +202,12 @@ export const DeliveryModalCaisse = ({
         setFee(parseFloat(zone.delivery_fee) || 0);
         setIsEligible(true);
         setCalcStatus({ msg: `✅ ${forceLabel || 'Adresse validée'} ! Distance: ${distance.toFixed(1)} km.`, isError: false });
+        toast.success("Zone validée !", { duration: 800 });
       } else {
         setIsEligible(false);
         setFee(0);
         setCalcStatus({ msg: `❌ Hors zone de livraison (${distance.toFixed(1)} km)`, isError: true });
+        toast.error("Hors zone de livraison", { duration: 800 });
       }
       
       setIsCheckingDistance(false);
@@ -214,7 +215,7 @@ export const DeliveryModalCaisse = ({
 
   const handleForceCalculation = async () => {
     const addressToTest = `${streetNumber.trim()} ${query.trim()}`.trim();
-    if (!addressToTest) return toast.error("Veuillez saisir une adresse.");
+    if (!addressToTest) return toast.error("Veuillez saisir une adresse.", { duration: 800 });
 
     setIsCheckingDistance(true);
     setCalcStatus({ msg: "Recherche GPS...", isError: false });
@@ -229,11 +230,13 @@ export const DeliveryModalCaisse = ({
         processCalculations(lat, lng, "Calcul forcé réussi");
       } else {
         setCalcStatus({ msg: "Adresse introuvable. Saisie manuelle.", isError: true });
+        toast.error("Adresse introuvable", { duration: 800 });
         setIsEligible(false);
         setIsCheckingDistance(false);
       }
     } catch (e) {
       setCalcStatus({ msg: "Erreur GPS.", isError: true });
+      toast.error("Erreur GPS", { duration: 800 });
       setIsCheckingDistance(false);
     }
   };
@@ -255,7 +258,7 @@ export const DeliveryModalCaisse = ({
 
       processCalculations(lat, lng);
     } catch (error) {
-      toast.error("Erreur de vérification");
+      toast.error("Erreur de vérification", { duration: 800 });
       setIsCheckingDistance(false);
     } 
   };
@@ -318,18 +321,17 @@ export const DeliveryModalCaisse = ({
   };
 
   const handleFinalize = async () => {
-    if (!streetName && !isEligible) return toast.error("Veuillez sélectionner une adresse valide.");
-    if (!name.trim()) return toast.error("Le nom du client est requis.");
+    if (!streetName && !isEligible) return toast.error("Sélectionnez une adresse valide.", { duration: 1000 });
+    if (!name.trim()) return toast.error("Le nom du client est requis.", { duration: 1000 });
 
     const fullAddress = `${streetNumber.trim()} ${streetName.trim()}`.trim();
     const cleanPhone = phone.replace(/\s+/g, '');
     let finalClientId = selectedClientId;
 
-    // Si nouveau client (aucun ID sélectionné)
     if (!finalClientId) {
-      toast.info("Enregistrement du client en cours...", { id: 'saveClient' });
+      toast.info("Enregistrement du client...", { id: 'saveClient', duration: 800 });
       
-      const newClientId = generateUUID(); // On fabrique l'ID nous-mêmes !
+      const newClientId = generateUUID(); 
       const fakeEmail = cleanPhone ? `guest_${cleanPhone}@caisse.local` : `guest_${Date.now()}@caisse.local`;
       const activeRestoId = localStorage.getItem('pos_restaurant_id') || RESTAURANT_ID;
 
@@ -337,7 +339,7 @@ export const DeliveryModalCaisse = ({
         const { data: newProfile, error } = await supabase
           .from('profiles')
           .insert([{
-            id: newClientId, // L'ID obligatoire est maintenant fourni
+            id: newClientId,
             restaurant_id: activeRestoId,
             customer_name: name.trim(),
             phone: cleanPhone,
@@ -349,11 +351,11 @@ export const DeliveryModalCaisse = ({
           .single();
 
         if (error) {
-          console.error("Erreur d'insertion du profil", error);
-          toast.error("Vérifiez vos contraintes de base de données (Clé étrangère sur profiles).", { id: 'saveClient' });
+          console.error("Erreur FK Supabase:", error);
+          toast.warning("Client non sauvegardé, mais commande validée !", { id: 'saveClient', duration: 1500 });
         } else if (newProfile) {
           finalClientId = newProfile.id;
-          toast.success("Nouveau client ajouté à la base !", { id: 'saveClient' });
+          toast.success("Nouveau client enregistré !", { id: 'saveClient', duration: 800 });
         }
       } catch (err) {
         console.error(err);
@@ -377,12 +379,10 @@ export const DeliveryModalCaisse = ({
   const isAddressError = !isEligible && calcStatus?.isError;
 
   return createPortal(
-    <div className="fixed inset-0 z-[999999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-2 font-helvetica select-none">
+    <div className="fixed inset-0 z-[999999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 font-helvetica select-none">
       
-      {/* Conteneur très compact */}
       <div className="bg-white rounded-2xl w-full max-w-5xl h-[85vh] max-h-[650px] shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         
-        {/* Header */}
         <div className="bg-secondary p-3 flex justify-between items-center text-white shrink-0">
           <h2 className="font-black uppercase tracking-wider flex items-center gap-2 text-sm">
             <MapPin className="h-4 w-4" /> Livraison
@@ -455,10 +455,8 @@ export const DeliveryModalCaisse = ({
           {/* ================= COLONNE DROITE (Formulaire) ================= */}
           <div className="flex-1 flex flex-col bg-white">
             
-            {/* Contenu Scrollable (compact) */}
             <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-4">
               
-              {/* Ligne Nom / Téléphone */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-gray-400 uppercase pl-1">Nom *</label>
@@ -482,7 +480,6 @@ export const DeliveryModalCaisse = ({
                 </div>
               </div>
 
-              {/* Ligne Adresse */}
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-gray-400 uppercase pl-1">Adresse (Numéro + Rue)</label>
                 <div className="flex gap-2">
@@ -501,7 +498,6 @@ export const DeliveryModalCaisse = ({
                     />
                     {isCheckingDistance && <Loader2 className="absolute right-3 top-2.5 w-4 h-4 animate-spin text-gray-400" />}
                     
-                    {/* Suggestions Dropdown */}
                     {showSuggestions && suggestions.length > 0 && (
                       <ul className="absolute top-[42px] left-0 w-full bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
                         {suggestions.map((feature, i) => (
@@ -523,7 +519,6 @@ export const DeliveryModalCaisse = ({
                 </div>
               </div>
 
-              {/* Status du calcul */}
               {calcStatus && (
                 <div className={`text-[11px] font-bold px-3 py-1.5 rounded flex items-center gap-1.5 border ${calcStatus.isError ? 'bg-red-50 text-red-600 border-red-200' : 'bg-green-50 text-green-700 border-green-200'}`}>
                   {calcStatus.isError ? <AlertTriangle className="w-3.5 h-3.5" /> : <Check className="w-3.5 h-3.5" />}
@@ -531,7 +526,6 @@ export const DeliveryModalCaisse = ({
                 </div>
               )}
 
-              {/* Complément */}
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-gray-400 uppercase pl-1">Complément (Bâtiment, Code...)</label>
                 <input 
@@ -545,7 +539,6 @@ export const DeliveryModalCaisse = ({
 
             </div>
 
-            {/* Footer Fixe de la colonne droite (Frais + Bouton) */}
             <div className="shrink-0 p-4 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
                <div className="flex items-center gap-3">
                  <div className="text-xs font-black uppercase text-gray-500">Frais Livr.</div>
