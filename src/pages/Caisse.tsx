@@ -108,13 +108,26 @@ const getItemTotal = (item: any) => {
 
 const getActiveRestaurantId = () => localStorage.getItem('pos_restaurant_id');
 
+// 👇 MODIFICATION ICI : Utilisation de l'imprimante pour ouvrir le tiroir
 const openCashDrawer = async () => {
   if (!(window as any).electronAPI) { toast.error("Non disponible sur la version Web."); return; }
   try {
-    const result = await (window as any).electronAPI.openDrawer();
-    if (!result.success) toast.error("Impossible d'ouvrir le tiroir.");
-    else toast.success("Tiroir ouvert", { duration: 800 });
-  } catch (error) { console.error("Erreur ouverture tiroir :", error); }
+    const printerName = localStorage.getItem('imprimante_caisse') || undefined;
+    
+    // On envoie un ticket invisible (un point blanc de 1px)
+    // L'imprimante reçoit l'ordre, réagit et claque le tiroir sans imprimer de papier.
+    const receiptHtml = `<div style="font-size: 1px; color: white;">.</div>`;
+    
+    const result = await (window as any).electronAPI.printReceipt(receiptHtml, printerName);
+    
+    if (!result?.success) {
+      toast.error("Impossible de communiquer avec l'imprimante.");
+    } else {
+      toast.success("Tiroir ouvert", { duration: 800 });
+    }
+  } catch (error) { 
+    console.error("Erreur ouverture tiroir :", error); 
+  }
 };
 
 const generateAndPrintReceipt = async (restaurantName: string, orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, deliveryFee: number, finalTotal: number, cashAmount: number) => {
@@ -517,7 +530,6 @@ const Caisse = () => {
     toast.success(`Client ${data.name} enregistré !`);
   };
 
-  // --- MODIFICATION ICI : Récupération du type de commande et infos client ---
   const handleLoadOrderIntoCart = (items: any[], orderId: string | number, loadedOrderType?: string, loadedClientInfo?: any) => {
     setLoadedOrderId(orderId);
     clearCart();
