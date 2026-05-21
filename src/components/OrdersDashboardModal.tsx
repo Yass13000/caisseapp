@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { X, LayoutDashboard, Clock, ShoppingBag, CheckCircle2, Loader2, Plus } from 'lucide-react';
+import { X, Clock, CheckCircle2, Loader2, MoreVertical } from 'lucide-react';
 import { supabase } from '@/lib/supabaseClient';
 import { toast } from 'sonner';
 
@@ -14,7 +14,7 @@ interface Order {
   order_details: any;
   order_type_id: string;
   is_paid?: boolean;
-  customer_name?: string; // Ajouté à l'interface
+  customer_name?: string;
 }
 
 interface DashboardProps {
@@ -23,10 +23,10 @@ interface DashboardProps {
 
 const getStatusBadgeStyles = (status: string) => {
   const s = status?.toLowerCase() || '';
-  if (s === 'nouvelle') return 'bg-red-500 text-white border-red-600 shadow-red-500/20';
-  if (s === 'en cours') return 'bg-blue-500 text-white border-blue-600 shadow-blue-500/20';
-  if (s === 'prête' || s === 'prete' || s === 'prêt' || s === 'pret') return 'bg-[#04B855] text-white border-[#039d48] shadow-green-500/20';
-  if (s === 'fermé' || s === 'ferme' || s === 'terminée' || s === 'terminee') return 'bg-gray-900 text-white border-gray-800 shadow-gray-900/20';
+  if (s === 'nouvelle') return 'bg-red-500 text-white border-red-600';
+  if (s === 'en cours') return 'bg-blue-500 text-white border-blue-600';
+  if (s === 'prête' || s === 'prete' || s === 'prêt' || s === 'pret') return 'bg-[#04B855] text-white border-[#039d48]';
+  if (s === 'fermé' || s === 'ferme' || s === 'terminée' || s === 'terminee') return 'bg-gray-900 text-white border-gray-800';
   return 'bg-gray-100 text-gray-700 border-gray-200';
 };
 
@@ -44,7 +44,6 @@ const isOrderClosed = (status: string) => {
   return s === 'fermé' || s === 'ferme' || s === 'terminée' || s === 'terminee';
 };
 
-// Analyseur de détails ultra-robuste
 const parseOrderDetails = (details: any): any[] => {
   if (Array.isArray(details)) return details;
   if (typeof details === 'string') {
@@ -65,37 +64,89 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'en_cours' | 'fermees'>('en_cours');
   const [now, setNow] = useState(new Date());
-  
-  // Nouveaux states pour gérer l'agrandissement et le scroll
+  const [activeMenuOrderId, setActiveMenuOrderId] = useState<string | number | null>(null);
   const [expandedOrder, setExpandedOrder] = useState<Order | null>(null);
-  const [scrollableStates, setScrollableStates] = useState<Record<string, boolean>>({});
-  const listRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [hiddenOptionNames, setHiddenOptionNames] = useState<string[]>([]);
+
+  // VARIABLES DE FILTRAGE ASSIGNÉES EN HAUT DE COMPOSANT (SÉCURISÉ)
+  const activeOrders = orders.filter(o => !isOrderClosed(o.status));
+  const closedOrders = orders.filter(o => isOrderClosed(o.status));
+  const displayedOrders = activeTab === 'en_cours' ? activeOrders : closedOrders;
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 30000);
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const handleCloseMenus = () => setActiveMenuOrderId(null);
+    window.addEventListener('click', handleCloseMenus);
+    return () => window.removeEventListener('click', handleCloseMenus);
+  }, []);
+
   const getTimeElapsed = (dateString: string) => {
     const orderDate = new Date(dateString);
     const diffMs = now.getTime() - orderDate.getTime();
     if (diffMs < 0) return "À l'instant";
-    
     const diffMins = Math.floor(diffMs / 60000);
     if (diffMins < 1) return "À l'instant";
     if (diffMins < 60) return `${diffMins} min`;
-    
     const hours = Math.floor(diffMins / 60);
     const mins = diffMins % 60;
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
   };
 
+  const fetchHiddenOptions = async () => {
+    try {
+      const activeRestoId = localStorage.getItem('pos_restaurant_id');
+      if (!activeRestoId) return;
+
+      const { data: groups } = await supabase
+        .from('option_groups')
+        .select('id, name')
+        .eq('restaurant_id', activeRestoId)
+        .eq('show_on_kds', false);
+
+      if (!groups || groups.length === 0) {
+        setHiddenOptionNames([]);
+        return;
+      }
+
+      const groupIds = groups.map(g => g.id);
+      const namesToHide = new Set<string>();
+      
+      groups.forEach(g => {
+        if (g.name) namesToHide.add(g.name.toLowerCase().trim());
+      });
+
+      const { data: links } = await supabase
+        .from('option_group_links')
+        .select('option_id')
+        .in('group_id', groupIds);
+
+      if (links && links.length > 0) {
+        const optionIds = links.map(l => l.option_id);
+        const { data: options } = await supabase
+          .from('options')
+          .select('name')
+          .in('id', optionIds);
+
+        if (options) {
+          options.forEach(o => {
+            if (o.name) namesToHide.add(o.name.toLowerCase().trim());
+          });
+        }
+      }
+      setHiddenOptionNames(Array.from(namesToHide));
+    } catch (e) {
+      console.error("Erreur options masquées:", e);
+    }
+  };
+
   const loadOrders = async () => {
     try {
       const activeRestoId = localStorage.getItem('pos_restaurant_id');
-      
       if (!activeRestoId) {
-        toast.error("Veuillez configurer la caisse (ID manquant)");
         setIsLoading(false);
         return;
       }
@@ -114,7 +165,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
       if (error) throw error;
       setOrders(data as Order[]);
     } catch (error) {
-      toast.error("Erreur lors du chargement des commandes");
+      console.error(error);
     } finally {
       setIsLoading(false);
     }
@@ -122,157 +173,152 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
   useEffect(() => {
     loadOrders();
+    fetchHiddenOptions();
+    
     const channel = supabase
       .channel('dashboard_orders')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-        loadOrders();
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, loadOrders)
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    const optionGroupsChannel = supabase
+      .channel('dashboard_optgroups')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'option_groups' }, fetchHiddenOptions)
+      .subscribe();
+
+    return () => { 
+      supabase.removeChannel(channel); 
+      supabase.removeChannel(optionGroupsChannel);
+    };
   }, []);
 
-  // Détection du scroll pour chaque commande
-  useEffect(() => {
-    const checkScroll = () => {
-      setScrollableStates(prev => {
-        const next = { ...prev };
-        let changed = false;
-        
-        orders.forEach(order => {
-          const el = listRefs.current[order.id];
-          if (el) {
-            // tolérance de 2px pour éviter les faux positifs liés aux bordures
-            const isScrollable = el.scrollHeight > el.clientHeight + 2; 
-            if (next[order.id] !== isScrollable) {
-              next[order.id] = isScrollable;
-              changed = true;
-            }
-          }
-        });
-        
-        return changed ? next : prev;
-      });
-    };
-
-    const timer = setTimeout(checkScroll, 50); // Laisse le temps au DOM de se dessiner
-    window.addEventListener('resize', checkScroll);
-    
-    return () => {
-      clearTimeout(timer);
-      window.removeEventListener('resize', checkScroll);
-    };
-  }, [orders, activeTab]);
-
-  const handleCompleteOrder = async (orderId: string | number) => {
+  const handleUpdateStatus = async (orderId: string | number, newStatus: string) => {
     try {
-      const { error } = await supabase
-        .from('orders')
-        .update({ status: 'Fermé' }) 
-        .eq('id', orderId);
-
+      const { error } = await supabase.from('orders').update({ status: newStatus }).eq('id', orderId);
       if (error) throw error;
-      toast.success("Commande marquée comme terminée !");
-      
-      setOrders(prevOrders => prevOrders.map(o => o.id === orderId ? { ...o, status: 'Fermé' } : o));
+      toast.success(`Statut mis à jour : ${newStatus}`);
+      setOrders(prevOrders => prevOrders.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+      setActiveMenuOrderId(null);
     } catch (err) {
       toast.error("Erreur lors de la mise à jour");
     }
   };
 
-  // --- LECTURE ABSOLUE DE L'ORDRE DU TABLEAU (COMME DANS LA CAISSE) ---
-  const getFormattedOptions = (item: any) => {
-    const dynOpts = item.selectedSubOptions || item.selections || item.options;
-    if (!dynOpts) return [];
-
-    const rawOptions: { name: string, order: number }[] = [];
-    let globalIndex = 0; 
-
-    const extractName = (o: any) => {
-      if (!o) return "";
-      if (typeof o === 'string') return o;
-      return o.name || o.title || o.variant_name || o.value || "";
-    };
-
-    const readNode = (node: any) => {
-      if (!node) return;
-      if (typeof node === 'string') {
-        rawOptions.push({ name: node, order: globalIndex++ });
-      } else if (Array.isArray(node)) {
-        node.forEach(readNode);
-      } else if (typeof node === 'object') {
-        if (node.options && Array.isArray(node.options)) {
-          node.options.forEach(readNode);
-        } else {
-          const n = extractName(node);
-          if (n && n.toLowerCase() !== 'option' && n.toLowerCase() !== 'options') {
-            const order = node._print_order !== undefined ? node._print_order : globalIndex++;
-            rawOptions.push({ name: n, order: order });
-          } else if (!n || n.toLowerCase() === 'option' || n.toLowerCase() === 'options') {
-            Object.values(node).forEach(readNode);
-          }
-        }
-      }
-    };
-
-    readNode(dynOpts);
-
-    rawOptions.sort((a, b) => a.order - b.order);
-
-    const finalOrdered: { name: string, qty: number }[] = [];
-    rawOptions.forEach(opt => {
-      const cleanName = typeof opt.name === 'string' ? opt.name.trim().toLowerCase() : "";
-      if (!cleanName) return;
-      
-      const existing = finalOrdered.find(o => o.name === cleanName);
-      if (existing) {
-        existing.qty += 1;
-      } else {
-        finalOrdered.push({ name: cleanName, qty: 1 });
-      }
-    });
-
-    return finalOrdered.map(o => o.qty > 1 ? `${o.qty}x ${o.name}` : o.name);
+  const handleCompleteOrder = async (orderId: string | number) => {
+    await handleUpdateStatus(orderId, 'Fermé');
   };
 
-  const activeOrders = orders.filter(o => !isOrderClosed(o.status));
-  const closedOrders = orders.filter(o => isOrderClosed(o.status));
-  const displayedOrders = activeTab === 'en_cours' ? activeOrders : closedOrders;
+  const getOrderLines = (order: Order) => {
+    const items = parseOrderDetails(order.order_details);
+    const displayLines = [];
+    
+    items.forEach((item: any) => {
+      const itemQty = item.quantity || 1;
+      const productName = item.product?.name || item.name || "Produit";
+      
+      const dynOpts = item.selectedSubOptions || item.selections || item.options;
+      const normalOptions: string[] = [];
+      const kdsFalseOptions: { name: string, quantity: number }[] = [];
+      
+      if (dynOpts) {
+        const rawOptions: { name: string, order: number }[] = [];
+        let globalIndex = 0;
+        
+        const extractName = (o: any) => {
+          if (!o) return "";
+          if (typeof o === 'string') return o;
+          return o.name || o.title || o.variant_name || o.value || "";
+        };
+
+        const readNode = (node: any) => {
+          if (!node) return;
+          if (typeof node === 'string') {
+            rawOptions.push({ name: node, order: globalIndex++ });
+          } else if (Array.isArray(node)) {
+            node.forEach(readNode);
+          } else if (typeof node === 'object') {
+            if (node.options && Array.isArray(node.options)) {
+              node.options.forEach(readNode);
+            } else {
+              const n = extractName(node);
+              if (n && n.toLowerCase() !== 'option' && n.toLowerCase() !== 'options') {
+                const order = node._print_order !== undefined ? node._print_order : globalIndex++;
+                rawOptions.push({ name: n, order: order });
+              } else if (!n || n.toLowerCase() === 'option' || n.toLowerCase() === 'options') {
+                Object.values(node).forEach(readNode);
+              }
+            }
+          }
+        };
+
+        readNode(dynOpts);
+        rawOptions.sort((a, b) => a.order - b.order);
+
+        const localGrouped: { name: string, qty: number }[] = [];
+        rawOptions.forEach(opt => {
+          const cleanName = typeof opt.name === 'string' ? opt.name.trim() : "";
+          if (!cleanName) return;
+          const existing = localGrouped.find(o => o.name.toLowerCase() === cleanName.toLowerCase());
+          if (existing) {
+            existing.qty += 1;
+          } else {
+            localGrouped.push({ name: cleanName, qty: 1 });
+          }
+        });
+
+        localGrouped.forEach(opt => {
+          const optNameLower = opt.name.toLowerCase().trim();
+          const isHiddenOnKds = hiddenOptionNames.some(hidden => {
+            const h = hidden.toLowerCase().trim();
+            return optNameLower === h || optNameLower === h + 's' || optNameLower + 's' === h;
+          });
+
+          if (isHiddenOnKds) {
+            kdsFalseOptions.push({
+              name: opt.name,
+              quantity: itemQty * opt.qty
+            });
+          } else {
+            normalOptions.push(opt.qty > 1 ? `${opt.qty}x ${opt.name}` : opt.name);
+          }
+        });
+      }
+
+      displayLines.push({
+        type: 'product',
+        quantity: itemQty,
+        name: productName,
+        subOptions: normalOptions
+      });
+
+      kdsFalseOptions.forEach(kOpt => {
+        displayLines.push({
+          type: 'kds_false_option',
+          quantity: kOpt.quantity,
+          name: kOpt.name,
+          subOptions: []
+        });
+      });
+    });
+
+    return displayLines;
+  };
 
   return createPortal(
-    <div className="fixed inset-0 z-[99999] bg-[#F3F4F6] flex flex-col font-helvetica select-none">
+    <div className="fixed inset-0 z-[99999] bg-[#F3F4F6] flex flex-col font-helvetica select-none rounded-none">
       
-      <div className="bg-white h-[90px] border-b border-gray-200 flex items-center justify-between px-8 flex-shrink-0 shadow-sm z-10">
-        <div className="flex items-center gap-5">
-          <div className="w-14 h-14 bg-secondary text-white rounded-2xl flex items-center justify-center shadow-md">
-            <LayoutDashboard size={30} />
-          </div>
-          <div>
-            <h1 className="text-3xl font-black text-secondary uppercase tracking-tight leading-none">Commandes du Jour</h1>
-            <p className="text-sm font-bold text-gray-400 uppercase tracking-widest mt-1">Tableau de bord</p>
-          </div>
+      <div className="bg-white h-[75px] border-b border-gray-200 flex items-center justify-between px-6 flex-shrink-0 shadow-sm z-10 rounded-none">
+        <div className="flex gap-4">
+          <button onClick={() => setActiveTab('en_cours')} className={`flex items-center gap-2 px-6 py-2.5 rounded-none font-black text-sm uppercase transition-all ${activeTab === 'en_cours' ? 'bg-secondary text-white shadow-md scale-[1.01]' : 'bg-gray-100 text-gray-500'}`}>
+            <Loader2 size={16} /> En cours ({activeOrders.length})
+          </button>
+          <button onClick={() => setActiveTab('fermees')} className={`flex items-center gap-2 px-6 py-2.5 rounded-none font-black text-sm uppercase transition-all ${activeTab === 'fermees' ? 'bg-[#04B855] text-white shadow-md scale-[1.01]' : 'bg-gray-100 text-gray-500'}`}>
+            <CheckCircle2 size={16} /> Terminées ({closedOrders.length})
+          </button>
         </div>
-
-        <button onClick={onClose} className="h-14 px-6 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center font-black text-lg hover:bg-red-100 active:scale-95 transition-all gap-2 border border-red-100">
-          <X size={24} /> FERMER
-        </button>
+        <button onClick={onClose} className="h-10 px-6 bg-red-50 text-red-600 rounded-none font-black border border-red-100">FERMER</button>
       </div>
 
-      <div className="bg-white border-b border-gray-200 px-8 py-3 flex gap-4 shadow-sm z-0">
-        <button onClick={() => setActiveTab('en_cours')} className={`flex items-center gap-3 px-6 py-3 rounded-xl font-black text-sm uppercase tracking-wider transition-all ${activeTab === 'en_cours' ? 'bg-secondary text-white shadow-md scale-[1.02]' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-          <Loader2 size={18} className={activeTab === 'en_cours' ? 'animate-spin-slow' : ''} />
-          En cours
-          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${activeTab === 'en_cours' ? 'bg-white/20' : 'bg-gray-300'}`}>{activeOrders.length}</span>
-        </button>
-
-        <button onClick={() => setActiveTab('fermees')} className={`flex items-center gap-3 px-6 py-3 rounded-xl font-black text-sm uppercase tracking-wider transition-all ${activeTab === 'fermees' ? 'bg-[#04B855] text-white shadow-md scale-[1.02]' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-          <CheckCircle2 size={18} />
-          Terminées
-          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${activeTab === 'fermees' ? 'bg-white/20' : 'bg-gray-300'}`}>{closedOrders.length}</span>
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+      <div className="flex-1 overflow-y-auto px-0 py-0 custom-scrollbar rounded-none">
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
             <span className="text-gray-400 font-bold text-xl uppercase tracking-widest animate-pulse">Chargement...</span>
@@ -282,116 +328,80 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
             <p className="text-gray-400 font-bold text-2xl uppercase tracking-widest">Aucune commande dans cet onglet</p>
           </div>
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4 content-start pb-10">
+          <div className="columns-2 md:columns-3 lg:columns-4 xl:columns-5 2xl:columns-6 gap-0 pb-10 rounded-none border-t border-l border-slate-700">
             {displayedOrders.map((order) => {
               const orderTime = new Date(order.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-              const detailsList = parseOrderDetails(order.order_details);
               
+              // DEFINITION CORRECTE ET DECLAREE DE ISPRETE POUR LE SCOPE DU MAP
               const s = order.status?.toLowerCase() || '';
               const isPrete = s === 'prête' || s === 'prete' || s === 'prêt' || s === 'pret';
 
-              // LOGIQUE POUR AFFICHER LE TYPE SP/EMP/LIV ET NOM CLIENT
-              let typeAbbr = 'SP'; 
-              if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') typeAbbr = 'EMP';
-              if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') typeAbbr = 'LIV';
+              let typeAbbr = order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9' ? 'EMP' : order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d' ? 'LIV' : 'SP';
+              let headerBgClass = order.order_type_id === '633425b1-f86c-4c17-8cba-b258906ad317' ? 'bg-orange-500' : order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9' ? 'bg-[#b07d50]' : 'bg-blue-400';
+              let headerTextClass = 'text-white';
+              let dotColorClass = 'text-white/80 hover:text-white hover:bg-white/20';
               const customerName = order.customer_name || "Client Caisse";
 
               return (
-                <div key={order.id} className="bg-white rounded-2xl shadow-sm border border-gray-200 flex flex-col h-[280px] overflow-hidden hover:shadow-md transition-shadow relative">
+                <div key={order.id} className="bg-white rounded-none border-r border-b border-slate-700 flex flex-col h-auto overflow-hidden break-inside-avoid w-full relative">
                   
-                  <div className="p-3 border-b border-gray-100 bg-gray-50 flex justify-between items-start gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <h3 className="text-lg font-black text-secondary truncate leading-none">
-                          {order.order_number || `#${order.id.toString().slice(-4)}`}
-                        </h3>
-                        {!order.is_paid && (
-                          <span className="bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest leading-none flex-shrink-0 animate-pulse">
-                            Non Payé
+                  {/* EN-TÊTE ULTRA COMPACTE SUR 1 SEULE LIGNE */}
+                  <div className={`p-2 border-b border-slate-700/30 ${headerBgClass} flex justify-between items-center w-full min-w-0 rounded-none relative`}>
+                    <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                      <h3 className={`text-sm font-black ${headerTextClass} truncate leading-none`}>{order.order_number || `#${order.id.toString().slice(-4)}`}</h3>
+                      <span className={`px-1 py-0.5 rounded-none text-[8px] font-black uppercase bg-white/20 ${headerTextClass} leading-none flex-shrink-0`}>{typeAbbr}</span>
+                      {!order.is_paid && (
+                        <span className="bg-red-100 text-red-600 border border-red-200 px-1 py-0.5 rounded-none text-[8px] font-black uppercase tracking-widest leading-none flex-shrink-0 animate-pulse">N.P</span>
+                      )}
+                      <div className="flex items-center gap-0.5 text-[9px] font-bold text-white/90 flex-shrink-0">
+                        <span className={`${headerTextClass} font-black`}>{getTimeElapsed(order.created_at)}</span>
+                        <span className={headerTextClass === 'text-white' ? 'text-white/70' : 'text-gray-400'}>({orderTime})</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-0.5 flex-shrink-0 relative">
+                      <div className={`px-1.5 py-0.5 rounded-none border-b font-black text-[8px] uppercase tracking-wider text-center ${getStatusBadgeStyles(order.status)}`}>{order.status || 'Nouvelle'}</div>
+                      <button onClick={(e) => { e.stopPropagation(); setActiveMenuOrderId(activeMenuOrderId === order.id ? null : order.id); }} className={`p-0.5 transition-colors ${dotColorClass}`}><MoreVertical size={16} /></button>
+                      
+                      {activeMenuOrderId === order.id && (
+                        <div className="absolute right-0 top-6 bg-white border border-slate-700 shadow-xl z-[99] flex flex-col text-[10px] font-black uppercase tracking-wider min-w-[115px]">
+                          {['Nouvelle', 'En cours', 'Prêt', 'Fermé'].map(st => (
+                            <button key={st} onClick={(e) => { e.stopPropagation(); handleUpdateStatus(order.id, st); }} className="px-2.5 py-2 text-slate-700 text-left border-b hover:bg-gray-100 last:border-0">{st}</button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* CORPS DU TICKET : SÉPARATION ET PROFILES GRANDS DES OPTIONS MASQUÉES KDS */}
+                  <div className="bg-white rounded-none p-3 w-full space-y-1">
+                    {getOrderLines(order).map((line, i) => (
+                      <div key={i} className="border-b border-gray-50 py-1 flex flex-col last:border-0">
+                        <div className="text-xs flex items-start truncate leading-tight">
+                          <span className="mr-2 text-secondary font-black flex-shrink-0">{line.quantity}x</span> 
+                          <span className={`truncate ${line.type === 'kds_false_option' ? 'text-amber-600 bg-amber-50 font-black px-1 border-l-2 border-amber-500 uppercase' : 'text-slate-800 font-bold'}`}>
+                            {line.name}
                           </span>
+                        </div>
+                        {line.subOptions && line.subOptions.length > 0 && (
+                          <div className="pl-6 space-y-0.5 mt-0.5">
+                            {line.subOptions.map((opt, idx) => (
+                              <div key={idx} className="text-[10px] font-bold text-blue-500 uppercase tracking-wider leading-tight">+ {opt}</div>
+                            ))}
+                          </div>
                         )}
                       </div>
-                      
-                      {/* --- NOUVEAU BLOC : TYPE (SP/EMP/LIV) ET NOM DU CLIENT --- */}
-                      <div className="flex items-center gap-1.5 mt-1 mb-1.5">
-                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest leading-none flex-shrink-0 ${
-                          typeAbbr === 'LIV' ? 'bg-orange-100 text-orange-600' : 
-                          typeAbbr === 'EMP' ? 'bg-blue-100 text-blue-600' : 
-                          'bg-gray-200 text-gray-700'
-                        }`}>
-                          {typeAbbr}
-                        </span>
-                        <span className="text-xs font-bold text-gray-500 truncate leading-none">
-                          {customerName}
-                        </span>
-                      </div>
-                      {/* -------------------------------------------------------- */}
-
-                      <div className="flex items-center gap-1.5 mt-1.5">
-                        <Clock size={14} className="text-secondary" />
-                        <span className="font-black text-secondary text-sm leading-none">{getTimeElapsed(order.created_at)}</span>
-                        <span className="text-gray-400 font-bold text-[10px] leading-none">({orderTime})</span>
-                      </div>
-                    </div>
-                    <div className={`px-2.5 py-1 rounded-lg border-b-2 font-black text-[10px] uppercase tracking-wider text-center shadow-sm flex-shrink-0 ${getStatusBadgeStyles(order.status)}`}>
-                      {order.status || 'Nouvelle'}
-                    </div>
+                    ))}
                   </div>
 
-                  {/* Wrapper conteneur repensé pour bouton flottant sans casser la structure */}
-                  <div className="flex-1 relative min-h-0 bg-white">
-                    <div 
-                      ref={el => { listRefs.current[order.id] = el; }}
-                      className="absolute inset-0 overflow-y-auto p-3 custom-scrollbar"
-                    >
-                      <ul className="space-y-2.5">
-                        {detailsList.map((item: any, index: number) => {
-                          const options = getFormattedOptions(item);
-                          return (
-                            <li key={index} className="flex flex-col border-b border-gray-50 pb-2.5 last:border-0 last:pb-0">
-                              <div className="flex items-start gap-2">
-                                <span className="font-black text-sm text-secondary min-w-[20px]">{item.quantity}x</span>
-                                <div className="flex-1 min-w-0">
-                                  <span className="font-bold text-sm text-gray-800 leading-tight block">{item.product?.name || item.name}</span>
-                                  {options.length > 0 && (
-                                    <div className="mt-0.5 space-y-0.5">
-                                      {options.map((opt, i) => (
-                                        <div key={i} className="text-[10px] font-bold text-blue-500 uppercase tracking-wider leading-tight">+ {opt}</div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            </li>
-                          );
-                        })}
-                      </ul>
+                  {/* FOOTER EXTRA-COMPACT UNIQUE SUR 1 SEULE LIGNE */}
+                  <div className={`p-2 mt-auto flex justify-between items-center z-10 rounded-none ${getStatusFooterStyles(order.status)}`}>
+                    <div className="truncate text-[10px] font-black uppercase text-white flex-1 min-w-0 pr-2">
+                      {customerName} • {order.total_price?.toFixed(2)}€
                     </div>
-                    
-                    {/* BOUTON + FLOTTANT APPARENT SEULEMENT SI ÇA SCROLL */}
-                    {scrollableStates[order.id] && (
-                      <button
-                        onClick={() => setExpandedOrder(order)}
-                        className="absolute bottom-2 right-2 w-8 h-8 bg-secondary text-white rounded-full flex items-center justify-center shadow-md hover:scale-105 active:scale-95 transition-all z-10 border-2 border-white"
-                        title="Agrandir la commande"
-                      >
-                        <Plus size={18} strokeWidth={3} />
-                      </button>
-                    )}
-                  </div>
-
-                  <div className={`p-3 flex justify-between items-center z-10 ${getStatusFooterStyles(order.status)}`}>
-                    <div className="flex flex-col">
-                      <span className="font-bold text-[10px] uppercase tracking-widest opacity-90">Total</span>
-                      <span className="text-lg font-black leading-none">{order.total_price?.toFixed(2)} €</span>
-                    </div>
-                    
                     {isPrete && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleCompleteOrder(order.id); }}
-                        className="bg-white text-[#04B855] px-3 py-2 rounded-xl font-black uppercase text-[10px] tracking-wider hover:bg-gray-50 active:scale-95 transition-all shadow-sm flex items-center gap-1.5 border border-white/20"
-                      >
-                        <CheckCircle2 size={14} strokeWidth={3} /> Terminer
+                      <button onClick={(e) => { e.stopPropagation(); handleCompleteOrder(order.id); }} className="text-white hover:scale-110 active:scale-95 transition-all flex-shrink-0">
+                        <CheckCircle2 size={18} strokeWidth={3} />
                       </button>
                     )}
                   </div>
@@ -402,107 +412,6 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
           </div>
         )}
       </div>
-
-      {/* --- MODALE D'AGRANDISSEMENT DE LA COMMANDE --- */}
-      {expandedOrder && (() => {
-        const detailsList = parseOrderDetails(expandedOrder.order_details);
-        let typeAbbr = 'SP'; 
-        if (expandedOrder.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') typeAbbr = 'EMP';
-        if (expandedOrder.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') typeAbbr = 'LIV';
-        const customerName = expandedOrder.customer_name || "Client Caisse";
-        const s = expandedOrder.status?.toLowerCase() || '';
-        const isPrete = s === 'prête' || s === 'prete' || s === 'prêt' || s === 'pret';
-
-        return (
-          <div className="fixed inset-0 z-[100000] bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-6 sm:p-10" onClick={() => setExpandedOrder(null)}>
-            <div className="bg-white rounded-2xl shadow-2xl flex flex-col w-full max-w-3xl max-h-full overflow-hidden animate-in fade-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
-              
-              <div className="p-5 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
-                <div>
-                  <div className="flex items-center gap-3 mb-1">
-                    <h2 className="text-2xl font-black text-secondary leading-none">
-                      Commande {expandedOrder.order_number || `#${expandedOrder.id.toString().slice(-4)}`}
-                    </h2>
-                    <div className={`px-3 py-1 rounded-lg border-b-2 font-black text-[12px] uppercase tracking-wider ${getStatusBadgeStyles(expandedOrder.status)}`}>
-                      {expandedOrder.status || 'Nouvelle'}
-                    </div>
-                    {!expandedOrder.is_paid && (
-                      <span className="bg-red-100 text-red-600 border border-red-200 px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest leading-none flex-shrink-0 animate-pulse">
-                        Non Payé
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 mt-2">
-                     <span className={`px-2 py-1 rounded text-[11px] font-black uppercase tracking-widest leading-none ${
-                          typeAbbr === 'LIV' ? 'bg-orange-100 text-orange-600' : 
-                          typeAbbr === 'EMP' ? 'bg-blue-100 text-blue-600' : 
-                          'bg-gray-200 text-gray-700'
-                        }`}>
-                          {typeAbbr}
-                     </span>
-                     <span className="text-sm font-bold text-gray-500">
-                       {customerName}
-                     </span>
-                     <span className="text-gray-300 font-black px-1">•</span>
-                     <span className="font-bold text-secondary text-sm">
-                       {getTimeElapsed(expandedOrder.created_at)}
-                     </span>
-                  </div>
-                </div>
-                <button onClick={() => setExpandedOrder(null)} className="w-12 h-12 bg-white border border-gray-200 text-gray-500 rounded-xl flex items-center justify-center hover:bg-red-50 hover:text-red-600 hover:border-red-100 transition-all shadow-sm">
-                  <X size={24} />
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-6 custom-scrollbar bg-white">
-                <ul className="space-y-4">
-                  {detailsList.map((item: any, index: number) => {
-                    const options = getFormattedOptions(item);
-                    return (
-                      <li key={index} className="flex flex-col border-b border-gray-100 pb-4 last:border-0 last:pb-0">
-                        <div className="flex items-start gap-3">
-                          <span className="font-black text-lg text-secondary min-w-[35px] bg-gray-100 text-center py-1 rounded-md">{item.quantity}x</span>
-                          <div className="flex-1 min-w-0 pt-1">
-                            <span className="font-black text-lg text-gray-800 leading-tight block">{item.product?.name || item.name}</span>
-                            {options.length > 0 && (
-                              <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                                {options.map((opt, i) => (
-                                  <div key={i} className="text-[11px] font-bold text-blue-600 uppercase tracking-wider bg-blue-50 px-2 py-1.5 rounded-md border border-blue-100">+ {opt}</div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-
-              <div className={`p-5 flex justify-between items-center ${getStatusFooterStyles(expandedOrder.status)}`}>
-                <div className="flex flex-col">
-                  <span className="font-bold text-xs uppercase tracking-widest opacity-90">Total de la commande</span>
-                  <span className="text-2xl font-black leading-none mt-1">{expandedOrder.total_price?.toFixed(2)} €</span>
-                </div>
-                
-                {isPrete && (
-                  <button
-                    onClick={() => { 
-                      handleCompleteOrder(expandedOrder.id); 
-                      setExpandedOrder(null); 
-                    }}
-                    className="bg-white text-[#04B855] px-6 py-3 rounded-xl font-black uppercase text-sm tracking-wider hover:bg-gray-50 active:scale-95 transition-all shadow-md flex items-center gap-2 border border-white/20"
-                  >
-                    <CheckCircle2 size={20} strokeWidth={3} /> Terminer la commande
-                  </button>
-                )}
-              </div>
-
-            </div>
-          </div>
-        );
-      })()}
-
     </div>,
     document.body
   );
