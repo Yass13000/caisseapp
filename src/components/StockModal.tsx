@@ -2,13 +2,13 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Package, Search, ChevronDown, ChevronRight, Layers, AlertOctagon, ListTree } from 'lucide-react';
-// Note: RESTAURANT_ID est gardé juste en dernier recours, mais on priorise le localStorage
 import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
 import { toast } from 'sonner';
 
 interface StockItem {
   id: number | string;
   name: string;
+  description: string; 
   category: string;
   is_available: boolean;
   image: string;
@@ -47,27 +47,18 @@ const StockModal = ({ onClose }: StockModalProps) => {
         return;
       }
 
-      // 1. Récupération des Produits
       const { data: productsData, error: productsError } = await supabase
-        .from('product')
-        .select('id, name, category, is_available, image')
-        .eq('restaurant_id', activeRestoId);
+        .from('product').select('id, name, description, category, is_available, image').eq('restaurant_id', activeRestoId);
 
       if (productsError) throw productsError;
 
-      // 2. Récupération des Options
       const { data: optionsData, error: optionsError } = await supabase
-        .from('options')
-        .select('id, name, is_available, image_url')
-        .eq('restaurant_id', activeRestoId);
+        .from('options').select('id, name, description, is_available, image_url').eq('restaurant_id', activeRestoId);
 
       if (optionsError) throw optionsError;
 
-      // 3. Mapping des catégories d'Options
       const { data: groupsData } = await supabase
-        .from('option_groups')
-        .select(`name, option_group_links (option_id)`)
-        .eq('restaurant_id', activeRestoId);
+        .from('option_groups').select(`name, option_group_links (option_id)`).eq('restaurant_id', activeRestoId);
 
       const optionCategoryMap: Record<string, string> = {};
       if (groupsData) {
@@ -82,20 +73,23 @@ const StockModal = ({ onClose }: StockModalProps) => {
         });
       }
 
-      // 4. Récupération des Sous-Options (et de leurs groupes pour la catégorie)
       const { data: subGroupsData } = await supabase
-        .from('sub_option_groups')
-        .select(`name, sub_option_choices (id, name, is_available)`);
+        .from('sub_option_groups').select(`name, sub_option_choices (id, name, is_available)`);
 
-      // FORMATAGE DES DONNÉES
       const formattedProducts: StockItem[] = (productsData || []).map(p => ({
-        ...p,
+        id: p.id,
+        name: p.name,
+        description: p.description || '',
+        category: p.category,
+        is_available: p.is_available,
+        image: p.image || '',
         type: 'product'
       }));
 
       const formattedOptions: StockItem[] = (optionsData || []).map((o: any) => ({
         id: o.id,
         name: o.name,
+        description: o.description || '',
         category: optionCategoryMap[o.id] || 'Autres', 
         is_available: o.is_available,
         image: o.image_url || '',
@@ -107,11 +101,11 @@ const StockModal = ({ onClose }: StockModalProps) => {
         subGroupsData.forEach((group: any) => {
           if (group.sub_option_choices) {
             group.sub_option_choices.forEach((choice: any) => {
-              // Éviter les doublons stricts si la base en renvoie
               if (!formattedSubOptions.find(so => so.id === choice.id)) {
                 formattedSubOptions.push({
                   id: choice.id,
                   name: choice.name,
+                  description: '', 
                   category: group.name || 'Autres',
                   is_available: choice.is_available,
                   image: '',
@@ -131,33 +125,73 @@ const StockModal = ({ onClose }: StockModalProps) => {
     }
   };
 
+  const handleDeactivateAll = async (itemsToDisable: StockItem[]) => {
+    const activeToDisable = itemsToDisable.filter(i => i.is_available);
+    if (activeToDisable.length === 0) {
+      toast.info("Tous les éléments correspondants sont déjà en rupture.");
+      return;
+    }
+
+    if (!confirm(`Voulez-vous vraiment passer ces ${activeToDisable.length} éléments en rupture d'un coup ?`)) return;
+
+    setIsLoading(true);
+
+    const productIds = activeToDisable.filter(i => i.type === 'product').map(i => i.id);
+    const optionIds = activeToDisable.filter(i => i.type === 'option').map(i => i.id);
+    const subOptionIds = activeToDisable.filter(i => i.type === 'sub_option').map(i => i.id);
+
+    try {
+      const batchQueries = [];
+      if (productIds.length > 0) {
+        batchQueries.push(supabase.from('product').update({ is_available: false }).in('id', productIds));
+      }
+      if (optionIds.length > 0) {
+        batchQueries.push(supabase.from('options').update({ is_available: false }).in('id', optionIds));
+      }
+      if (subOptionIds.length > 0) {
+        batchQueries.push(supabase.from('sub_option_choices').update({ is_available: false }).in('id', subOptionIds));
+      }
+
+      const results = await Promise.all(batchQueries);
+      const hasError = results.some(r => r.error);
+      if (hasError) throw new Error("Erreur lors de la désactivation groupée.");
+
+      setItems(current => 
+        current.map(item => {
+          const match = activeToDisable.some(d => d.id === item.id && d.type === item.type);
+          return match ? { ...item, is_available: false } : item;
+        })
+      );
+
+      toast.success(`${activeToDisable.length} éléments passés en rupture !`);
+    } catch (err: any) {
+      toast.error(err.message || "Impossible de désactiver les éléments.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const toggleStock = async (itemId: number | string, currentStatus: boolean, type: 'product' | 'option' | 'sub_option') => {
     const newStatus = !currentStatus;
     
-    // Définition de la bonne table selon le type
     let tableName = 'product';
     if (type === 'option') tableName = 'options';
     if (type === 'sub_option') tableName = 'sub_option_choices';
 
-    // Mise à jour optimiste
     setItems(current => 
       current.map(item => (item.id === itemId && item.type === type) ? { ...item, is_available: newStatus } : item)
     );
 
     try {
       const { data, error } = await supabase
-        .from(tableName)
-        .update({ is_available: newStatus })
-        .eq('id', itemId)
-        .select();
+        .from(tableName).update({ is_available: newStatus }).eq('id', itemId).select();
 
       if (error) throw error;
-      if (!data || data.length === 0) throw new Error("Action bloquée par la sécurité Supabase (RLS).");
+      if (!data || data.length === 0) throw new Error("Action bloquée (RLS).");
       
       const typeLabel = type === 'product' ? 'Produit' : type === 'option' ? 'Option' : 'Sous-option';
       toast.success(newStatus ? `${typeLabel} disponible` : `${typeLabel} désactivé(e)`);
     } catch (e: any) {
-      // Rollback en cas d'erreur
       setItems(current => 
         current.map(item => (item.id === itemId && item.type === type) ? { ...item, is_available: currentStatus } : item)
       );
@@ -172,8 +206,12 @@ const StockModal = ({ onClose }: StockModalProps) => {
   const filteredItems = items.filter(item => {
     const matchType = selectedType === 'all' || item.type === selectedType;
     const matchCategory = selectedCategory === 'Tous' || item.category === selectedCategory;
-    const matchSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchType && matchCategory && matchSearch;
+    
+    const query = searchQuery.toLowerCase().trim();
+    const matchName = item.name.toLowerCase().includes(query);
+    const matchDesc = item.description.toLowerCase().includes(query);
+    
+    return matchType && matchCategory && (matchName || matchDesc);
   });
 
   const outOfStockItems = filteredItems.filter(i => !i.is_available).sort((a, b) => a.name.localeCompare(b.name));
@@ -219,7 +257,8 @@ const StockModal = ({ onClose }: StockModalProps) => {
         )}
 
         <div className="flex-1 min-w-0">
-          <h4 className={`font-black text-base uppercase leading-tight ${!isAvailable && 'line-through opacity-80'}`}>
+          {/* ✅ FIX : Suppression de line-through pour garder le texte propre et lisible */}
+          <h4 className="font-black text-base uppercase leading-tight">
             {item.name}
           </h4>
           <span className="text-[11px] mt-1 block font-bold uppercase tracking-widest text-white/80">
@@ -249,7 +288,7 @@ const StockModal = ({ onClose }: StockModalProps) => {
           <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-gray-400" size={24} />
           <input 
             type="text" 
-            placeholder="Rechercher..." 
+            placeholder="Rechercher par nom ou ingrédient..." 
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl pl-16 pr-6 py-4 text-xl font-bold text-secondary focus:outline-none focus:border-primary focus:bg-white transition-colors"
@@ -267,7 +306,7 @@ const StockModal = ({ onClose }: StockModalProps) => {
       {/* CORPS */}
       <div className="flex flex-1 overflow-hidden">
         
-        {/* SIDEBAR CATÉGORIES (LISIBILITÉ AMÉLIORÉE) */}
+        {/* SIDEBAR CATÉGORIES */}
         <div className="w-[420px] bg-white border-r border-gray-200 flex flex-col py-8 overflow-y-auto custom-scrollbar z-0">
           <div className="flex flex-col gap-5 px-6">
             
@@ -431,6 +470,15 @@ const StockModal = ({ onClose }: StockModalProps) => {
             </div>
           ) : (
             <div className="space-y-10 pb-16">
+              
+              {searchQuery.trim().length > 0 && filteredItems.some(i => i.is_available) && (
+                <button 
+                  onClick={() => handleDeactivateAll(filteredItems)}
+                  className="w-full bg-red-600 hover:bg-red-700 text-white active:scale-[0.99] py-4 px-6 rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-md text-center"
+                >
+                  Désactiver tout ce qui contient "{searchQuery}"
+                </button>
+              )}
               
               {/* BLOC 1 : RUPTURES DE STOCK */}
               {outOfStockItems.length > 0 && (

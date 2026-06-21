@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion'; // ✅ FIX : Importation manquante ajoutée
 import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
 import { useCart } from '@/context/CartContext';
 import { toast } from "sonner";
@@ -17,7 +18,7 @@ import {
 import ProductCard from '@/features/menu/components/ProductCard';
 import OptionsModal from '@/features/menu/components/OptionsModal';
 import ProductVariantsModal from '@/components/ProductVariantsModal';
-import OrderTrackerModal from '@/components/OrderTrackerModal';
+import OrderTrackerModal  from '@/components/OrderTrackerModal';
 import OrderHistoryModal from '@/components/OrderHistoryModal';
 import SettingsModal from '@/components/SettingsModal';
 import StockModal from '@/components/StockModal';
@@ -203,14 +204,14 @@ const generateAndPrintReceipt = async (restaurantName: string, orderNumber: stri
       <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold;"><span>Payé par</span><span>${paymentMethod.toUpperCase()}</span></div>
       `}
 
-      <div style="margin-top: 10px; font-size: 11px; border-top: 1px dashed black; padding-top: 5px; border-bottom: 1px dashed black; padding-bottom: 5px;">
-        <div style="display: flex; justify-content: space-between; font-weight: bold;">
+      <div style="width: 100%; border-top: 1px dashed black; margin: 10px 0; padding-top: 5px;">
+        <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 11px;">
           <span style="width: 25%;">Taux</span>
           <span style="width: 25%; text-align: right;">HT</span>
           <span style="width: 25%; text-align: right;">TVA</span>
           <span style="width: 25%; text-align: right;">TTC</span>
         </div>
-        <div style="display: flex; justify-content: space-between; margin-top: 3px;">
+        <div style="display: flex; justify-content: space-between; font-size: 11px; margin-top: 3px;">
           <span style="width: 25%;">5.5%</span>
           <span style="width: 25%; text-align: right;">${totalHT.toFixed(2)} €</span>
           <span style="width: 25%; text-align: right;">${totalTVA.toFixed(2)} €</span>
@@ -329,8 +330,25 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-[9999999] bg-black/70 backdrop-blur-md flex items-center justify-center p-4 font-helvetica select-none animate-in fade-in duration-200">
-      <div className="bg-[#F3F4F6] w-[1000px] h-[580px] max-w-[95vw] max-h-[95vh] rounded-[2.5rem] shadow-2xl flex overflow-hidden border border-white/20">
+    <motion.div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-[9999999] bg-black/60 backdrop-blur-[2px] flex items-center justify-center p-4 font-helvetica select-none"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.16, ease: "linear" }}
+      style={{ willChange: 'opacity' }}
+    >
+      <motion.div 
+        className="bg-[#F3F4F6] w-[1000px] h-[580px] max-w-[95vw] max-h-[95vh] rounded-[2.5rem] shadow-2xl flex overflow-hidden border border-white/20"
+        initial={{ y: 20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 20, opacity: 0 }}
+        transition={{ type: 'spring', damping: 28, stiffness: 400, mass: 0.5 }}
+        style={{ willChange: 'transform, opacity', transform: 'translateZ(0)' }}
+        onClick={(e) => e.stopPropagation()}
+      >
         
         <div className="w-[35%] bg-white border-r border-gray-200 flex flex-col p-6 justify-between">
           <div className="space-y-6">
@@ -354,7 +372,7 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
             {lines.length > 0 && (
               <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1 custom-scrollbar">
                 {lines.map((line, idx) => (
-                  <div key={idx} className="flex justify-between items-center bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl animate-in slide-in-from-bottom-2 duration-150">
+                  <div key={idx} className="flex justify-between items-center bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl">
                     <span className="font-black text-xs uppercase text-gray-500 flex items-center gap-2">
                       {line.method === 'CB' ? <CreditCard size={14} className="text-blue-500" /> : <Banknote size={14} className="text-primary" />}
                       {line.method}
@@ -389,7 +407,7 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
               <div className="text-2xl font-black text-secondary">{tenderedStr || '0.00'} <span className="text-sm text-gray-400">€</span></div>
             </div>
             {changeDue > 0 && (
-              <div className="bg-amber-500 text-white px-4 py-2 rounded-xl font-black text-sm animate-in zoom-in-95">
+              <div className="bg-amber-500 text-white px-4 py-2 rounded-xl font-black text-sm">
                 Rendu: {changeDue.toFixed(2)} €
               </div>
             )}
@@ -422,11 +440,10 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
               </div>
             </div>
           </div>
-
         </div>
 
-      </div>
-    </div>,
+      </motion.div>
+    </motion.div>,
     document.body
   );
 };
@@ -744,7 +761,6 @@ const Caisse = () => {
     }
   };
 
-  // --- L'INJECTION "DOUBLE COUCHE" EST ICI ---
   const handleAddToCartFromModal = (p: Product, incomingData: any) => {
     let finalFlatOptions: any[] = [];
     let finalRawSelections: any = null;
@@ -1178,7 +1194,7 @@ const Caisse = () => {
 
             <div className="p-4 grid grid-cols-5 gap-3 border-t border-gray-200">
               {categories.map(cat => (
-                <button key={cat.name} onClick={() => setSelectedCategory(cat.name)} className={`h-[70px] rounded-xl font-black text-[13px] xl:text-[15px] uppercase tracking-wide transition-all border-4 ${selectedCategory === cat.name ? 'text-white shadow-md scale-[1.02]' : 'bg-gray-50 border-gray-100 hover:border-gray-300'}`} style={selectedCategory === cat.name ? { backgroundColor: themeColors.secondary, borderColor: themeColors.secondary } : { color: themeColors.secondary }}>
+                <button key={cat.name} onClick={() => setSelectedCategory(cat.name)} className={`h-[70px] rounded-xl font-black text-[13px] xl:text-[15px] uppercase tracking-wide transition-all border-4`} style={{ backgroundColor: selectedCategory === cat.name ? themeColors.secondary : '#f9fafb', borderColor: selectedCategory === cat.name ? themeColors.secondary : '#f3f4f6', color: selectedCategory === cat.name ? '#ffffff' : themeColors.secondary }}>
                   {cat.name}
                 </button>
               ))}
@@ -1352,7 +1368,11 @@ const Caisse = () => {
         />
       )}
 
-      {isPaymentModalOpen && <PaymentModal subtotal={finalTotal} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={finalizePayment} isProcessing={isProcessing} />}
+      <AnimatePresence>
+        {isPaymentModalOpen && (
+          <PaymentModal subtotal={finalTotal} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={finalizePayment} isProcessing={isProcessing} />
+        )}
+      </AnimatePresence>
 
       {isCashSessionModalOpen && (
         <CashSessionModal 
@@ -1419,7 +1439,8 @@ const Caisse = () => {
           onSelectVariant={(v: any) => { 
             const rawVariantName = v.variant_name || v.name || '';
             const cleanVariantName = rawVariantName.replace(/\s*pi[èe]ces?/gi, '').trim();
-            const finalName = cleanVariantName ? `${selectedProductForVariants.name} - ${cleanVariantName}` : selectedProductForVariants.name;
+            
+            const finalName = cleanVariantName ? `${selectedProductForVariants.name} (${cleanVariantName})` : selectedProductForVariants.name;
 
             setSelectedProductForVariants(null); 
             setIsVariantsModalOpen(false); 
