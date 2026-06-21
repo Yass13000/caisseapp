@@ -67,6 +67,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const [activeMenuOrderId, setActiveMenuOrderId] = useState<string | number | null>(null);
   const [expandedOrder, setExpandedOrder] = useState<Order | null>(null);
   const [hiddenOptionNames, setHiddenOptionNames] = useState<string[]>([]);
+  const [preparedItems, setPreparedItems] = useState<Record<string, boolean>>({});
 
   // VARIABLES DE FILTRAGE ASSIGNÉES EN HAUT DE COMPOSANT (SÉCURISÉ)
   const activeOrders = orders.filter(o => !isOrderClosed(o.status));
@@ -83,6 +84,10 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
     window.addEventListener('click', handleCloseMenus);
     return () => window.removeEventListener('click', handleCloseMenus);
   }, []);
+
+  const togglePrepared = (key: string) => {
+    setPreparedItems(prev => ({ ...prev, [key]: !prev[key] }));
+  };
 
   const getTimeElapsed = (dateString: string) => {
     const orderDate = new Date(dateString);
@@ -266,19 +271,43 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
         });
 
         localGrouped.forEach(opt => {
-          const optNameLower = opt.name.toLowerCase().trim();
+          let finalName = opt.name.trim();
+          let finalQty = opt.qty;
+
+          // Extraction et nettoyage d'un éventuel multiplicateur imbriqué (ex: "2X COMEBACK...")
+          const matchPrefix = finalName.match(/^(\d+)\s*x\s*/i);
+          if (matchPrefix) {
+            const multiplier = parseInt(matchPrefix[1], 10);
+            finalQty = finalQty * multiplier;
+            finalName = finalName.replace(/^(\d+)\s*x\s*/i, '').trim();
+          } else {
+            const matchSuffix = finalName.match(/\s*x\s*(\d+)$/i);
+            if (matchSuffix) {
+              const multiplier = parseInt(matchSuffix[1], 10);
+              finalQty = finalQty * multiplier;
+              finalName = finalName.replace(/\s*x\s*(\d+)$/i, '').trim();
+            }
+          }
+
           const isHiddenOnKds = hiddenOptionNames.some(hidden => {
-            const h = hidden.toLowerCase().trim();
-            return optNameLower === h || optNameLower === h + 's' || optNameLower + 's' === h;
+            const normalize = (str: string) => {
+              if (!str) return '';
+              return str
+                .toLowerCase()
+                .trim()
+                .replace(/s\b/g, '') // Enlève les 's' en fin de mot
+                .replace(/[^a-z0-9]/g, ''); // Nettoie les espaces/caractères spéciaux
+            };
+            return normalize(finalName) === normalize(hidden);
           });
 
           if (isHiddenOnKds) {
             kdsFalseOptions.push({
-              name: opt.name,
-              quantity: itemQty * opt.qty
+              name: finalName,
+              quantity: itemQty * finalQty
             });
           } else {
-            normalOptions.push(opt.qty > 1 ? `${opt.qty}x ${opt.name}` : opt.name);
+            normalOptions.push(finalQty > 1 ? `${finalQty}x ${finalName}` : finalName);
           }
         });
       }
@@ -375,23 +404,38 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
                   {/* CORPS DU TICKET : SÉPARATION ET PROFILES GRANDS DES OPTIONS MASQUÉES KDS */}
                   <div className="bg-white rounded-none p-3 w-full space-y-1">
-                    {getOrderLines(order).map((line, i) => (
-                      <div key={i} className="border-b border-gray-50 py-1 flex flex-col last:border-0">
-                        <div className="text-xs flex items-start truncate leading-tight">
-                          <span className="mr-2 text-secondary font-black flex-shrink-0">{line.quantity}x</span> 
-                          <span className={`truncate ${line.type === 'kds_false_option' ? 'text-amber-600 bg-amber-50 font-black px-1 border-l-2 border-amber-500 uppercase' : 'text-slate-800 font-bold'}`}>
-                            {line.name}
-                          </span>
-                        </div>
-                        {line.subOptions && line.subOptions.length > 0 && (
-                          <div className="pl-6 space-y-0.5 mt-0.5">
-                            {line.subOptions.map((opt, idx) => (
-                              <div key={idx} className="text-[10px] font-bold text-blue-500 uppercase tracking-wider leading-tight">+ {opt}</div>
-                            ))}
+                    {getOrderLines(order).map((line, i) => {
+                      const mainKey = `${order.id}-line-${i}`;
+                      return (
+                        <div key={i} className="border-b border-gray-50 py-1 flex flex-col last:border-0">
+                          <div 
+                            onClick={() => togglePrepared(mainKey)}
+                            className={`text-xs flex items-start truncate leading-tight cursor-pointer transition-all ${preparedItems[mainKey] ? 'bg-lime-400' : ''}`}
+                          >
+                            <span className={`mr-2 font-black flex-shrink-0 ${preparedItems[mainKey] ? 'text-black' : 'text-secondary'}`}>{line.quantity}x</span> 
+                            <span className={`truncate ${line.type === 'kds_false_option' ? 'text-amber-600 bg-amber-50 font-black px-1 border-l-2 border-amber-500 uppercase' : 'text-slate-800 font-bold'} ${preparedItems[mainKey] ? 'text-black' : ''}`}>
+                              {line.name}
+                            </span>
                           </div>
-                        )}
-                      </div>
-                    ))}
+                          {line.subOptions && line.subOptions.length > 0 && (
+                            <div className="pl-6 space-y-0.5 mt-0.5">
+                              {line.subOptions.map((opt, idx) => {
+                                const subKey = `${order.id}-line-${i}-sub-${idx}`;
+                                return (
+                                  <div 
+                                    key={idx} 
+                                    onClick={() => togglePrepared(subKey)}
+                                    className={`text-[10px] font-bold uppercase tracking-wider leading-tight cursor-pointer transition-all ${preparedItems[subKey] ? 'bg-lime-400 text-black' : 'text-blue-500'}`}
+                                  >
+                                    + {opt}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
 
                   {/* FOOTER EXTRA-COMPACT UNIQUE SUR 1 SEULE LIGNE */}

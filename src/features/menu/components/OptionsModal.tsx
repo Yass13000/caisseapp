@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabaseClient';
 export interface CustomizationOption { id: number | string; name: string; price: number; }
 interface StepData { id: string; min_choices: number; max_choices: number; step_order: number; group_name: string; allow_multiple: boolean; options: CustomizationOption[]; isSubOption?: boolean; free_choices_count?: number; }
 
-const OptionsModal = ({ product, onAddToCart, onClose }: any) => {
+const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [baseSteps, setBaseSteps] = useState<StepData[]>([]);
   const [allSubGroups, setAllSubGroups] = useState<any[]>([]);
@@ -43,7 +43,10 @@ const OptionsModal = ({ product, onAddToCart, onClose }: any) => {
     };
   }, []);
 
+  // LE MOTEUR RÉPARÉ : Il ne boucle plus à cause de l'horloge !
   useEffect(() => {
+    let isMounted = true;
+    
     const fetchRules = async () => {
       setIsLoading(true);
       try {
@@ -106,21 +109,35 @@ const OptionsModal = ({ product, onAddToCart, onClose }: any) => {
         const hasValidSubGroups = finalProdGroups.some(g => formatSubGroup(g).options.length > 0);
 
         if (formattedBaseSteps.length === 0 && !hasValidSubGroups) {
-            setTimeout(() => { onAddToCart(product, []); onClose(); }, 0);
+            if (isMounted) { setTimeout(() => { onAddToCart(product, []); onClose(); }, 0); }
             return;
         }
 
-        setBaseSteps(formattedBaseSteps);
-        setAllSubGroups(subGroupsData);
-        setStepSelections({});
+        if (isMounted) {
+          setBaseSteps(formattedBaseSteps);
+          setAllSubGroups(subGroupsData);
+          
+          // --- INJECTION MAGIQUE DE L'HISTORIQUE ---
+          if (initialSelections && Object.keys(initialSelections).length > 0) {
+            setStepSelections(initialSelections);
+          } else {
+            setStepSelections({});
+          }
+        }
+
       } catch (e) { 
-        onAddToCart(product, []); onClose(); 
+        if (isMounted) { onAddToCart(product, []); onClose(); }
       } finally { 
-        setIsLoading(false); 
+        if (isMounted) setIsLoading(false); 
       }
     };
+
     fetchRules();
-  }, [product.id, product.isSolo, formatSubGroup]); 
+
+    return () => { isMounted = false; };
+  // EXCLUSION DE ONCLOSE ET ONADDTOCART POUR BLOQUER LA BOUCLE INFINIE
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product.id, product.isSolo]); 
 
   const activeSteps = useMemo(() => {
     const steps: StepData[] = [];
@@ -197,8 +214,6 @@ const OptionsModal = ({ product, onAddToCart, onClose }: any) => {
             });
         });
 
-        // --- CORRECTION ABSOLUE ANTI-FUSION ---
-        // 1. On intègre TOUTES les options et SOUS-OPTIONS dans la signature string
         const optionsSignature = flatOrderedOptions.map(o => `${o.id}${o.isSubOption ? '_sub' : ''}`).join('-');
         const cartItemId = `${product.id}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}-${optionsSignature}`;
 
@@ -209,14 +224,14 @@ const OptionsModal = ({ product, onAddToCart, onClose }: any) => {
             uuid: cartItemId        
         };
 
-        // 2. L'ASTUCE ICI : On injecte l'ID unique DIRECTEMENT DANS CHAQUE SOUS-OPTION.
-        // Si le panier ignore l'ID du produit et compare le tableau des options, il verra des tableaux mathématiquement différents et refusera la fusion.
         const finalOptionsToCart = flatOrderedOptions.map(opt => ({
             ...opt,
             _fusionId: cartItemId 
         }));
 
-        onAddToCart(uniqueProduct, finalOptionsToCart);
+        // ON ENVOIE LA DOUBLE COUCHE AU PANIER (POUR L'HISTORIQUE ET L'IMPRESSION)
+        onAddToCart(uniqueProduct, { flatOptions: finalOptionsToCart, rawSelections: latestSelections });
+        
         setIsProcessing(false);
         onClose();
     }, 150);

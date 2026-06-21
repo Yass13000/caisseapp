@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
@@ -10,7 +10,7 @@ import {
   ClipboardList, History, Package, Wifi, WifiOff,
   UserRound, CalendarDays, LayoutDashboard, AlertTriangle,
   CreditCard, Banknote, CheckCircle2, Store, ArchiveRestore,
-  Calculator, Hourglass 
+  Calculator, Hourglass, Plus, RotateCcw
 } from 'lucide-react';
 
 // Composants
@@ -25,7 +25,6 @@ import OrdersDashboardModal from '@/components/OrdersDashboardModal';
 import NewtonsCradleLoader from '@/components/NewtonsCradleLoader';
 import CashSessionModal from '@/components/CashSessionModal';
 
-// IMPORT DE LA NOUVELLE MODALE LIVRAISON
 import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse'; 
 
 export interface Product {
@@ -45,6 +44,23 @@ const ORDER_TYPE_IDS = {
   'SUR PLACE': '633425b1-f86c-4c17-8cba-b258906ad317',
   'EMPORTER': '2cac3f10-73e2-40a5-a7e0-053bd861b4d9',
   'LIVRAISON': 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d'
+};
+
+const getSecureSetting = (key: string, defaultValue: any) => {
+  if ((window as any).electronAPI?.getSetting) {
+    return (window as any).electronAPI.getSetting(key, defaultValue);
+  }
+  const local = localStorage.getItem(key);
+  if (local === null || local === undefined) return defaultValue;
+  return local;
+};
+
+const setSecureSetting = (key: string, value: any) => {
+  if ((window as any).electronAPI?.setSetting) {
+    (window as any).electronAPI.setSetting(key, value);
+  } else {
+    localStorage.setItem(key, String(value));
+  }
 };
 
 const hexToHslString = (hex: string) => {
@@ -106,20 +122,13 @@ const getItemTotal = (item: any) => {
   return (basePrice + optsPrice) * (item.quantity || 1);
 };
 
-const getActiveRestaurantId = () => localStorage.getItem('pos_restaurant_id');
+const getActiveRestaurantId = () => getSecureSetting('pos_restaurant_id', null);
 
-// 👇 MODIFICATION ICI : Utilisation de l'imprimante pour ouvrir le tiroir
 const openCashDrawer = async () => {
-  if (!(window as any).electronAPI) { toast.error("Non disponible sur la version Web."); return; }
+  if (!(window as any).electronAPI?.openDrawer) { toast.error("Non disponible sur la version Web."); return; }
   try {
-    const printerName = localStorage.getItem('imprimante_caisse') || undefined;
-    
-    // On envoie un ticket invisible (un point blanc de 1px)
-    // L'imprimante reçoit l'ordre, réagit et claque le tiroir sans imprimer de papier.
-    const receiptHtml = `<div style="font-size: 1px; color: white;">.</div>`;
-    
-    const result = await (window as any).electronAPI.printReceipt(receiptHtml, printerName);
-    
+    const printerName = getSecureSetting('imprimante_caisse', undefined) || undefined;
+    const result = await (window as any).electronAPI.openDrawer(printerName);
     if (!result?.success) {
       toast.error("Impossible de communiquer avec l'imprimante.");
     } else {
@@ -132,12 +141,16 @@ const openCashDrawer = async () => {
 
 const generateAndPrintReceipt = async (restaurantName: string, orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, deliveryFee: number, finalTotal: number, cashAmount: number) => {
   if (!(window as any).electronAPI) return;
-  const printerName = localStorage.getItem('imprimante_caisse') || undefined;
+  const printerName = getSecureSetting('imprimante_caisse', undefined) || undefined;
+  const receiptWidth = getSecureSetting('receipt_width', '72');
   
   const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const isCash = paymentMethod === 'counter';
+  const isCash = paymentMethod === 'counter' || paymentMethod.toLowerCase().includes('espèces');
   const isPending = paymentMethod === 'en attente';
   const changeDue = Math.max(0, cashAmount - finalTotal);
+
+  const totalHT = finalTotal / 1.055;
+  const totalTVA = finalTotal - totalHT;
 
   const itemsHtml = items.map(item => {
     const itemTotal = getItemTotal(item);
@@ -158,7 +171,7 @@ const generateAndPrintReceipt = async (restaurantName: string, orderNumber: stri
   }).join('');
 
   const receiptHtml = `
-    <div style="width: 72mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px;">
+    <div style="width: ${receiptWidth}mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px;">
       <div style="text-align: center; margin-bottom: 10px;">
         <h2 style="margin: 0; font-size: 18px; font-weight: bold; text-transform: uppercase;">${restaurantName}</h2>
         <p style="margin: 2px 0; font-size: 12px;">${date}</p>
@@ -176,7 +189,7 @@ const generateAndPrintReceipt = async (restaurantName: string, orderNumber: stri
       ` : ''}
 
       <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: bold; margin-bottom: 5px;">
-        <span>TOTAL</span><span>${finalTotal.toFixed(2)} €</span>
+        <span>TOTAL TTC</span><span>${finalTotal.toFixed(2)} €</span>
       </div>
       
       ${isPending ? `
@@ -187,8 +200,24 @@ const generateAndPrintReceipt = async (restaurantName: string, orderNumber: stri
       <div style="display: flex; justify-content: space-between; font-size: 12px; color: #555;"><span>Espèces</span><span>${cashAmount.toFixed(2)} €</span></div>
       <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold; margin-top: 2px;"><span>Rendu</span><span>${changeDue.toFixed(2)} €</span></div>
       ` : `
-      <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold;"><span>Payé par</span><span>CARTE</span></div>
+      <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold;"><span>Payé par</span><span>${paymentMethod.toUpperCase()}</span></div>
       `}
+
+      <div style="margin-top: 10px; font-size: 11px; border-top: 1px dashed black; padding-top: 5px; border-bottom: 1px dashed black; padding-bottom: 5px;">
+        <div style="display: flex; justify-content: space-between; font-weight: bold;">
+          <span style="width: 25%;">Taux</span>
+          <span style="width: 25%; text-align: right;">HT</span>
+          <span style="width: 25%; text-align: right;">TVA</span>
+          <span style="width: 25%; text-align: right;">TTC</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 3px;">
+          <span style="width: 25%;">5.5%</span>
+          <span style="width: 25%; text-align: right;">${totalHT.toFixed(2)} €</span>
+          <span style="width: 25%; text-align: right;">${totalTVA.toFixed(2)} €</span>
+          <span style="width: 25%; text-align: right;">${finalTotal.toFixed(2)} €</span>
+        </div>
+      </div>
+
       <div style="text-align: center; margin-top: 20px; font-size: 12px;">
         <p style="margin: 0;">Merci de votre visite !</p><p style="margin: 2px 0;">A bientot.</p>
       </div>
@@ -203,7 +232,8 @@ const generateAndPrintReceipt = async (restaurantName: string, orderNumber: stri
 
 const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: string, items: any[]) => {
   if (!(window as any).electronAPI) return;
-  const printerName = localStorage.getItem('imprimante_cuisine') || undefined;
+  const printerName = getSecureSetting('imprimante_cuisine', undefined) || undefined;
+  const receiptWidth = getSecureSetting('receipt_width', '72');
   
   const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
@@ -224,7 +254,7 @@ const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: str
   }).join('');
 
   const receiptHtml = `
-    <div style="width: 72mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; color: black;">
+    <div style="width: ${receiptWidth}mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; color: black;">
       <div style="text-align: center; margin-bottom: 15px;">
         <h2 style="margin: 0; font-size: 24px; font-weight: 900; text-transform: uppercase;">CUISINE (SAC)</h2>
         <p style="margin: 2px 0; font-size: 12px;">${date}</p>
@@ -246,11 +276,13 @@ const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: str
 };
 
 const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing }: any) => {
-  const [tenderedStr, setTenderedStr] = useState("");
   const roundedSubtotal = parseFloat(subtotal.toFixed(2));
-  const tenderedAmount = parseFloat(tenderedStr) || 0;
-  const changeDue = Math.max(0, tenderedAmount - roundedSubtotal);
-  const isCashValid = tenderedAmount >= roundedSubtotal;
+  const [remaining, setRemaining] = useState(roundedSubtotal);
+  const [tenderedStr, setTenderedStr] = useState("");
+  const [lines, setLines] = useState<any[]>([]);
+
+  const inputAmount = parseFloat(tenderedStr) || 0;
+  const changeDue = Math.max(0, inputAmount - remaining);
 
   const handleNumpad = (val: string) => {
     if (val === 'DEL') setTenderedStr(p => p.slice(0, -1));
@@ -259,63 +291,138 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
     else { if (tenderedStr.includes('.') && tenderedStr.split('.')[1]?.length >= 2) return; setTenderedStr(p => p + val); }
   };
 
-  const handleAddAmount = (amount: number) => setTenderedStr((parseFloat(tenderedStr) || 0) + amount.toFixed(2).replace('.00', ''));
-  const numpadBtnClass = "h-12 bg-gray-100 hover:bg-gray-200 text-secondary text-xl font-black rounded-xl active:scale-95 transition-all shadow-sm";
-  const shortcutBtnClass = "flex-1 bg-white border-2 border-gray-200 text-secondary font-black text-lg rounded-xl hover:border-secondary hover:bg-gray-50 active:scale-95 transition-all shadow-sm flex items-center justify-center gap-1 disabled:opacity-50";
+  const handleAddAmount = (amount: number) => {
+    const current = parseFloat(tenderedStr) || 0;
+    setTenderedStr((current + amount).toFixed(2).replace(/\.00$/, ''));
+  };
+
+  const addPaymentLine = (method: 'CB' | 'Espèces') => {
+    let amt = inputAmount;
+    if (amt === 0 || (amt > remaining && method === 'CB')) {
+      amt = remaining;
+    }
+
+    const newLine = { method, amount: parseFloat(amt.toFixed(2)) };
+    const nextRemaining = parseFloat((remaining - newLine.amount).toFixed(2));
+    
+    const updatedLines = [...lines, newLine];
+    setLines(updatedLines);
+    setTenderedStr("");
+
+    if (nextRemaining <= 0) {
+      const finalMethod = updatedLines.map(l => `${l.method}: ${l.amount}€`).join(' + ');
+      const totalCash = updatedLines.filter(l => l.method === 'Espèces').reduce((sum, l) => sum + l.amount, 0);
+      onConfirm(updatedLines.length > 1 ? `Fractionné (${finalMethod})` : (method === 'CB' ? 'carte bancaire' : 'counter'), totalCash);
+    } else {
+      setRemaining(nextRemaining);
+    }
+  };
+
+  const handleExactCount = () => {
+    setTenderedStr(remaining.toFixed(2).replace(/\.00$/, ''));
+  };
+
+  const resetSplit = () => {
+    setRemaining(roundedSubtotal);
+    setLines([]);
+    setTenderedStr("");
+  };
 
   return createPortal(
-    <div className="fixed inset-0 z-[9999999] bg-black/70 backdrop-blur-md flex items-center justify-center p-4 font-helvetica select-none">
-      <div className="bg-white w-[900px] h-[520px] max-w-[95vw] max-h-[95vh] rounded-[2rem] shadow-2xl flex overflow-hidden border border-white/20 animate-in fade-in zoom-in-95 duration-200">
+    <div className="fixed inset-0 z-[9999999] bg-black/70 backdrop-blur-md flex items-center justify-center p-4 font-helvetica select-none animate-in fade-in duration-200">
+      <div className="bg-[#F3F4F6] w-[1000px] h-[580px] max-w-[95vw] max-h-[95vh] rounded-[2.5rem] shadow-2xl flex overflow-hidden border border-white/20">
         
-        <div className="w-[30%] bg-gray-50 border-r border-gray-200 flex flex-col p-6 justify-between relative overflow-hidden">
-          <div className="absolute top-[-20%] left-[-20%] w-[150%] h-[150%] bg-gradient-to-br from-gray-100 to-gray-50 rounded-full opacity-50 pointer-events-none"></div>
-          <div className="relative z-10 flex flex-col items-center text-center mt-2">
-            <h3 className="text-gray-400 font-bold uppercase tracking-widest text-xs mb-1">Total à payer</h3>
-            <div className="text-5xl font-black text-secondary tracking-tighter mb-8">{roundedSubtotal.toFixed(2)}<span className="text-3xl text-gray-400 ml-1">€</span></div>
-            <button onClick={() => onConfirm('carte bancaire', 0)} disabled={isProcessing} className="w-full bg-[#04B855] text-white rounded-2xl p-6 flex flex-col items-center justify-center gap-3 hover:bg-[#039d48] active:scale-95 transition-all shadow-lg disabled:opacity-50 border-4 border-[#04B855] hover:border-white">
-              <CreditCard size={48} strokeWidth={2.5} />
-              <span className="text-xl font-black uppercase tracking-widest">Carte Bancaire</span>
-            </button>
-          </div>
-          <button onClick={onClose} disabled={isProcessing} className="relative z-10 w-full py-3 rounded-xl border-2 border-gray-200 text-gray-500 font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all disabled:opacity-50 text-sm">Retour</button>
-        </div>
+        <div className="w-[35%] bg-white border-r border-gray-200 flex flex-col p-6 justify-between">
+          <div className="space-y-6">
+            <div className="flex justify-between items-start">
+              <div>
+                <div className="text-3xl font-black text-secondary tracking-tight">{roundedSubtotal.toFixed(2)} €</div>
+                <div className="text-[10px] font-black uppercase text-gray-400 tracking-wider mt-1">Total Ticket</div>
+              </div>
+              {lines.length > 0 && (
+                <button onClick={resetSplit} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all active:scale-95 text-gray-500">
+                  <RotateCcw size={18} />
+                </button>
+              )}
+            </div>
 
-        <div className="flex-1 bg-white flex flex-col relative">
-          <div className="flex items-center gap-3 p-4 border-b border-gray-100">
-            <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-secondary"><Banknote size={20} /></div>
-            <h2 className="text-xl font-black text-secondary uppercase tracking-wider">Espèces</h2>
-          </div>
-          
-          <div className="flex px-6 py-4 gap-4 bg-gray-50/50 border-b border-gray-100">
-            <div className="flex-1 bg-white border border-gray-200 rounded-xl p-3 shadow-sm flex flex-col justify-center">
-              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Reçu du client</span>
-              <div className={`text-3xl font-black mt-1 ${isCashValid ? 'text-[#04B855]' : 'text-secondary'}`}>{tenderedStr ? parseFloat(tenderedStr).toFixed(2) : '0.00'} €</div>
+            <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 shadow-inner min-h-[140px] flex flex-col justify-center text-center">
+              <div className="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">Reste à percevoir</div>
+              <div className={`text-4xl font-black tracking-tight ${remaining === 0 ? 'text-primary' : 'text-orange-500'}`}>{remaining.toFixed(2)} €</div>
             </div>
-            <div className="flex-1 bg-secondary rounded-xl p-3 shadow-md text-white flex flex-col justify-center">
-              <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Monnaie à rendre</span>
-              <div className="text-3xl font-black mt-1 text-[#FBBF24]">{changeDue > 0 ? changeDue.toFixed(2) : '0.00'} €</div>
-            </div>
-          </div>
 
-          <div className="flex-1 flex px-6 py-5 gap-6">
-            <div className="w-[35%] flex flex-col gap-2">
-              <button disabled={isProcessing} onClick={() => onConfirm('counter', roundedSubtotal)} className="flex-1 bg-white border-2 border-gray-200 text-secondary font-black text-sm rounded-xl hover:border-[#04B855] hover:bg-green-50 hover:text-[#04B855] active:scale-95 transition-all shadow-sm disabled:opacity-50">Compte Exact</button>
-              {[5, 10, 20, 50].map(amt => (
-                <button key={amt} disabled={isProcessing} onClick={() => handleAddAmount(amt)} className={shortcutBtnClass}><span className="text-gray-400 text-sm font-bold">+</span>{amt} €</button>
-              ))}
-            </div>
-            <div className="w-[65%] flex flex-col justify-between">
-              <div className="grid grid-cols-3 gap-2">
-                {['1','2','3','4','5','6','7','8','9','0','00','.'].map(key => (
-                  <button key={key} onClick={() => handleNumpad(key)} className={numpadBtnClass}>{key}</button>
+            {lines.length > 0 && (
+              <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1 custom-scrollbar">
+                {lines.map((line, idx) => (
+                  <div key={idx} className="flex justify-between items-center bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl animate-in slide-in-from-bottom-2 duration-150">
+                    <span className="font-black text-xs uppercase text-gray-500 flex items-center gap-2">
+                      {line.method === 'CB' ? <CreditCard size={14} className="text-blue-500" /> : <Banknote size={14} className="text-primary" />}
+                      {line.method}
+                    </span>
+                    <span className="font-black text-secondary text-sm">-{line.amount.toFixed(2)} €</span>
+                  </div>
                 ))}
               </div>
-              <div className="flex gap-2 h-14 mt-auto">
-                <button onClick={() => handleNumpad('DEL')} className="w-16 bg-red-50 text-red-500 font-black rounded-xl hover:bg-red-100 active:scale-95 transition-all border border-red-100 flex items-center justify-center shadow-sm"><Delete size={24} /></button>
-                <button disabled={!isCashValid || isProcessing} onClick={() => onConfirm('counter', tenderedAmount)} className="flex-1 bg-secondary text-white rounded-xl font-black uppercase text-lg tracking-wider hover:bg-secondary/90 active:scale-95 transition-all shadow-md disabled:opacity-50 disabled:grayscale flex items-center justify-center gap-2">{isProcessing ? "En cours..." : <><CheckCircle2 size={24} /> VALIDER</>}</button>
+            )}
+          </div>
+
+          <button onClick={onClose} disabled={isProcessing} className="w-full py-4 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-500 font-black uppercase tracking-wider active:scale-95 transition-all text-xs">
+            Retour
+          </button>
+        </div>
+
+        <div className="flex-1 flex flex-col p-6 gap-4">
+          
+          <div className="grid grid-cols-2 gap-4 flex-shrink-0">
+            <button onClick={() => addPaymentLine('CB')} disabled={isProcessing} className="h-20 bg-blue-600 text-white rounded-2xl flex flex-col items-center justify-center gap-1 hover:bg-blue-700 active:scale-95 transition-all shadow-md">
+              <CreditCard size={28} />
+              <span className="text-[10px] font-black uppercase tracking-widest">Carte Bancaire</span>
+            </button>
+            <button onClick={() => addPaymentLine('Espèces')} disabled={isProcessing || (inputAmount < remaining && inputAmount === 0)} className="h-20 bg-primary text-white rounded-2xl flex flex-col items-center justify-center gap-1 hover:bg-primary/90 active:scale-95 transition-all shadow-md disabled:opacity-50">
+              <Banknote size={28} />
+              <span className="text-[10px] font-black uppercase tracking-widest">Valider Espèces</span>
+            </button>
+          </div>
+
+          <div className="flex gap-4 items-center bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex-shrink-0 h-20">
+            <div className="flex-1">
+              <div className="text-2xl font-black text-secondary">{tenderedStr || '0.00'} <span className="text-sm text-gray-400">€</span></div>
+            </div>
+            {changeDue > 0 && (
+              <div className="bg-amber-500 text-white px-4 py-2 rounded-xl font-black text-sm animate-in zoom-in-95">
+                Rendu: {changeDue.toFixed(2)} €
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 flex gap-4 min-h-0">
+            <div className="w-[30%] flex flex-col gap-2">
+              <button onClick={handleExactCount} className="flex-1 bg-white border border-gray-200 hover:border-secondary text-secondary font-black text-sm rounded-xl active:scale-95 transition-all shadow-sm">
+                Compte Exact
+              </button>
+              {[5, 10, 20, 50].map(amt => (
+                <button key={amt} onClick={() => handleAddAmount(amt)} className="flex-1 bg-white border border-gray-200 hover:border-secondary text-secondary font-black text-sm rounded-xl active:scale-95 transition-all shadow-sm flex items-center justify-center gap-1">
+                  <Plus size={12} className="text-gray-400" /> {amt} €
+                </button>
+              ))}
+            </div>
+
+            <div className="flex-1 flex flex-col gap-2">
+              <div className="grid grid-cols-3 gap-2 flex-1">
+                {['1','2','3','4','5','6','7','8','9','0','00','.'].map(key => (
+                  <button key={key} onClick={() => handleNumpad(key)} className="bg-white border border-gray-200 hover:border-secondary text-secondary text-lg font-black rounded-xl active:scale-95 transition-all shadow-sm flex items-center justify-center">
+                    {key}
+                  </button>
+                ))}
+              </div>
+              <div className="h-14 flex-shrink-0">
+                <button onClick={() => handleNumpad('DEL')} className="w-full h-full bg-red-50 hover:bg-red-100 text-red-500 font-black rounded-xl active:scale-95 transition-all border border-red-100 flex items-center justify-center shadow-sm">
+                  <Delete size={20} />
+                </button>
               </div>
             </div>
           </div>
+
         </div>
 
       </div>
@@ -328,7 +435,7 @@ const Caisse = () => {
   const { state: cartState, addToCart, removeFromCart, updateQuantity, clearCart } = useCart();
   const navigate = useNavigate();
 
-  const [posRestoId, setPosRestoId] = useState<string | null>(localStorage.getItem('pos_restaurant_id') || null);
+  const [posRestoId, setPosRestoId] = useState<string | null>(getSecureSetting('pos_restaurant_id', null));
   const [tempRestoId, setTempRestoId] = useState("");
   
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -367,6 +474,8 @@ const Caisse = () => {
   const [isVariantsModalOpen, setIsVariantsModalOpen] = useState(false);
   const [selectedProductForVariants, setSelectedProductForVariants] = useState<Product | null>(null);
   
+  const [initialSelections, setInitialSelections] = useState<any>(null);
+
   const [orderType, setOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>('SUR PLACE');
   const [activeOrderTypes, setActiveOrderTypes] = useState<string[]>(['SUR PLACE', 'EMPORTER', 'LIVRAISON']);
   
@@ -374,8 +483,16 @@ const Caisse = () => {
   const [clientInfo, setClientInfo] = useState<{name: string, phone: string, address: string, additionalInfo: string, fee: number} | null>(null);
   const [deliveryFee, setDeliveryFee] = useState<number>(0);
 
+  const [editingItemKey, setEditingItemKey] = useState<string | null>(null);
+  const lastClickRef = useRef<{ id: string; time: number }>({ id: '', time: 0 });
+
   const customToast = (msg: string, type: 'success' | 'error' = 'success', options = {}) => 
   toast[type](msg, { duration: 800, ...options });
+
+  const subtotal = cartState.items.reduce((total, item) => total + getItemTotal(item), 0);
+  const cartItemCount = cartState.items.reduce((sum, item) => sum + (item.quantity || 1), 0);
+  const activeDeliveryFee = orderType === 'LIVRAISON' ? deliveryFee : 0;
+  const finalTotal = subtotal + activeDeliveryFee;
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -386,9 +503,50 @@ const Caisse = () => {
     return () => { clearInterval(timer); window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
   }, []);
 
+  const syncOfflineOrders = async () => {
+    if (!(window as any).electronAPI?.getOfflineOrders) return;
+    try {
+      const offlineOrders = await (window as any).electronAPI.getOfflineOrders();
+      if (!offlineOrders || offlineOrders.length === 0) return;
+
+      customToast(`Sync de ${offlineOrders.length} ticket(s) local...`, "success");
+
+      for (const order of offlineOrders) {
+        const { offline_id, is_update, target_id, ...supabasePayload } = order;
+        let error = null;
+
+        if (is_update && target_id) {
+          const { error: err } = await supabase
+            .from('orders')
+            .update(supabasePayload)
+            .eq('id', target_id);
+          error = err;
+        } else {
+          const { error: err } = await supabase
+            .from('orders')
+            .insert([supabasePayload]);
+          error = err;
+        }
+
+        if (!error) {
+          await (window as any).electronAPI.removeOfflineOrder(offline_id);
+        }
+      }
+      customToast("Caisse synchronisée !", "success");
+    } catch (err) {
+      console.error("Échec boucle sync:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (isOnline && isAuthenticated && posRestoId) {
+      syncOfflineOrders();
+    }
+  }, [isOnline, isAuthenticated, posRestoId]);
+
   useEffect(() => {
     if (pinCode.length === 4) {
-      if (pinCode === (localStorage.getItem('pos_pin') || '1234')) {
+      if (pinCode === (getSecureSetting('pos_pin', '1234'))) {
         setIsAuthenticated(true);
         setPinCode("");
 
@@ -405,7 +563,6 @@ const Caisse = () => {
         setTimeout(() => setPinCode(""), 300);
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pinCode]);
 
   useEffect(() => {
@@ -536,12 +693,10 @@ const Caisse = () => {
     setDeliveryFee(0);
     setClientInfo(null);
     
-    // On met à jour le type de commande automatiquement
     if (loadedOrderType && activeOrderTypes.includes(loadedOrderType)) {
       setOrderType(loadedOrderType as any);
     }
 
-    // On remplit les informations clients et les frais de livraison s'ils existent
     if (loadedClientInfo && Object.keys(loadedClientInfo).length > 0) {
       setClientInfo(loadedClientInfo);
       if (loadedClientInfo.fee) {
@@ -589,47 +744,60 @@ const Caisse = () => {
     }
   };
 
-  const handleAddToCartFromModal = (p: Product, selections: any) => {
-    const flatOptions: any[] = [];
-    let printOrder = 1;
+  // --- L'INJECTION "DOUBLE COUCHE" EST ICI ---
+  const handleAddToCartFromModal = (p: Product, incomingData: any) => {
+    let finalFlatOptions: any[] = [];
+    let finalRawSelections: any = null;
 
-    if (Array.isArray(selections)) {
-      selections.forEach(opt => { flatOptions.push({ ...opt, print_order: printOrder }); });
-    } else if (typeof selections === 'object' && selections !== null) {
-      const sortedKeys = Object.keys(selections).sort((a, b) => parseInt(a) - parseInt(b));
-      sortedKeys.forEach(key => {
-        const val = selections[key];
-        const arr = Array.isArray(val) ? val : [val];
-        arr.forEach((opt: any) => {
-          if (typeof opt === 'object') flatOptions.push({ ...opt, print_order: printOrder });
-          else if (typeof opt === 'string') flatOptions.push({ name: opt, price: 0, print_order: printOrder });
+    if (incomingData && incomingData.flatOptions && incomingData.rawSelections) {
+      finalFlatOptions = incomingData.flatOptions;
+      finalRawSelections = incomingData.rawSelections;
+    } 
+    else {
+      if (Array.isArray(incomingData)) {
+        incomingData.forEach(opt => { finalFlatOptions.push({ ...opt, print_order: 1 }); });
+      } else if (typeof incomingData === 'object' && incomingData !== null) {
+        const sortedKeys = Object.keys(incomingData).sort((a, b) => parseInt(a) - parseInt(b));
+        sortedKeys.forEach(key => {
+          const val = incomingData[key];
+          const arr = Array.isArray(val) ? val : [val];
+          arr.forEach((opt: any) => {
+            if (typeof opt === 'object') finalFlatOptions.push({ ...opt, print_order: 1 });
+            else if (typeof opt === 'string') finalFlatOptions.push({ name: opt, price: 0, print_order: 1 });
+          });
         });
-      });
+      }
+      finalRawSelections = incomingData;
     }
 
-    const optionsString = flatOptions.map(o => o.name).join('-');
+    const optionsString = finalFlatOptions.map(o => o.name).join('-');
     const optionsHash = btoa(encodeURIComponent(optionsString)).substring(0, 15);
     const uniqueCartKey = `${p.id}-${optionsHash}`;
+
+    let originalQty = 1;
+    if (editingItemKey) {
+      const found = cartState.items.find((item: any) => (item.customKey || item.cartKey || item.id) === editingItemKey);
+      if (found) originalQty = found.quantity || 1;
+      removeFromCart(editingItemKey);
+      setEditingItemKey(null);
+    }
 
     addToCart({
       id: uniqueCartKey,
       product: p,
-      selectedSubOptions: flatOptions,
-      quantity: 1,
+      selectedSubOptions: finalFlatOptions,
+      rawSelections: finalRawSelections,
+      quantity: originalQty,
       cartKey: uniqueCartKey,
       customKey: uniqueCartKey
     } as any);
 
     setIsOptionsModalOpen(false);
     setSelectedProduct(null);
+    setInitialSelections(null);
   };
 
-  const subtotal = cartState.items.reduce((total, item) => total + getItemTotal(item), 0);
-  const cartItemCount = cartState.items.reduce((sum, item) => sum + (item.quantity || 1), 0);
-  const activeDeliveryFee = orderType === 'LIVRAISON' ? deliveryFee : 0;
-  const finalTotal = subtotal + activeDeliveryFee;
-
-  const finalizePayment = async (method: 'carte bancaire' | 'counter', cashAmount: number = 0) => {
+  const finalizePayment = async (method: 'carte bancaire' | 'counter' | string, cashAmount: number = 0) => {
     if (cartState.items.length === 0) return;
     
     if (!currentSessionId) {
@@ -641,15 +809,62 @@ const Caisse = () => {
 
     setIsProcessing(true);
     
+    const activeRestoId = getActiveRestaurantId();
+    const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
+    const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
+    let targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
+
+    const offlineId = `offline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const orderPayload = {
+      offline_id: offlineId,
+      is_update: !!loadedOrderId,
+      target_id: loadedOrderId || null,
+      restaurant_id: activeRestoId,
+      total_price: parseFloat(finalTotal.toFixed(2)),
+      delivery_fee: activeDeliveryFee, 
+      is_paid: true,
+      payment_status: 'paid',
+      status: 'En cours',
+      payment_method: method,
+      cash_amount: cashAmount,
+      order_origin: 'caisse',
+      order_type_id: currentOrderTypeId,
+      order_details: cleanOrderDetails,
+      customer_name: clientInfo?.name || 'Client Caisse',
+      customer_phone: clientInfo?.phone || null,
+      customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
+      order_number: targetOrderNumber,
+      session_id: currentSessionId 
+    };
+
+    if (!isOnline) {
+      if ((window as any).electronAPI?.saveOfflineOrder) {
+        await (window as any).electronAPI.saveOfflineOrder(orderPayload);
+        customToast(`Encaissé (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
+        await generateAndPrintReceipt(restaurantName, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount);
+        
+        const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
+        if (isKitchenTicketEnabled && !loadedOrderId) {
+          setTimeout(async () => {
+            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items);
+          }, 500);
+        }
+
+        clearCart();
+        setLoadedOrderId(null);
+        setDeliveryFee(0);
+        setClientInfo(null);
+        setIsPaymentModalOpen(false);
+      } else {
+        customToast("Erreur : Mode hors-ligne impossible sur le Web", "error");
+      }
+      setIsProcessing(false);
+      return;
+    }
+
     try {
-      const activeRestoId = getActiveRestaurantId();
-      const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
-      const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
-
-      let targetOrderNumber = '';
-
       if (loadedOrderId) {
-        await supabase
+        const { error } = await supabase
           .from('orders')
           .update({ 
             is_paid: true, 
@@ -664,46 +879,31 @@ const Caisse = () => {
             session_id: currentSessionId 
           })
           .eq('id', loadedOrderId);
+        if (error) throw error;
 
         const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
-        targetOrderNumber = orderData?.order_number || String(loadedOrderId);
+        if (orderData?.order_number) targetOrderNumber = orderData.order_number;
       } else {
         try {
           const { data: nextNum, error: rpcError } = await supabase.rpc('get_next_order_number', { prefix: 'C' });
           if (!rpcError && nextNum) targetOrderNumber = nextNum;
-          else targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
-        } catch (err) {
-          targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
-        }
+        } catch (err) {}
 
-        await supabase.from('orders').insert([{
-          restaurant_id: activeRestoId,
-          total_price: parseFloat(finalTotal.toFixed(2)),
-          delivery_fee: activeDeliveryFee, 
-          is_paid: true,
-          payment_status: 'paid',
-          status: 'En cours',
-          payment_method: method,
-          cash_amount: cashAmount,
-          order_origin: 'caisse',
-          order_type_id: currentOrderTypeId,
-          order_details: cleanOrderDetails,
-          
-          customer_name: clientInfo?.name || 'Client Caisse',
-          customer_phone: clientInfo?.phone || null,
-          customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
-          
-          order_number: targetOrderNumber,
-          session_id: currentSessionId 
-        }]);
+        orderPayload.order_number = targetOrderNumber;
+        const { offline_id, is_update, target_id, ...insertPayload } = orderPayload;
+
+        const { error } = await supabase.from('orders').insert([insertPayload]);
+        if (error) throw error;
       }
 
       customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
 
-      await generateAndPrintReceipt(restaurantName, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount);
+      const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'false') === 'true';
+      if (isAutoPrintReceiptEnabled) {
+        await generateAndPrintReceipt(restaurantName, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount);
+      }
       
-      const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
-      
+      const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
       if (isKitchenTicketEnabled && !loadedOrderId) {
         setTimeout(async () => {
           await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items);
@@ -717,8 +917,21 @@ const Caisse = () => {
       setIsPaymentModalOpen(false);
 
     } catch (e) {
-      console.error("Erreur Catch Finalize:", e);
-      customToast("Erreur d'enregistrement BDD", "error");
+      console.error("Crash réseau inattendu, bascule de secours locale :", e);
+      if ((window as any).electronAPI?.saveOfflineOrder) {
+        orderPayload.order_number = targetOrderNumber;
+        await (window as any).electronAPI.saveOfflineOrder(orderPayload);
+        customToast(`Encaissé (Local de secours) ${finalTotal.toFixed(2)}€`, "success");
+        await generateAndPrintReceipt(restaurantName, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount);
+        
+        clearCart();
+        setLoadedOrderId(null);
+        setDeliveryFee(0);
+        setClientInfo(null);
+        setIsPaymentModalOpen(false);
+      } else {
+        customToast("Erreur d'enregistrement BDD", "error");
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -735,15 +948,60 @@ const Caisse = () => {
 
     setIsProcessing(true);
     
+    const activeRestoId = getActiveRestaurantId();
+    const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
+    const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
+    let targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
+
+    const offlineId = `offline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const orderPayload = {
+      offline_id: offlineId,
+      is_update: !!loadedOrderId,
+      target_id: loadedOrderId || null,
+      restaurant_id: activeRestoId,
+      total_price: parseFloat(finalTotal.toFixed(2)),
+      delivery_fee: activeDeliveryFee, 
+      is_paid: false,
+      payment_status: 'pending',
+      status: 'En cours',
+      payment_method: 'en attente',
+      cash_amount: 0,
+      order_origin: 'caisse',
+      order_type_id: currentOrderTypeId,
+      order_details: cleanOrderDetails,
+      customer_name: clientInfo?.name || 'Client Caisse',
+      customer_phone: clientInfo?.phone || null,
+      customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
+      order_number: targetOrderNumber,
+      session_id: currentSessionId 
+    };
+
+    if (!isOnline) {
+      if ((window as any).electronAPI?.saveOfflineOrder) {
+        await (window as any).electronAPI.saveOfflineOrder(orderPayload);
+        customToast(`En attente (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
+        
+        const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
+        if (isKitchenTicketEnabled && !loadedOrderId) {
+          setTimeout(async () => {
+            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items);
+          }, 500);
+        }
+
+        clearCart();
+        setLoadedOrderId(null);
+        setDeliveryFee(0);
+        setClientInfo(null);
+      } else {
+        customToast("Erreur : Mode hors-ligne impossible sur le Web", "error");
+      }
+      setIsProcessing(false);
+      return;
+    }
+
     try {
-      const activeRestoId = getActiveRestaurantId();
-      const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
-      const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
-
-      let targetOrderNumber = '';
-
       if (loadedOrderId) {
-        await supabase
+        const { error } = await supabase
           .from('orders')
           .update({ 
             is_paid: false, 
@@ -758,44 +1016,26 @@ const Caisse = () => {
             session_id: currentSessionId 
           })
           .eq('id', loadedOrderId);
+        if (error) throw error;
 
         const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
-        targetOrderNumber = orderData?.order_number || String(loadedOrderId);
+        if (orderData?.order_number) targetOrderNumber = orderData.order_number;
       } else {
         try {
           const { data: nextNum, error: rpcError } = await supabase.rpc('get_next_order_number', { prefix: 'C' });
           if (!rpcError && nextNum) targetOrderNumber = nextNum;
-          else targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
-        } catch (err) {
-          targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
-        }
+        } catch (err) {}
 
-        await supabase.from('orders').insert([{
-          restaurant_id: activeRestoId,
-          total_price: parseFloat(finalTotal.toFixed(2)),
-          delivery_fee: activeDeliveryFee, 
-          is_paid: false,
-          payment_status: 'pending',
-          status: 'En cours',
-          payment_method: 'en attente',
-          cash_amount: 0,
-          order_origin: 'caisse',
-          order_type_id: currentOrderTypeId,
-          order_details: cleanOrderDetails,
-          
-          customer_name: clientInfo?.name || 'Client Caisse',
-          customer_phone: clientInfo?.phone || null,
-          customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
-          
-          order_number: targetOrderNumber,
-          session_id: currentSessionId 
-        }]);
+        orderPayload.order_number = targetOrderNumber;
+        const { offline_id, is_update, target_id, ...insertPayload } = orderPayload;
+
+        const { error } = await supabase.from('orders').insert([insertPayload]);
+        if (error) throw error;
       }
 
       customToast(`Commande en attente de ${finalTotal.toFixed(2)}€`, "success");
       
-      const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
-      
+      const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
       if (isKitchenTicketEnabled && !loadedOrderId) {
         setTimeout(async () => {
           await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items);
@@ -808,12 +1048,25 @@ const Caisse = () => {
       setClientInfo(null);
 
     } catch (e) {
-      console.error("Erreur Catch Pending:", e);
-      customToast("Erreur d'enregistrement BDD", "error");
+      console.error("Crash réseau inattendu, bascule de secours locale :", e);
+      if ((window as any).electronAPI?.saveOfflineOrder) {
+        orderPayload.order_number = targetOrderNumber;
+        await (window as any).electronAPI.saveOfflineOrder(orderPayload);
+        customToast(`En attente (Sauvegardé localement) ${finalTotal.toFixed(2)}€`, "success");
+        
+        clearCart();
+        setLoadedOrderId(null);
+        setDeliveryFee(0);
+        setClientInfo(null);
+      } else {
+        customToast("Erreur d'enregistrement BDD", "error");
+      }
     } finally {
       setIsProcessing(false);
     }
   };
+
+  const rightBarBtnClass = "w-[56px] h-[56px] flex flex-col items-center justify-center text-primary rounded-xl hover:bg-white/10 active:scale-95 transition-all shadow-sm mx-auto";
 
   if (!posRestoId) {
     return (
@@ -826,11 +1079,24 @@ const Caisse = () => {
           
           <input type="text" placeholder="Collez l'ID du restaurant ici..." className="w-full bg-gray-50 border-2 border-gray-200 rounded-2xl px-6 py-5 mb-6 text-gray-700 font-bold focus:outline-none focus:border-blue-500 focus:bg-white transition-all text-center shadow-sm" value={tempRestoId} onChange={(e) => setTempRestoId(e.target.value)} />
           
-          <button onClick={() => {
-            if (tempRestoId.trim().length > 5) {
-              localStorage.setItem('pos_restaurant_id', tempRestoId.trim());
-              setPosRestoId(tempRestoId.trim());
-              toast.success("Caisse liée avec succès !");
+          <button onClick={async () => {
+            const trimmed = tempRestoId.trim();
+            if (trimmed.length > 5) {
+              setIsLoading(true);
+              try {
+                const { data, error } = await supabase.from('restaurants').select('id, name').eq('id', trimmed).single();
+                if (error || !data) {
+                  toast.error("Cet ID Restaurant n'existe pas en ligne ! Enregistrement annulé.");
+                } else {
+                  setSecureSetting('pos_restaurant_id', trimmed);
+                  setPosRestoId(trimmed);
+                  toast.success(`Caisse liée avec succès à ${data.name} !`);
+                }
+              } catch(e) {
+                toast.error("Erreur de connexion lors de la vérification");
+              } finally {
+                setIsLoading(false);
+              }
             } else toast.error("Veuillez entrer un ID valide.");
           }} className="w-full py-5 bg-blue-500 hover:bg-blue-600 text-white rounded-2xl font-black uppercase text-lg tracking-widest transition-all active:scale-95 shadow-lg shadow-blue-500/30">
             Connecter la caisse
@@ -839,6 +1105,8 @@ const Caisse = () => {
       </div>
     );
   }
+
+  if (isLoading) return <NewtonsCradleLoader />;
 
   if (!isAuthenticated) {
     const pinBtnClass = "w-16 h-16 bg-white hover:bg-gray-100 rounded-2xl text-secondary font-black text-2xl active:scale-90 transition-all shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] border border-gray-100 flex items-center justify-center group";
@@ -871,7 +1139,7 @@ const Caisse = () => {
               <button key={num} onClick={() => setPinCode(p => p.length < 4 ? p + num : p)} className={pinBtnClass}>{num}</button>
             ))}
             <button onClick={() => setPinCode(p => p.length < 4 ? p + '0' : p)} className={pinBtnClass}>0</button>
-            <button onClick={() => setPinCode(p => p.slice(0, -1))} className="w-16 h-16 bg-red-50 hover:bg-red-100 text-red-500 rounded-2xl font-black flex items-center justify-center active:scale-90 transition-all shadow-sm"><Delete className="w-6 h-6" /></button>
+            <button onClick={() => setPinCode(p => p.slice(0, -1))} className="w-16 h-16 bg-red-50 hover:bg-red-100 text-red-500 rounded-2xl font-black flex items-center justify-center active:scale-90 transition-all shadow-sm"><Delete size={24} /></button>
           </div>
 
           <button onClick={() => navigate('/')} className="mt-6 px-5 py-2 rounded-full bg-gray-100 text-gray-500 font-bold uppercase tracking-widest hover:bg-gray-200 transition-colors text-[9px]">Retour à l'accueil</button>
@@ -880,14 +1148,9 @@ const Caisse = () => {
     );
   }
 
-  const rightBarBtnClass = "w-[56px] h-[56px] flex flex-col items-center justify-center text-primary rounded-xl hover:bg-white/10 active:scale-95 transition-all shadow-sm mx-auto";
-
-  if (isLoading) return <NewtonsCradleLoader />;
-
   return (
     <div className="flex flex-col h-screen w-full bg-gray-100 font-helvetica overflow-hidden select-none">
       
-      {/* Header Top Bar */}
       <div className="flex-shrink-0 h-8 text-white/90 flex justify-between items-center px-4 text-[11px] font-bold tracking-widest uppercase z-50 shadow-md" style={{ backgroundColor: themeColors.secondary }}>
         <div className="flex items-center gap-4">
           <div className={isOnline ? 'text-green-400' : 'text-red-500 animate-pulse'}>{isOnline ? <Wifi size={16} /> : <WifiOff size={16} />}</div>
@@ -900,7 +1163,6 @@ const Caisse = () => {
 
       <div className="flex flex-1 overflow-hidden">
         
-        {/* --- ZONE GAUCHE : PRODUITS --- */}
         <div className="flex-1 flex flex-col h-full bg-[#F3F4F6] relative min-w-0">
           
           <div className="bg-white border-b border-gray-200 shadow-sm flex-shrink-0 z-20">
@@ -932,7 +1194,6 @@ const Caisse = () => {
           </div>
         </div>
 
-        {/* --- ZONE DROITE : PANIER --- */}
         <div className="w-[260px] bg-white border-l border-gray-200 flex flex-col h-full z-30 shadow-xl flex-shrink-0">
           
           <div className="p-3 border-b border-gray-100 bg-gray-50 flex-shrink-0 flex justify-between items-center">
@@ -953,7 +1214,25 @@ const Caisse = () => {
               const options = getFormattedOptions(item);
 
               return (
-                <div key={`${itemKey}-${index}`} className="bg-white p-2 rounded-lg border border-gray-200 shadow-sm relative overflow-hidden">
+                <div 
+                  key={`${itemKey}-${index}`} 
+                  className="bg-white p-2 rounded-lg border border-gray-200 shadow-sm relative overflow-hidden cursor-pointer select-none"
+                  onClick={() => {
+                    const now = Date.now();
+                    if (lastClickRef.current.id === itemKey && now - lastClickRef.current.time < 300) {
+                      const fullProduct = menuData.find(p => p.id === (item.product?.id || item.id)) || item.product || item;
+                      setEditingItemKey(itemKey);
+                      setSelectedProduct(fullProduct);
+                      
+                      setInitialSelections(item.rawSelections || null);
+                      
+                      setIsOptionsModalOpen(true);
+                      lastClickRef.current = { id: '', time: 0 };
+                    } else {
+                      lastClickRef.current = { id: itemKey, time: now };
+                    }
+                  }}
+                >
                   <div className="flex justify-between items-start gap-1">
                     <div className="flex-1 min-w-0 pr-1">
                       <h4 className="font-bold text-gray-800 text-[11px] leading-tight line-clamp-2">{item.product?.name || item.name}</h4>
@@ -972,8 +1251,8 @@ const Caisse = () => {
                   </div>
                   
                   <div className="mt-1.5 flex items-center justify-between">
-                    <button onClick={() => removeFromCart(itemKey)} className="p-1 text-red-500 hover:bg-red-50 rounded-md transition-colors"><Trash2 size={14} /></button>
-                    <div className="flex items-center gap-1.5 bg-gray-100 rounded-full px-1 py-0.5">
+                    <button onClick={(e) => { e.stopPropagation(); removeFromCart(itemKey); }} className="p-1 text-red-500 hover:bg-red-50 rounded-md transition-colors"><Trash2 size={14} /></button>
+                    <div className="flex items-center gap-1.5 bg-gray-100 rounded-full px-1 py-0.5" onClick={(e) => e.stopPropagation()}>
                       <button className="w-5 h-5 flex items-center justify-center bg-white rounded-full shadow-sm font-bold text-xs" onClick={() => updateQuantity(itemKey, (item.quantity || 1) - 1)}>-</button>
                       <span className="w-4 text-center font-bold text-xs">{item.quantity || 1}</span>
                       <button className="w-5 h-5 flex items-center justify-center bg-white rounded-full shadow-sm font-bold text-xs" style={{ color: themeColors.primary }} onClick={() => updateQuantity(itemKey, (item.quantity || 1) + 1)}>+</button>
@@ -1037,7 +1316,6 @@ const Caisse = () => {
           </div>
         </div>
 
-        {/* --- OUTILS GAUCHE (BARRE NOIRE / SECONDAIRE) --- */}
         <div className="w-[74px] flex flex-col items-center py-3 z-40 shadow-[-5px_0_15px_rgba(0,0,0,0.2)] flex-shrink-0 justify-between" style={{ backgroundColor: themeColors.secondary }}>
           <div className="flex flex-col gap-1.5 w-full px-2 items-center">
             
@@ -1064,10 +1342,6 @@ const Caisse = () => {
         </div>
 
       </div>
-
-      {/* ========================================== */}
-      {/* MODALES */}
-      {/* ========================================== */}
 
       {isDeliveryModalOpen && (
         <DeliveryModalCaisse 
@@ -1124,7 +1398,17 @@ const Caisse = () => {
       )}
 
       {isOptionsModalOpen && selectedProduct && (
-        <OptionsModal product={selectedProduct} onClose={() => { setIsOptionsModalOpen(false); setSelectedProduct(null); }} onAddToCart={(p, s) => handleAddToCartFromModal(p, s)} />
+        <OptionsModal 
+          product={selectedProduct} 
+          initialSelections={initialSelections}
+          onClose={() => { 
+            setIsOptionsModalOpen(false); 
+            setSelectedProduct(null); 
+            setEditingItemKey(null); 
+            setInitialSelections(null); 
+          }} 
+          onAddToCart={(p, s) => handleAddToCartFromModal(p, s)} 
+        />
       )}
 
       {isVariantsModalOpen && selectedProductForVariants && (
@@ -1154,7 +1438,7 @@ const Caisse = () => {
       {isOrderTrackerOpen && <OrderTrackerModal onClose={() => setIsOrderTrackerOpen(false)} onLoadOrder={handleLoadOrderIntoCart} />}
       {isHistoryOpen && <OrderHistoryModal onClose={() => setIsHistoryOpen(false)} />}
       {isStockOpen && <StockModal onClose={() => setIsStockOpen(false)} loadMenuData={() => loadMenuData(getActiveRestaurantId() || RESTAURANT_ID)} />}
-      {isSettingsOpen && <SettingsModal onClose={() => setIsSettingsOpen(false)} currentCategories={categories.map(c => c.name)} onCategoriesReorder={(newOrder) => { const reorderedCats = [...categories].sort((a, b) => { const iA = newOrder.indexOf(a.name); const iB = newOrder.indexOf(b.name); return (iA === -1 ? 999 : iA) - (iB === -1 ? 999 : iB); }); setCategories(reorderedCats); }} />}
+      {isSettingsOpen && <SettingsModal onClose={() => setIsSettingsOpen(false)} />}
 
     </div>
   );

@@ -9,5 +9,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPrinters: () => ipcRenderer.invoke('get-printers'),
 
   // Fonction pour ouvrir le tiroir-caisse (via l'imprimante caisse)
-  openDrawer: (printerName) => ipcRenderer.invoke('open-drawer', printerName)
+  openDrawer: (printerName) => ipcRenderer.invoke('open-drawer', printerName),
+
+  // --- GESTION SÉCURISÉE DES PARAMÈTRES LOCAUX ---
+  getSetting: (key, defaultValue) => ipcRenderer.sendSync('get-setting-sync', key, defaultValue),
+  setSetting: (key, value) => ipcRenderer.sendSync('set-setting-sync', key, value),
+
+  // --- DEMANDER À ELECTRON DE FERMER L'APP ---
+  closeApp: () => ipcRenderer.send('close-app'),
+
+  // --- EXTINCTION ET REDÉMARRAGE DU PC ---
+  shutdownPC: () => ipcRenderer.send('shutdown-pc'),
+  restartPC: () => ipcRenderer.send('restart-pc'),
+
+  // --- ENGINE DE SAUVEGARDE ET SYNC HORS-LIGNE ---
+  saveOfflineOrder: (order) => ipcRenderer.invoke('save-offline-order', order),
+  getOfflineOrders: () => ipcRenderer.invoke('get-offline-orders'),
+  removeOfflineOrder: (offlineId) => ipcRenderer.invoke('remove-offline-order', offlineId)
 });

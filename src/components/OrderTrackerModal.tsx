@@ -251,6 +251,9 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       let items = typeof order.order_details === 'string' ? JSON.parse(order.order_details) : order.order_details;
       if (!Array.isArray(items)) items = items.items || items.cart || [items];
 
+      const printerName = localStorage.getItem('imprimante_caisse') || undefined;
+      const receiptWidth = localStorage.getItem('receipt_width') || '72';
+
       const date = new Date(order.created_at || Date.now()).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const orderNumber = order.order_number || order.id.toString().slice(0, 4);
       
@@ -261,6 +264,10 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       const subtotal = order.total_price || 0;
       const cashAmount = order.cash_amount || subtotal;
       const changeDue = Math.max(0, cashAmount - subtotal);
+
+      // Calcul TVA
+      const totalHT = subtotal / 1.055;
+      const totalTVA = subtotal - totalHT;
 
       const itemsHtml = items.map((item: any) => {
         const itemTotal = getItemTotal(item);
@@ -286,7 +293,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       }).join('');
 
       const receiptHtml = `
-        <div style="width: 72mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px;">
+        <div style="width: ${receiptWidth}mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px;">
           <div style="text-align: center; margin-bottom: 10px;">
             <h2 style="margin: 0; font-size: 18px; font-weight: bold; text-transform: uppercase;">${restaurantName}</h2>
             <p style="margin: 2px 0; font-size: 12px;">${date}</p>
@@ -297,7 +304,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
           <div style="margin-bottom: 10px;">${itemsHtml}</div>
           <hr style="border-top: 1px dashed black; margin: 10px 0;" />
           <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: bold; margin-bottom: 5px;">
-            <span>TOTAL</span><span>${subtotal.toFixed(2)} €</span>
+            <span>TOTAL TTC</span><span>${subtotal.toFixed(2)} €</span>
           </div>
           ${isCash ? `
             <div style="display: flex; justify-content: space-between; font-size: 12px; color: #555;"><span>Espèces</span><span>${cashAmount.toFixed(2)} €</span></div>
@@ -305,6 +312,22 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
           ` : `
             <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold;"><span>Payé par</span><span>CARTE BANCAIRE</span></div>
           `}
+
+          <div style="margin-top: 10px; font-size: 11px; border-top: 1px dashed black; padding-top: 5px; border-bottom: 1px dashed black; padding-bottom: 5px;">
+            <div style="display: flex; justify-content: space-between; font-weight: bold;">
+              <span style="width: 25%;">Taux</span>
+              <span style="width: 25%; text-align: right;">HT</span>
+              <span style="width: 25%; text-align: right;">TVA</span>
+              <span style="width: 25%; text-align: right;">TTC</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-top: 3px;">
+              <span style="width: 25%;">5.5%</span>
+              <span style="width: 25%; text-align: right;">${totalHT.toFixed(2)} €</span>
+              <span style="width: 25%; text-align: right;">${totalTVA.toFixed(2)} €</span>
+              <span style="width: 25%; text-align: right;">${subtotal.toFixed(2)} €</span>
+            </div>
+          </div>
+
           <div style="text-align: center; margin-top: 20px; font-size: 12px;">
             <p style="margin: 0;">Merci de votre visite !</p>
             <p style="margin: 2px 0;">A bientot.</p>
@@ -312,7 +335,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         </div>
       `;
 
-      await (window as any).electronAPI.printReceipt(receiptHtml);
+      await (window as any).electronAPI.printReceipt(receiptHtml, printerName);
     } catch (err) {
       console.error("Erreur lors de l'impression client :", err);
     }
@@ -324,6 +347,9 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     try {
       let items = typeof order.order_details === 'string' ? JSON.parse(order.order_details) : order.order_details;
       if (!Array.isArray(items)) items = items.items || items.cart || [items];
+
+      const printerName = localStorage.getItem('imprimante_cuisine') || undefined;
+      const receiptWidth = localStorage.getItem('receipt_width') || '72';
 
       const date = new Date(order.created_at || Date.now()).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const orderNumber = order.order_number || order.id.toString().slice(0, 4);
@@ -355,7 +381,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       }).join('');
 
       const receiptHtml = `
-        <div style="width: 72mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; color: black;">
+        <div style="width: ${receiptWidth}mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; color: black;">
           <div style="text-align: center; margin-bottom: 15px;">
             <h2 style="margin: 0; font-size: 24px; font-weight: 900; text-transform: uppercase;">CUISINE / SAC</h2>
             <p style="margin: 2px 0; font-size: 12px;">${date}</p>
@@ -371,7 +397,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         </div>
       `;
 
-      await (window as any).electronAPI.printReceipt(receiptHtml);
+      await (window as any).electronAPI.printReceipt(receiptHtml, printerName);
     } catch (err) {
       console.error("Erreur API impression cuisine :", err);
     }
@@ -393,7 +419,10 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
       toast.success(`Commande #${order.order_number || order.id.toString().slice(0, 4)} encaissée par carte`);
       
-      await printOrder(order, false);
+      const isAutoPrintReceiptEnabled = localStorage.getItem('auto_print_receipt') === 'true';
+      if (isAutoPrintReceiptEnabled) {
+        await printOrder(order, false);
+      }
 
       const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
       if (isKitchenTicketEnabled) {
