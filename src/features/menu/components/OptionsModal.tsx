@@ -43,16 +43,16 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     };
   }, []);
 
-  // LE MOTEUR RÉPARÉ : Il ne boucle plus à cause de l'horloge !
   useEffect(() => {
     let isMounted = true;
     
     const fetchRules = async () => {
       setIsLoading(true);
       try {
+        // ✅ REQUÊTE MODIFIÉE : Récupération de free_choices_count au niveau de product_option_groups + option_groups
         const { data: baseData, error } = await supabase
           .from('product_option_groups')
-          .select(`id, min_choices, max_choices, step_order, option_groups (id, name, allow_multiple, free_choices_count, option_group_links ( sort_order, options ( id, name, price, is_available ) ))`)
+          .select(`id, min_choices, max_choices, step_order, free_choices_count, option_groups (id, name, allow_multiple, free_choices_count, option_group_links ( sort_order, options ( id, name, price, is_available ) ))`)
           .eq('product_id', product.id)
           .order('step_order');
 
@@ -74,6 +74,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                  return { id: opt.id, name: opt.name, price: opt.price };
               });
 
+            // ✅ BACKWARD COMPATIBILITY : On priorise la règle produit, sinon on prend la règle du groupe global
+            const finalFreeChoices = rule.free_choices_count != null 
+              ? Number(rule.free_choices_count) 
+              : (rule.option_groups?.free_choices_count || 0);
+
             return { 
               id: `base_${rule.id}`, 
               min_choices: rule.min_choices != null ? Number(rule.min_choices) : 0, 
@@ -81,7 +86,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
               step_order: rule.step_order, 
               group_name: rule.option_groups?.name || 'Options', 
               allow_multiple: rule.option_groups?.allow_multiple === true, 
-              free_choices_count: rule.option_groups?.free_choices_count || 0,
+              free_choices_count: finalFreeChoices,
               options: validOptions 
             };
           });
@@ -117,7 +122,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
           setBaseSteps(formattedBaseSteps);
           setAllSubGroups(subGroupsData);
           
-          // --- INJECTION MAGIQUE DE L'HISTORIQUE ---
           if (initialSelections && Object.keys(initialSelections).length > 0) {
             setStepSelections(initialSelections);
           } else {
@@ -135,7 +139,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     fetchRules();
 
     return () => { isMounted = false; };
-  // EXCLUSION DE ONCLOSE ET ONADDTOCART POUR BLOQUER LA BOUCLE INFINIE
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product.id, product.isSolo]); 
 
@@ -229,7 +232,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             _fusionId: cartItemId 
         }));
 
-        // ON ENVOIE LA DOUBLE COUCHE AU PANIER (POUR L'HISTORIQUE ET L'IMPRESSION)
         onAddToCart(uniqueProduct, { flatOptions: finalOptionsToCart, rawSelections: latestSelections });
         
         setIsProcessing(false);
