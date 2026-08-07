@@ -267,81 +267,36 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
       const subtotal = order.total_price || 0;
       const cashAmount = order.cash_amount || subtotal;
-      const changeDue = Math.max(0, cashAmount - subtotal);
-
-      const totalHT = subtotal / 1.055;
-      const totalTVA = subtotal - totalHT;
-
-      const itemsHtml = items.map((item: any) => {
-        const itemTotal = getItemTotal(item, optionGroupMapping);
-        const productName = extractProductName(item);
-        let html = `
-          <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-            <span class="bold" style="max-width: 75%; word-wrap: break-word;">${item.quantity || 1}x ${productName}</span>
-            <span class="bold" style="white-space: nowrap;">${itemTotal.toFixed(2)} €</span>
-          </div>
-        `;
+      const formattedItems = items.map((item: any) => {
         const groups = getFormattedOrderOptions(item, optionGroupMapping);
-        if (groups.length > 0) {
-          groups.forEach(grp => {
-            grp.items.forEach(opt => {
-              const groupPrefix = grp.groupName ? `${grp.groupName} : ` : '';
-              html += `
-                <div style="display: flex; justify-content: space-between; font-size: 11px; color: #333; padding-left: 10px;">
-                  <span style="max-width: 75%; word-wrap: break-word;">- ${groupPrefix}${opt.name}</span>
-                  <span style="white-space: nowrap;">${opt.price > 0 ? '+' + opt.price.toFixed(2) + '€' : ''}</span>
-                </div>
-              `;
-            });
-          });
-        }
-        return html;
-      }).join('');
+        const notes = groups.flatMap(grp => grp.items.map(opt => ({
+          name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
+          isSans: opt.isSans
+        })));
+        return {
+          qty: item.quantity || 1,
+          name: extractProductName(item),
+          unitPrice: item.price || item.product?.price || 0,
+          notes
+        };
+      });
 
-      const receiptHtml = `
-        <div style="width: ${receiptWidth}mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px;">
-          <div style="text-align: center; margin-bottom: 10px;">
-            <h2 style="margin: 0; font-size: 18px; font-weight: bold; text-transform: uppercase;">${restaurantName}</h2>
-            <p style="margin: 2px 0; font-size: 12px;">${date}</p>
-            <p style="margin: 5px 0; font-size: 15px; font-weight: bold; padding: 3px; border: 1px solid black;">CMD : ${orderNumber}</p>
-            <p style="margin: 5px 0; font-size: 14px; font-weight: bold;">${orderType}</p>
-          </div>
-          <hr style="border-top: 1px dashed black; margin: 10px 0;" />
-          <div style="margin-bottom: 10px;">${itemsHtml}</div>
-          <hr style="border-top: 1px dashed black; margin: 10px 0;" />
-          <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: bold; margin-bottom: 5px;">
-            <span>TOTAL TTC</span><span>${subtotal.toFixed(2)} €</span>
-          </div>
-          ${isCash ? `
-            <div style="display: flex; justify-content: space-between; font-size: 12px; color: #555;"><span>Espèces</span><span>${cashAmount.toFixed(2)} €</span></div>
-            <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold; margin-top: 2px;"><span>Rendu</span><span>${changeDue.toFixed(2)} €</span></div>
-          ` : `
-            <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold;"><span>Payé par</span><span>CARTE BANCAIRE</span></div>
-          `}
+      const orderPayloadData = {
+        orderType,
+        orderNumber,
+        orderDate: date,
+        restaurantName,
+        items: formattedItems,
+        total: subtotal,
+        delivery: orderType === 'LIVRAISON' && (order.customer_name || order.customer_address || order.customer_phone) ? {
+          customerName: order.customer_name,
+          address: order.customer_address,
+          phone: order.customer_phone,
+          deliveryNotes: ''
+        } : undefined
+      };
 
-          <div style="margin-top: 10px; font-size: 11px; border-top: 1px dashed black; padding-top: 5px; border-bottom: 1px dashed black; padding-bottom: 5px;">
-            <div style="display: flex; justify-content: space-between; font-weight: bold;">
-              <span style="width: 25%;">Taux</span>
-              <span style="width: 25%; text-align: right;">HT</span>
-              <span style="width: 25%; text-align: right;">TVA</span>
-              <span style="width: 25%; text-align: right;">TTC</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; margin-top: 3px;">
-              <span style="width: 25%;">5.5%</span>
-              <span style="width: 25%; text-align: right;">${totalHT.toFixed(2)} €</span>
-              <span style="width: 25%; text-align: right;">${totalTVA.toFixed(2)} €</span>
-              <span style="width: 25%; text-align: right;">${subtotal.toFixed(2)} €</span>
-            </div>
-          </div>
-
-          <div style="text-align: center; margin-top: 20px; font-size: 12px;">
-            <p style="margin: 0;">Merci de votre visite !</p>
-            <p style="margin: 2px 0;">A bientot.</p>
-          </div>
-        </div>
-      `;
-
-      await (window as any).electronAPI.printReceipt(receiptHtml, printerName);
+      await (window as any).electronAPI.printReceipt(orderPayloadData, printerName);
     } catch (err) {
       console.error("Erreur lors de l'impression client :", err);
     }

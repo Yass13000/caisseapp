@@ -119,126 +119,40 @@ const generateAndPrintReceipt = async (restaurantInfo: { name: string; address: 
 
   const tvaRate = restaurantInfo.tva || 10;
   const totalHT = finalTotal / (1 + tvaRate / 100);
-  const totalTVA = finalTotal - totalHT;
 
-  const orderTypeFormatted = orderType.toUpperCase().includes('PLACE') 
-    ? '*** SUR PLACE ***' 
-    : orderType.toUpperCase().includes('EMPORTER') 
-      ? '*** À EMPORTER ***' 
-      : `*** ${orderType.toUpperCase()} ***`;
-
-  const itemsHtml = items.map(item => {
-    const itemTotal = getItemTotal(item, groupMapping);
-    let html = `<div style="display: flex; justify-content: space-between; margin-bottom: 2px; font-weight: bold;">
-      <span style="max-width: 75%; word-wrap: break-word;">${item.quantity}x ${item.product?.name || item.name}</span>
-      <span style="white-space: nowrap;">${itemTotal.toFixed(2)} €</span>
-    </div>`;
-    
+  const formattedItems = items.map(item => {
     const optionGroups = getFormattedOrderOptions(item, groupMapping);
-    if (optionGroups.length > 0) {
-      optionGroups.forEach(grp => {
-        grp.items.forEach(opt => {
-          const colorStyle = opt.isSans ? 'color: red; font-weight: bold;' : 'color: #333;';
-          const groupPrefix = grp.groupName ? `${grp.groupName}: ` : '';
-          html += `<div style="display: flex; justify-content: space-between; font-size: 11px; ${colorStyle} padding-left: 10px;">
-            <span style="max-width: 75%; word-wrap: break-word;">- ${groupPrefix}${opt.qty > 1 ? opt.qty + 'x ' : ''}${opt.name}</span>
-            <span style="white-space: nowrap;">${opt.price > 0 ? '+' + opt.price.toFixed(2) + ' €' : ''}</span>
-          </div>`;
-        });
-      });
-    }
-    return html;
-  }).join('');
+    const notes = optionGroups.flatMap(grp => grp.items.map(opt => ({
+      name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
+      isSans: opt.isSans
+    })));
+    return {
+      qty: item.quantity || 1,
+      name: item.product?.name || item.name || 'Produit',
+      unitPrice: item.price || item.product?.price || 0,
+      notes
+    };
+  });
 
-  const receiptHtml = `
-    <div style="width: ${receiptWidth}mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px; color: black;">
-      <div style="text-align: center; margin-bottom: 8px;">
-        <h2 style="margin: 0; font-size: 18px; font-weight: 900; text-transform: uppercase;">${restaurantInfo.name}</h2>
-        ${restaurantInfo.address ? `<p style="margin: 2px 0; font-size: 11px;">${restaurantInfo.address}</p>` : ''}
-        ${restaurantInfo.phone ? `<p style="margin: 1px 0; font-size: 11px;">Tél: ${restaurantInfo.phone}</p>` : ''}
-      </div>
-
-      <div style="text-align: center; margin: 8px 0;">
-        <div style="display: inline-block; font-size: 22px; font-weight: 900; border: 2px solid black; padding: 4px 14px;">
-          CMD N° ${orderNumber}
-        </div>
-      </div>
-
-      <div style="text-align: center; margin-bottom: 8px;">
-        <div style="font-size: 14px; font-weight: 900; margin-bottom: 4px;">${orderTypeFormatted}</div>
-        <div style="font-size: 10px; color: #444;">${date} | Caisse N°1</div>
-      </div>
-
-      ${(orderType.toUpperCase().includes('LIVRAISON') || orderType === '3') && (clientInfo?.name || clientInfo?.phone || clientInfo?.address || clientInfo?.notes || clientInfo?.additionalInfo) ? `
-      <hr style="border-top: 1px dashed black; margin: 8px 0;">
-      <div style="margin-bottom: 8px; font-size: 11px;">
-        <div style="text-align: center; margin-bottom: 4px;">
-          <span style="font-weight: 900; border: 1px solid black; padding: 1px 8px; display: inline-block;">INFORMATIONS CLIENT</span>
-        </div>
-        ${clientInfo?.name ? `
-        <div style="display: flex; margin-bottom: 2px;">
-          <span style="font-weight: bold; width: 65px; flex-shrink: 0;">CLIENT</span><span>: ${clientInfo.name}</span>
-        </div>` : ''}
-        ${clientInfo?.phone ? `
-        <div style="display: flex; margin-bottom: 2px;">
-          <span style="font-weight: bold; width: 65px; flex-shrink: 0;">TÉL</span><span>: ${clientInfo.phone}</span>
-        </div>` : ''}
-        ${clientInfo?.address ? `
-        <div style="margin-bottom: 2px;">
-          <span style="font-weight: bold;">ADRESSE :</span><br>
-          <span style="white-space: pre-wrap; word-break: break-word;">${clientInfo.address}</span>
-        </div>` : ''}
-        ${(clientInfo?.notes || clientInfo?.additionalInfo) ? `
-        <div style="margin-bottom: 2px;">
-          <span style="font-weight: bold;">NOTE :</span>
-          <span>${clientInfo.notes || clientInfo.additionalInfo}</span>
-        </div>` : ''}
-      </div>
-      ` : ''}
-
-      <hr style="border-top: 1px dashed black; margin: 8px 0;">
-      <div style="margin-bottom: 8px;">${itemsHtml}</div>
-      <hr style="border-top: 1px dashed black; margin: 8px 0;">
-      
-      ${deliveryFee > 0 ? `
-      <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
-        <span>Frais de livraison</span><span>${deliveryFee.toFixed(2)} €</span>
-      </div>
-      ` : ''}
-
-      <div style="font-size: 11px; margin-bottom: 4px;">
-        <div style="display: flex; justify-content: space-between;">
-          <span>Sous-total HT</span><span>${totalHT.toFixed(2)} €</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; margin-top: 2px;">
-          <span>TVA (${tvaRate.toFixed(1)}%)</span><span>${totalTVA.toFixed(2)} €</span>
-        </div>
-      </div>
-
-      <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 900; margin: 6px 0; padding-top: 4px; border-top: 1px solid black;">
-        <span>TOTAL TTC</span><span>${finalTotal.toFixed(2)} €</span>
-      </div>
-
-      <div style="margin-top: 8px; font-size: 12px; font-weight: bold;">
-      ${isPending ? `
-        <div style="text-align: center; border: 1px solid black; padding: 4px;">[ ] À PAYER - RESTE : ${finalTotal.toFixed(2)} €</div>
-      ` : isCash ? `
-        <div style="display: flex; justify-content: space-between;"><span>[X] PAYÉ EN ESPÈCES</span><span>${cashAmount.toFixed(2)} €</span></div>
-        ${changeDue > 0 ? `<div style="display: flex; justify-content: space-between; font-size: 11px; margin-top: 2px;"><span>Rendu monnaie</span><span>${changeDue.toFixed(2)} €</span></div>` : ''}
-      ` : `
-        <div style="display: flex; justify-content: space-between;"><span>[X] PAYÉ PAR CARTE</span><span>${finalTotal.toFixed(2)} €</span></div>
-      `}
-      </div>
-
-      <div style="text-align: center; margin-top: 16px; font-size: 11px;">
-        <p style="margin: 0;">Merci de votre visite !</p>
-        <p style="margin: 2px 0;">À bientôt.</p>
-      </div>
-    </div>
-  `;
+  const orderPayloadData = {
+    orderType,
+    orderNumber,
+    orderDate: date,
+    restaurantName: restaurantInfo.name,
+    restaurantAddress: restaurantInfo.address,
+    restaurantPhone: restaurantInfo.phone,
+    items: formattedItems,
+    total: finalTotal,
+    delivery: (orderType.toUpperCase().includes('LIVRAISON') || orderType === '3') && clientInfo ? {
+      customerName: clientInfo.name,
+      address: clientInfo.address,
+      phone: clientInfo.phone,
+      deliveryNotes: clientInfo.notes || clientInfo.additionalInfo
+    } : undefined
+  };
 
   try {
-    const result = await (window as any).electronAPI.printReceipt(receiptHtml, printerName);
+    const result = await (window as any).electronAPI.printReceipt(orderPayloadData, printerName);
     if (!result.success) toast.error("Erreur avec l'imprimante caisse !");
   } catch (error) { console.error("Erreur API impression :", error); }
 };
@@ -246,51 +160,35 @@ const generateAndPrintReceipt = async (restaurantInfo: { name: string; address: 
 const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: string, items: any[], groupMapping: Record<string, string> = {}) => {
   if (!(window as any).electronAPI) return;
   const printerName = getSecureSetting('imprimante_cuisine', undefined) || undefined;
-  const receiptWidth = getSecureSetting('receipt_width', '72');
-  
   const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-  const itemsHtml = items.map(item => {
-    let html = `
-      <div style="margin-bottom: 4px; font-size: 16px; line-height: 1.2;">
-        <span style="font-weight: 900; font-size: 18px;">${item.quantity}x</span> 
-        <span style="font-weight: bold;">${item.product?.name || item.name}</span>
-      </div>`;
-    
+  const formattedItems = items.map(item => {
     const optionGroups = getFormattedOrderOptions(item, groupMapping);
-    if (optionGroups.length > 0) {
-      optionGroups.forEach(grp => {
-        grp.items.forEach(opt => {
-          const colorStyle = opt.isSans ? 'color: red; font-weight: bold;' : '';
-          const groupPrefix = grp.groupName ? `${grp.groupName}: ` : '';
-          html += `<div style="font-size: 13px; font-weight: bold; padding-left: 20px; line-height: 1.1; margin-bottom: 2px; ${colorStyle}">- ${groupPrefix}${opt.qty > 1 ? opt.qty + 'x ' : ''}${opt.name}</div>`;
-        });
-      });
-      html += `<div style="height: 5px;"></div>`;
-    }
-    return html;
-  }).join('');
+    const notes = optionGroups.flatMap(grp => grp.items.map(opt => ({
+      name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
+      isSans: opt.isSans
+    })));
+    return {
+      qty: item.quantity || 1,
+      name: item.product?.name || item.name || 'Produit',
+      unitPrice: 0,
+      notes
+    };
+  });
 
-  const receiptHtml = `
-    <div style="width: ${receiptWidth}mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; color: black;">
-      <div style="text-align: center; margin-bottom: 15px;">
-        <h2 style="margin: 0; font-size: 24px; font-weight: 900; text-transform: uppercase;">CUISINE (SAC)</h2>
-        <p style="margin: 2px 0; font-size: 12px;">${date}</p>
-        <p style="margin: 10px 0; font-size: 22px; font-weight: 900; padding: 5px; border: 3px solid black;">CMD ${orderNumber}</p>
-        <p style="margin: 5px 0; font-size: 18px; font-weight: bold; text-transform: uppercase;">${orderType}</p>
-      </div>
-      <hr style="border-top: 2px dashed black; margin: 10px 0;">
-      <div style="margin-bottom: 10px;">${itemsHtml}</div>
-      <hr style="border-top: 2px dashed black; margin: 10px 0;">
-      <div style="text-align: center; margin-top: 15px; font-size: 14px; font-weight: bold;">*** FIN DE COMMANDE ***</div>
-    </div>
-  `;
+  const kitchenPayloadData = {
+    orderType: `CUISINE - ${orderType}`,
+    orderNumber,
+    orderDate: date,
+    restaurantName: 'CUISINE (SAC)',
+    items: formattedItems,
+    total: 0
+  };
 
-  try { 
-    await (window as any).electronAPI.printReceipt(receiptHtml, printerName); 
-  } catch (error) { 
-    console.error("Erreur API impression cuisine :", error); 
-  }
+  try {
+    const result = await (window as any).electronAPI.printReceipt(kitchenPayloadData, printerName);
+    if (!result.success) toast.error("Erreur avec l'imprimante cuisine !");
+  } catch (error) { console.error("Erreur API impression cuisine :", error); }
 };
 
 const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing }: any) => {

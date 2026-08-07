@@ -13,82 +13,37 @@ const printCashReport = async (type: 'X' | 'Z', data: any, restaurantName: strin
 
   const printerName = localStorage.getItem('imprimante_caisse') || undefined;
   const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  
-  const receiptHtml = `
-    <div style="width: 72mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px; color: black;">
-      <div style="text-align: center; margin-bottom: 15px;">
-        <h2 style="margin: 0; font-size: 20px; font-weight: 900; text-transform: uppercase;">${restaurantName}</h2>
-        <p style="margin: 5px 0; font-size: 12px;">${date}</p>
-        <p style="margin: 10px 0; font-size: 22px; font-weight: 900; padding: 5px; border: 3px solid black; display: inline-block;">TICKET ${type}</p>
-      </div>
-      
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-          <span>Ouverture caisse :</span><span>${new Date(data.opened_at).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
-        </div>
-        ${type === 'Z' ? `
-        <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-          <span>Fermeture caisse :</span><span>${new Date(data.closed_at || new Date()).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
-        </div>` : ''}
-      </div>
 
-      <hr style="border-top: 1px dashed black; margin: 10px 0;">
-      
-      <div style="margin-bottom: 10px; font-size: 14px;">
-        <div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 5px;">
-          <span>CHIFFRE D'AFFAIRES</span><span>${Number(data.totalSales).toFixed(2)} €</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-top: 5px;">
-          <span>Total Espèces</span><span>${Number(data.cashSales).toFixed(2)} €</span>
-        </div>
-        
-        <div style="margin-top: 5px; padding-top: 5px; border-top: 1px dotted #ccc;">
-            <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold;">
-              <span>Total Carte Bleue</span><span>${Number(data.cardSalesTotal).toFixed(2)} €</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; font-size: 10px; color: #555; padding-left: 10px;">
-              <span>- CB Caisse</span><span>${Number(data.cardSalesCaisse).toFixed(2)} €</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; font-size: 10px; color: #555; padding-left: 10px;">
-              <span>- CB Borne</span><span>${Number(data.cardSalesBorne).toFixed(2)} €</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; font-size: 10px; color: #555; padding-left: 10px;">
-              <span>- CB App/Web</span><span>${Number(data.cardSalesApp).toFixed(2)} €</span>
-            </div>
-        </div>
-      </div>
+  const reportItems = [
+    { name: "CHIFFRE D'AFFAIRES TOTAL", qty: 1, unitPrice: Number(data.totalSales || 0), notes: [] },
+    { name: "VENTES ESPÈCES", qty: 1, unitPrice: Number(data.cashSales || 0), notes: [] },
+    { name: "VENTES CB TOTAL", qty: 1, unitPrice: Number(data.cardSalesTotal || 0), notes: [
+      `CB Caisse: ${Number(data.cardSalesCaisse || 0).toFixed(2)}€`,
+      `CB Borne: ${Number(data.cardSalesBorne || 0).toFixed(2)}€`,
+      `CB App/Web: ${Number(data.cardSalesApp || 0).toFixed(2)}€`
+    ]},
+    { name: "FOND DE CAISSE INITIAL", qty: 1, unitPrice: Number(data.opening_balance || 0), notes: [] },
+    { name: "ESPÈCES ATTENDUES", qty: 1, unitPrice: Number(data.expectedCash || 0), notes: [] }
+  ];
 
-      <hr style="border-top: 1px dashed black; margin: 10px 0;">
+  if (type === 'Z') {
+    reportItems.push(
+      { name: "ESPÈCES COMPTÉES", qty: 1, unitPrice: Number(data.closing_cash_counted || 0), notes: [] },
+      { name: "ÉCART DE CAISSE", qty: 1, unitPrice: Number(data.difference || 0), notes: [] }
+    );
+  }
 
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-          <span>Fond de caisse initial</span><span>${Number(data.opening_balance).toFixed(2)} €</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; margin-top: 5px;">
-          <span>ESPÈCES ATTENDUES</span><span>${Number(data.expectedCash).toFixed(2)} €</span>
-        </div>
-      </div>
-
-      ${type === 'Z' ? `
-      <hr style="border-top: 2px solid black; margin: 10px 0;">
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: bold;">
-          <span>ESPÈCES COMPTÉES</span><span>${Number(data.closing_cash_counted).toFixed(2)} €</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; margin-top: 5px; color: ${data.difference < 0 ? 'red' : 'black'};">
-          <span>ÉCART DE CAISSE</span><span>${data.difference > 0 ? '+' : ''}${Number(data.difference).toFixed(2)} €</span>
-        </div>
-      </div>
-      ` : ''}
-      
-      <div style="text-align: center; margin-top: 25px; font-size: 12px; font-weight: bold;">
-        *** FIN DE RAPPORT ***
-      </div>
-    </div>
-  `;
+  const reportPayloadData = {
+    orderType: `RAPPORT - TICKET ${type}`,
+    orderNumber: `RAPPORT-${type}`,
+    orderDate: date,
+    restaurantName: `${restaurantName} - TICKET ${type}`,
+    items: reportItems,
+    total: Number(data.totalSales || 0)
+  };
 
   try { 
-    await (window as any).electronAPI.printReceipt(receiptHtml, printerName); 
+    await (window as any).electronAPI.printReceipt(reportPayloadData, printerName); 
   } catch (error) { 
     console.error(`Erreur API impression ${type}:`, error); 
   }

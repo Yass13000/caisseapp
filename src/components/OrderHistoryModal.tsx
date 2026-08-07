@@ -172,61 +172,30 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
       const cashAmount = order.cash_amount || subtotal;
       const changeDue = Math.max(0, cashAmount - subtotal);
 
-      const itemsHtml = items.map((item: any) => {
-        const itemTotal = getItemTotal(item, optionGroupMapping);
-        const productName = item.product?.name || item.name || 'Produit';
-        let html = `
-          <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-            <span class="bold" style="max-width: 75%; word-wrap: break-word;">${item.quantity || 1}x ${productName}</span>
-            <span class="bold" style="white-space: nowrap;">${itemTotal.toFixed(2)} €</span>
-          </div>
-        `;
-        
+      const formattedItems = items.map((item: any) => {
         const groups = getFormattedOrderOptions(item, optionGroupMapping);
-        if (groups.length > 0) {
-          groups.forEach(grp => {
-            grp.items.forEach(opt => {
-              const groupPrefix = grp.groupName ? `${grp.groupName} : ` : '';
-              html += `
-                <div style="display: flex; justify-content: space-between; font-size: 11px; color: #333; padding-left: 10px;">
-                  <span style="max-width: 75%; word-wrap: break-word;">- ${groupPrefix}${opt.name}</span>
-                  <span style="white-space: nowrap;">${opt.price > 0 ? '+' + opt.price.toFixed(2) + '€' : ''}</span>
-                </div>
-              `;
-            });
-          });
-        }
-        return html;
-      }).join('');
+        const notes = groups.flatMap(grp => grp.items.map(opt => ({
+          name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
+          isSans: opt.isSans
+        })));
+        return {
+          qty: item.quantity || 1,
+          name: item.product?.name || item.name || 'Produit',
+          unitPrice: item.price || item.product?.price || 0,
+          notes
+        };
+      });
 
-      const receiptHtml = `
-        <div style="width: 72mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px;">
-          <div style="text-align: center; margin-bottom: 10px;">
-            <h2 style="margin: 0; font-size: 18px; font-weight: bold; text-transform: uppercase;">${restaurantName}</h2>
-            <p style="margin: 2px 0; font-size: 12px;">${date}</p>
-            <p style="margin: 5px 0; font-size: 15px; font-weight: bold; padding: 3px; border: 1px solid black;">DUPLICATA : ${orderNumber}</p>
-            <p style="margin: 5px 0; font-size: 14px; font-weight: bold;">${orderType}</p>
-          </div>
-          <hr style="border-top: 1px dashed black; margin: 10px 0;" />
-          <div style="margin-bottom: 10px;">${itemsHtml}</div>
-          <hr style="border-top: 1px dashed black; margin: 10px 0;" />
-          <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: bold; margin-bottom: 5px;">
-            <span>TOTAL</span><span>${subtotal.toFixed(2)} €</span>
-          </div>
-          ${isCash ? `
-            <div style="display: flex; justify-content: space-between; font-size: 12px; color: #555;"><span>Espèces</span><span>${cashAmount.toFixed(2)} €</span></div>
-            <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold; margin-top: 2px;"><span>Rendu</span><span>${changeDue.toFixed(2)} €</span></div>
-          ` : `
-            <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold;"><span>Payé par</span><span>CARTE</span></div>
-          `}
-          <div style="text-align: center; margin-top: 20px; font-size: 12px;">
-            <p style="margin: 0;">Merci de votre visite !</p>
-            <p style="margin: 2px 0;">A bientot.</p>
-          </div>
-        </div>
-      `;
+      const orderPayloadData = {
+        orderType: `DUPLICATA - ${orderType}`,
+        orderNumber,
+        orderDate: date,
+        restaurantName,
+        items: formattedItems,
+        total: subtotal
+      };
 
-      const result = await window.electronAPI.printReceipt(receiptHtml);
+      const result = await (window as any).electronAPI.printReceipt(orderPayloadData);
       if (!result.success) toast.error("Erreur avec l'imprimante !");
       else toast.success("Duplicata imprimé");
 

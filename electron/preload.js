@@ -27,3 +27,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getOfflineOrders: () => ipcRenderer.invoke('get-offline-orders'),
   removeOfflineOrder: (offlineId) => ipcRenderer.invoke('remove-offline-order', offlineId)
 });
+
+// --- PONT IPC DÉDIÉ NATIVE POS ---
+contextBridge.exposeInMainWorld('pos', {
+  printReceipt: (data) => ipcRenderer.invoke('pos:print-receipt', data),
+  openCashDrawer: (printerName) => ipcRenderer.invoke('pos:open-drawer', printerName),
+  getPrinterStatus: () => ipcRenderer.invoke('pos:printer-status')
+});

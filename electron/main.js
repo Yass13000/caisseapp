@@ -6,10 +6,18 @@ import fs from 'fs';
 import os from 'os';
 import { exec } from 'child_process';
 
+import PrinterManager from './printing/PrinterManager.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let mainWindow;
+
+const APP_URL = process.env.VITE_APP_URL || 'https://caisseapp.vercel.app/#/caisse';
+const ALLOWED_ORIGIN = 'https://caisseapp.vercel.app';
+
+let retryDelayMs = 3000;
+const MAX_RETRY_DELAY_MS = 30000;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -21,18 +29,58 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
       partition: 'persist:caisse_session',
       preload: path.join(__dirname, 'preload.js')
     }
   });
 
-  if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL('http://localhost:5173');
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-  }
+  const targetUrl = process.env.NODE_ENV === 'development' 
+    ? 'http://localhost:5173' 
+    : APP_URL;
 
-  mainWindow.webContents.openDevTools();
+  mainWindow.loadURL(targetUrl).catch((err) => {
+    console.warn("🌐 Échec du chargement de l'URL distante, bascule sur le bundle local :", err);
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+  });
+
+  // Reconnexion automatique avec backoff plafonné en cas de déconnexion réseau
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    if (errorCode === -105 || errorCode === -106 || errorCode === -102) {
+      console.warn(`[Electron] Échec de chargement (${errorDescription}). Nouvelle tentative dans ${retryDelayMs / 1000}s...`);
+      setTimeout(() => {
+        if (mainWindow) {
+          mainWindow.loadURL(targetUrl).catch(() => {
+            mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+          });
+        }
+      }, retryDelayMs);
+      retryDelayMs = Math.min(retryDelayMs * 2, MAX_RETRY_DELAY_MS);
+    }
+  });
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    retryDelayMs = 3000;
+  });
+
+  // Restreindre la navigation au domaine de confiance uniquement (Sécurité POS Kiosque)
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith(ALLOWED_ORIGIN) && !url.startsWith('http://localhost')) {
+      event.preventDefault();
+    }
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (!url.startsWith(ALLOWED_ORIGIN) && !url.startsWith('http://localhost')) {
+      return { action: 'deny' };
+    }
+    return { action: 'allow' };
+  });
+
+  if (process.env.NODE_ENV === 'development') {
+    mainWindow.webContents.openDevTools();
+  }
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
@@ -68,15 +116,41 @@ function readSettingsFile() {
   return {};
 }
 
+const ALLOWED_SETTINGS_KEYS = new Set([
+  'pos_restaurant_id',
+  'pos_pin',
+  'auto_print_receipt',
+  'print_kitchen_ticket',
+  'receipt_width',
+  'imprimante_caisse',
+  'imprimante_cuisine'
+]);
+
 ipcMain.on('get-setting-sync', (event, key, defaultValue) => {
   const settings = readSettingsFile();
   event.returnValue = settings[key] !== undefined ? settings[key] : defaultValue;
 });
 
 ipcMain.on('set-setting-sync', (event, key, value) => {
+  if (!ALLOWED_SETTINGS_KEYS.has(key)) {
+    console.warn(`⚠️ tentative de modification de clé non autorisée: ${key}`);
+    event.returnValue = false;
+    return;
+  }
+
+  // Validation de type & format selon la clé
+  if (key === 'receipt_width') {
+    const num = Number(value);
+    if (isNaN(num) || num < 40 || num > 120) {
+      console.warn(`⚠️ Largeur de reçu invalide: ${value}`);
+      event.returnValue = false;
+      return;
+    }
+  }
+
   try {
     const settings = readSettingsFile();
-    settings[key] = value;
+    settings[key] = String(value);
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
   } catch (e) {
     console.error("Erreur écriture fichier configuration:", e);
@@ -137,37 +211,43 @@ async function getTargetPrinter(desiredPrinterName) {
   
   if (desiredPrinterName) {
     const specificPrinter = printers.find(p => p.name === desiredPrinterName);
-    if (specificPrinter) return specificPrinter;
+    if (specificPrinter) {
+      console.log(`[POS Hardware] Imprimante spécifique résolue: ${specificPrinter.name}`);
+      return specificPrinter;
+    }
   }
 
   let targetPrinter = printers.find(p => p.isDefault);
   if (!targetPrinter) targetPrinter = printers.find(p => p.name.toLowerCase().includes('tm') || p.name.toLowerCase().includes('epson'));
   if (!targetPrinter && printers.length > 0) targetPrinter = printers[0];
   
+  console.log(`[POS Hardware] Imprimante cible résolue (défaut/auto): ${targetPrinter ? targetPrinter.name : 'AUCUNE'}`);
   return targetPrinter;
 }
 
 function sendRawCommandToPrinter(printerName, byteString) {
   if (process.platform !== 'win32') return Promise.resolve(false);
 
+  console.log(`[POS Hardware] Envoi commande RAW à "${printerName}" -> Octets: [${byteString}]`);
+
   const psScript = `
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 public class RawPrinterHelper {
-    [DllImport("winspool.Drv", EntryPoint="OpenPrinterA", ExactSpelling=true, SetLastError=true, CallingConvention=Convention.StdCall)]
+    [DllImport("winspool.Drv", EntryPoint="OpenPrinterA", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool OpenPrinter([MarshalAs(UnmanagedType.LPStr)] string szPrinter, out IntPtr hPrinter, IntPtr pd);
-    [DllImport("winspool.Drv", EntryPoint="ClosePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=Convention.StdCall)]
+    [DllImport("winspool.Drv", EntryPoint="ClosePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool ClosePrinter(IntPtr hPrinter);
-    [DllImport("winspool.Drv", EntryPoint="StartDocPrinterA", ExactSpelling=true, SetLastError=true, CallingConvention=Convention.StdCall)]
+    [DllImport("winspool.Drv", EntryPoint="StartDocPrinterA", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool StartDocPrinter(IntPtr hPrinter, int level, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOA di);
-    [DllImport("winspool.Drv", EntryPoint="EndDocPrinter", ExactSpelling=true, SetLastError=true, CallingConvention=Convention.StdCall)]
+    [DllImport("winspool.Drv", EntryPoint="EndDocPrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool EndDocPrinter(IntPtr hPrinter);
-    [DllImport("winspool.Drv", EntryPoint="StartPagePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=Convention.StdCall)]
+    [DllImport("winspool.Drv", EntryPoint="StartPagePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool StartPagePrinter(IntPtr hPrinter);
-    [DllImport("winspool.Drv", EntryPoint="EndPagePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=Convention.StdCall)]
+    [DllImport("winspool.Drv", EntryPoint="EndPagePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool EndPagePrinter(IntPtr hPrinter);
-    [DllImport("winspool.Drv", EntryPoint="WritePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=Convention.StdCall)]
+    [DllImport("winspool.Drv", EntryPoint="WritePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
     public class DOCINFOA {
@@ -203,14 +283,17 @@ public class RawPrinterHelper {
   fs.writeFileSync(scriptPath, psScript, 'utf8');
 
   return new Promise((resolve) => {
-    exec(`powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "${scriptPath}"`, (error) => {
-      resolve(!error);
+    exec(`powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "${scriptPath}"`, (error, stdout) => {
+      const output = stdout.trim().toLowerCase();
+      const isSuccess = !error && output === 'true';
+      console.log(`[POS Hardware] Résultat WritePrinter via PowerShell: ${isSuccess} (Output: ${output})`);
+      resolve(isSuccess);
     });
   });
 }
 
 // ============================================================================
-// --- IPC HANDLERS (ÉCOUTEURS POUR LE FRONT-END) ---
+// --- IPC HANDLERS MATÉRIEL (DÉLÉGUÉS À PRINTER MANAGER) ---
 // ============================================================================
 
 ipcMain.handle('get-printers', async () => {
@@ -218,99 +301,12 @@ ipcMain.handle('get-printers', async () => {
   return [];
 });
 
-// --- LOGIQUE D'IMPRESSION BLINDÉE (ATTENTE DU RETOUR MATÉRIEL HORS-LIGNE) ---
-ipcMain.handle('print-receipt', async (event, printContent, printerName) => {
-  const settings = readSettingsFile();
-  const width = settings.receipt_width || '72';
-
-  return new Promise(async (resolve) => {
-    try {
-      let printWindow = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true } });
-
-      const htmlContent = `
-        <html>
-          <head>
-            <style>
-              body { font-family: monospace; font-size: 12px; margin: 0; padding: 10px; width: ${width}mm; }
-              .center { text-align: center; }
-              .right { text-align: right; }
-              .bold { font-weight: bold; }
-              hr { border-top: 1px dashed black; }
-            </style>
-          </head>
-          <body>${printContent}</body>
-        </html>
-      `;
-
-      await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
-
-      const targetPrinter = await getTargetPrinter(printerName);
-      const deviceName = targetPrinter ? targetPrinter.name : '';
-
-      printWindow.shadowWindow = printWindow; // Protection GC
-
-      printWindow.webContents.print({
-        silent: true,
-        printBackground: true,
-        deviceName: deviceName,
-        margins: { marginType: 'none' }
-      }, async (success, failureReason) => {
-        
-        // Destruction propre de la fenêtre pour libérer la RAM
-        printWindow.destroy();
-        printWindow = null;
-
-        if (!success) {
-          console.error("Erreur d'impression physique:", failureReason);
-          resolve({ success: false, error: failureReason });
-        } else {
-          if (targetPrinter && process.platform === 'win32') {
-            await sendRawCommandToPrinter(targetPrinter.name, "29, 86, 66, 0");
-          }
-          resolve({ success: true });
-        }
-      });
-
-    } catch (error) {
-      console.error('Erreur IPC Print critique:', error);
-      resolve({ success: false, error: error.message });
-    }
-  });
+ipcMain.handle('print-receipt', async (event, data, printerName) => {
+  return await PrinterManager.printReceipt(data, printerName, mainWindow);
 });
 
-// --- OUVERTURE DU TIROIR CAISSE ---
 ipcMain.handle('open-drawer', async (event, printerName) => {
-  try {
-    const targetPrinter = await getTargetPrinter(printerName);
-
-    if (!targetPrinter) return { success: false, error: "Aucune imprimante détectée." };
-
-    if (process.platform === 'win32') {
-      const kickCode = "27, 112, 0, 25, 250, 27, 112, 1, 25, 250, 27, 112, 48, 55, 121";
-      const isSuccess = await sendRawCommandToPrinter(targetPrinter.name, kickCode);
-      
-      if (isSuccess) {
-        console.log(`Tiroir ouvert via l'imprimante: ${targetPrinter.name}`);
-        return { success: true };
-      } else {
-        return { success: false, error: "Échec du script PowerShell" };
-      }
-    } else {
-      let kickWindow = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true } });
-      await kickWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent('<html><body>.</body></html>')}`);
-      
-      return new Promise((resolve) => {
-        kickWindow.webContents.print({ silent: true, deviceName: targetPrinter.name }, (success) => {
-          kickWindow.destroy();
-          kickWindow = null;
-          resolve({ success });
-        });
-      });
-    }
-  } catch (error) {
-    console.error("Erreur fatale IPC Open Drawer:", error);
-    return { success: false, error: error.message };
-  }
+  return await PrinterManager.openDrawer(printerName, mainWindow);
 });
 
 // --- FERMETURE DE L'APPLICATION ---
@@ -318,14 +314,68 @@ ipcMain.on('close-app', () => {
   app.quit();
 });
 
-// --- EXTINCTION DU PC COMPLET ---
+// --- EXTINCTION DU PC COMPLET (AVEC CONFIRMATION NATIVE OBLIGATOIRE) ---
 ipcMain.on('shutdown-pc', () => {
-  const command = process.platform === 'win32' ? 'shutdown /s /t 0' : 'init 0';
-  exec(command);
+  const { dialog } = require('electron');
+  const response = dialog.showMessageBoxSync(mainWindow, {
+    type: 'warning',
+    buttons: ['Annuler', 'Éteindre la caisse'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Confirmation Extinction',
+    message: 'Voulez-vous vraiment éteindre la borne de caisse physique ?'
+  });
+
+  if (response === 1) {
+    const command = process.platform === 'win32' ? 'shutdown /s /t 0' : 'init 0';
+    exec(command);
+  }
 });
 
-// --- REDÉMARRAGE DU PC COMPLET ---
+// --- REDÉMARRAGE DU PC COMPLET (AVEC CONFIRMATION NATIVE OBLIGATOIRE) ---
 ipcMain.on('restart-pc', () => {
-  const command = process.platform === 'win32' ? 'shutdown /r /t 0' : 'init 6';
-  exec(command);
+  const { dialog } = require('electron');
+  const response = dialog.showMessageBoxSync(mainWindow, {
+    type: 'warning',
+    buttons: ['Annuler', 'Redémarrer'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Confirmation Redémarrage',
+    message: 'Voulez-vous vraiment redémarrer la borne de caisse physique ?'
+  });
+
+  if (response === 1) {
+    const command = process.platform === 'win32' ? 'shutdown /r /t 0' : 'init 6';
+    exec(command);
+  }
+});
+
+// --- ALIAS IPC NATIVE POS (CANAL ALIAS DE COMPATIBILITÉ POUR FUTURS MODULES EXTERNES) ---
+// Note de documentation : electronAPI.printReceipt via 'print-receipt' reste le canal principal utilisé par le frontend.
+// Les canaux 'pos:print-receipt', 'pos:open-drawer' et 'pos:printer-status' sont conservés comme alias de compatibilité standard POS.
+ipcMain.handle('pos:print-receipt', async (event, data) => {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve({ success: false, error: 'TIMEOUT_PRINTER_UNREACHABLE' });
+    }, 10000);
+
+    const printerName = typeof data === 'object' ? data?.printerName : undefined;
+
+    PrinterManager.printReceipt(data, printerName, mainWindow).then((res) => {
+      clearTimeout(timer);
+      resolve(res);
+    }).catch((err) => {
+      clearTimeout(timer);
+      resolve({ success: false, error: err.message });
+    });
+  });
+});
+
+ipcMain.handle('pos:open-drawer', async (event, printerName) => {
+  const targetName = typeof printerName === 'string' ? printerName : undefined;
+  return await PrinterManager.openDrawer(targetName, mainWindow);
+});
+
+ipcMain.handle('pos:printer-status', async () => {
+  return await PrinterManager.checkPrinterStatus(mainWindow);
 });
