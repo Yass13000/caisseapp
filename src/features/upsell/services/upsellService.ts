@@ -16,6 +16,7 @@ const getActiveRestaurantId = () => {
 export const fetchUpsellProducts = async (): Promise<UpsellProduct[]> => {
   try {
     const activeRestoId = getActiveRestaurantId();
+    if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') return [];
 
     const { data, error } = await supabase
       .from('product')
@@ -81,7 +82,9 @@ export const fetchUpsellProducts = async (): Promise<UpsellProduct[]> => {
  */
 export const fetchUpsellProductById = async (id: string): Promise<UpsellProduct | null> => {
   try {
+    if (!id || id === 'undefined' || id === 'null') return null;
     const activeRestoId = getActiveRestaurantId();
+    if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') return null;
 
     const { data, error } = await supabase
       .from('product')

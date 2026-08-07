@@ -1,83 +1,22 @@
 // @ts-nocheck
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { supabase } from '@/lib/supabaseClient';
+import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, CreditCard, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { getFormattedOrderOptions, fetchOptionGroupMapping } from '@/lib/orderFormatter';
 
 interface OrderTrackerModalProps {
   onClose: () => void;
-  // MODIFICATION ICI : On ajoute le type de commande et les infos clients dans les paramètres renvoyés
   onLoadOrder: (orderDetails: any[], orderId: string | number, orderType?: string, clientInfo?: any) => void;
   restaurantName?: string;
 }
 
-// --- LECTURE ABSOLUE AVEC CONSERVATION DES PRIX ET PROTECTIONS ---
-const getFormattedOptions = (item: any) => {
-  if (!item) return [];
-  const rawOptions: { name: string, price: number, order: number }[] = [];
-  let globalIndex = 0;
-
-  if (item.boisson) rawOptions.push({ name: item.boisson.name || item.boisson, price: parseFloat(item.boisson.price || 0), order: -2 });
-  if (item.accompagnement) rawOptions.push({ name: item.accompagnement.name || item.accompagnement, price: parseFloat(item.accompagnement.price || 0), order: -1 });
-
-  const dynOpts = item.selectedSubOptions || item.selections || item.options;
-
-  const extractName = (o: any) => {
-    if (!o) return "";
-    if (typeof o === 'string') return o;
-    return o.name || o.title || o.variant_name || o.value || "";
-  };
-
-  const readNode = (node: any) => {
-    if (!node) return;
-    if (typeof node === 'string') {
-      rawOptions.push({ name: node, price: 0, order: globalIndex++ });
-    } else if (Array.isArray(node)) {
-      node.forEach(readNode);
-    } else if (typeof node === 'object') {
-      if (node.options && Array.isArray(node.options)) {
-        node.options.forEach(readNode);
-      } else {
-        const n = extractName(node);
-        if (n && n.toLowerCase() !== 'option' && n.toLowerCase() !== 'options') {
-          const order = node._print_order !== undefined ? node._print_order : globalIndex++;
-          rawOptions.push({ name: n, price: parseFloat(node.price || 0), order: order });
-        } else if (!n || n.toLowerCase() === 'option' || n.toLowerCase() === 'options') {
-          Object.values(node).forEach(readNode);
-        }
-      }
-    }
-  };
-
-  if (dynOpts) readNode(dynOpts);
-
-  rawOptions.sort((a, b) => a.order - b.order);
-
-  const finalOrdered: { name: string, price: number, qty: number }[] = [];
-  rawOptions.forEach(opt => {
-    const cleanName = typeof opt.name === 'string' ? opt.name.trim().toLowerCase() : "";
-    if (!cleanName) return;
-
-    const existing = finalOrdered.find(o => o.name === cleanName);
-    if (existing) {
-      existing.qty += 1;
-      existing.price += opt.price;
-    } else {
-      finalOrdered.push({ name: cleanName, price: opt.price, qty: 1 });
-    }
-  });
-
-  return finalOrdered.map(o => ({
-    name: o.qty > 1 ? `${o.qty}x ${o.name}` : o.name,
-    price: o.price
-  }));
-};
-
-const getItemTotal = (item: any) => {
+const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   if (!item) return 0;
   const basePrice = parseFloat(item.product?.price || item.price || 0);
-  const optsPrice = getFormattedOptions(item).reduce((sum, o) => sum + o.price, 0);
+  const groups = getFormattedOrderOptions(item, groupMapping);
+  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + o.price, 0);
   return (basePrice + optsPrice) * (item.quantity || 1);
 };
 
@@ -109,6 +48,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
   const [orders, setOrders] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expandedOrderId, setExpandedOrderId] = useState<string | number | null>(null);
+  const [optionGroupMapping, setOptionGroupMapping] = useState<Record<string, string>>({});
   
   const getLocalToday = () => {
     const today = new Date();
@@ -122,7 +62,9 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
   const fetchPendingOrders = async () => {
     setIsLoading(true);
     try {
-      const activeRestoId = localStorage.getItem('pos_restaurant_id');
+      const activeRestoId = (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) 
+        || localStorage.getItem('pos_restaurant_id') 
+        || RESTAURANT_ID;
       
       if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') {
         toast.error("Veuillez configurer la caisse (ID manquant)");
@@ -130,12 +72,22 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         return;
       }
 
-      const [year, month, day] = filterDate.split('-').map(Number);
-      const startOfDayLocal = new Date(year, month - 1, day, 0, 0, 0, 0);
-      const endOfDayLocal = new Date(year, month - 1, day, 23, 59, 59, 999);
+      let startOfDay: string;
+      let endOfDay: string;
 
-      const startOfDay = startOfDayLocal.toISOString();
-      const endOfDay = endOfDayLocal.toISOString();
+      if (filterDate === getLocalToday()) {
+        const now = new Date();
+        const startOfDayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+        startOfDay = startOfDayLocal.toISOString();
+        const endOfDayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+        endOfDay = endOfDayLocal.toISOString();
+      } else {
+        const [year, month, day] = filterDate.split('-').map(Number);
+        const startOfDayLocal = new Date(year, month - 1, day, 0, 0, 0, 0);
+        const endOfDayLocal = new Date(year, month - 1, day, 23, 59, 59, 999);
+        startOfDay = startOfDayLocal.toISOString();
+        endOfDay = endOfDayLocal.toISOString();
+      }
 
       const { data, error } = await supabase
         .from('orders')
@@ -156,7 +108,58 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     }
   };
 
-  useEffect(() => { fetchPendingOrders(); }, [filterDate, sortOrder]);
+  // 🟢 Chargement du mapping des groupes d'options Supabase
+  useEffect(() => {
+    const loadMapping = async () => {
+      if (orders.length === 0) return;
+
+      const activeRestoId = (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) 
+        || localStorage.getItem('pos_restaurant_id') 
+        || RESTAURANT_ID;
+
+      const allItems = orders.flatMap(o => {
+        try {
+          const parsed = typeof o.order_details === 'string' ? JSON.parse(o.order_details) : o.order_details;
+          return Array.isArray(parsed) ? parsed : (parsed?.items || [parsed]);
+        } catch (e) {
+          return [];
+        }
+      });
+
+      const mapping = await fetchOptionGroupMapping(allItems, activeRestoId);
+      setOptionGroupMapping(mapping);
+    };
+
+    loadMapping();
+  }, [orders]);
+
+  useEffect(() => { 
+    fetchPendingOrders(); 
+
+    const activeRestoId = (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) 
+      || localStorage.getItem('pos_restaurant_id') 
+      || RESTAURANT_ID;
+
+    const channel = supabase
+      .channel('tracker_orders_realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+          ...(activeRestoId ? { filter: `restaurant_id=eq.${activeRestoId}` } : {})
+        },
+        () => {
+          fetchPendingOrders();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [filterDate, sortOrder]);
 
   const changeDay = (days: number) => {
     const current = new Date(filterDate);
@@ -184,7 +187,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const toggleExpand = (id: string | number) => setExpandedOrderId(prev => prev === id ? null : id);
 
-  // --- CORRECTION MAJEURE : On récupère le type de commande et le client ---
+  // 🟢 CORRECTION MAJEURE ICI : CONSERVATION INTACTE DES OPTIONS ET DES NOMS DE GROUPES (SAUCES, BOISSONS...)
   const handleSelectOrder = (order: any) => {
     let items = [];
     try {
@@ -192,12 +195,14 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       if (!Array.isArray(items)) items = items.items || items.cart || [items];
       
       items = items.map((item: any, index: number) => {
-         const cleanOptions = getFormattedOptions(item);
          const productName = extractProductName(item);
          const productPrice = extractProductPrice(item);
          const productId = item.product?.id || item.id || `prod-${index}`;
 
-         const optionsString = cleanOptions.map(o => o.name).join('-');
+         // Conservons les options d'origine sans les altérer ni écraser leurs group_name !
+         const rawOptions = item.selectedSubOptions || item.selections || item.flatOptions || item.options || [];
+
+         const optionsString = JSON.stringify(rawOptions);
          const optionsHash = btoa(encodeURIComponent(optionsString)).substring(0, 15);
          const antiFusionId = `${productId}-${optionsHash}-${index}`;
 
@@ -215,7 +220,9 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                is_available: true,
                category: item.product?.category || ''
              }, 
-             selectedSubOptions: cleanOptions
+             selectedSubOptions: rawOptions,
+             rawSelections: item.rawSelections || item.selections || null,
+             removedIngredients: item.removedIngredients || []
          };
       });
     } catch (e) {
@@ -228,10 +235,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       return;
     }
 
-    // Traduction de l'ID du type de commande
     const resolvedOrderType = ORDER_TYPE_LABELS[order.order_type_id] || 'SUR PLACE';
 
-    // Construction de la fiche client
     const clientInfo = {
       name: order.customer_name || '',
       phone: order.customer_phone || '',
@@ -239,7 +244,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       fee: order.delivery_fee || 0
     };
 
-    // ON ENVOIE TOUT A LA CAISSE !
     onLoadOrder(items, order.id, resolvedOrderType, clientInfo);
     onClose();
   };
@@ -265,12 +269,11 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       const cashAmount = order.cash_amount || subtotal;
       const changeDue = Math.max(0, cashAmount - subtotal);
 
-      // Calcul TVA
       const totalHT = subtotal / 1.055;
       const totalTVA = subtotal - totalHT;
 
       const itemsHtml = items.map((item: any) => {
-        const itemTotal = getItemTotal(item);
+        const itemTotal = getItemTotal(item, optionGroupMapping);
         const productName = extractProductName(item);
         let html = `
           <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
@@ -278,15 +281,18 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
             <span class="bold" style="white-space: nowrap;">${itemTotal.toFixed(2)} €</span>
           </div>
         `;
-        const options = getFormattedOptions(item);
-        if (options.length > 0) {
-          options.forEach(opt => {
-            html += `
-              <div style="display: flex; justify-content: space-between; font-size: 11px; color: #333; padding-left: 10px;">
-                <span style="max-width: 75%; word-wrap: break-word;">- ${opt.name}</span>
-                <span style="white-space: nowrap;">${opt.price > 0 ? '+' + opt.price.toFixed(2) + '€' : ''}</span>
-              </div>
-            `;
+        const groups = getFormattedOrderOptions(item, optionGroupMapping);
+        if (groups.length > 0) {
+          groups.forEach(grp => {
+            grp.items.forEach(opt => {
+              const groupPrefix = grp.groupName ? `${grp.groupName} : ` : '';
+              html += `
+                <div style="display: flex; justify-content: space-between; font-size: 11px; color: #333; padding-left: 10px;">
+                  <span style="max-width: 75%; word-wrap: break-word;">- ${groupPrefix}${opt.name}</span>
+                  <span style="white-space: nowrap;">${opt.price > 0 ? '+' + opt.price.toFixed(2) + '€' : ''}</span>
+                </div>
+              `;
+            });
           });
         }
         return html;
@@ -366,14 +372,16 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
             <span style="font-weight: bold;">${productName}</span>
           </div>
         `;
-        const options = getFormattedOptions(item);
-        if (options.length > 0) {
-          options.forEach(opt => {
-            html += `
-              <div style="font-size: 13px; font-weight: bold; padding-left: 20px; line-height: 1.1; margin-bottom: 2px;">
-                - ${opt.name}
-              </div>
-            `;
+        const groups = getFormattedOrderOptions(item, optionGroupMapping);
+        if (groups.length > 0) {
+          groups.forEach(grp => {
+            grp.items.forEach(opt => {
+              html += `
+                <div style="font-size: 13px; font-weight: bold; padding-left: 20px; line-height: 1.1; margin-bottom: 2px;">
+                  - ${grp.groupName}: ${opt.name}
+                </div>
+              `;
+            });
           });
         }
         html += `<div style="height: 5px;"></div>`;
@@ -469,8 +477,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
             {items.map((item: any, idx: number) => {
               const productName = extractProductName(item);
               const qty = item.quantity || 1;
-              const itemTotal = getItemTotal(item);
-              const options = getFormattedOptions(item);
+              const itemTotal = getItemTotal(item, optionGroupMapping);
+              const optionGroups = getFormattedOrderOptions(item, optionGroupMapping);
               
               return (
                 <li key={idx} className="flex flex-col text-sm border-b border-gray-100 last:border-0 pb-2">
@@ -483,12 +491,22 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                       {itemTotal.toFixed(2)} €
                     </div>
                   </div>
-                  {options.length > 0 && (
-                    <div className="mt-1 pl-6 space-y-0.5">
-                      {options.map((opt, i) => (
-                        <div key={i} className="flex justify-between text-xs text-gray-500">
-                          <span>- {opt.name}</span>
-                          {opt.price > 0 && <span>+{opt.price.toFixed(2)}€</span>}
+                  {optionGroups.length > 0 && (
+                    <div className="mt-1 pl-6 space-y-1">
+                      {optionGroups.map((grp, gIdx) => (
+                        <div key={gIdx} className="flex flex-wrap items-baseline gap-1 text-xs text-gray-500">
+                          {grp.groupName ? (
+                            <span className="font-bold text-secondary uppercase text-[10px]">{grp.groupName} :</span>
+                          ) : null}
+                          {grp.items.map((opt, oIdx) => (
+                            <span key={oIdx} className="inline">
+                              <span className={opt.isSans ? "text-red-500 font-bold" : "font-medium"}>
+                                {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
+                              </span>
+                              {opt.price > 0 && <span> (+{opt.price.toFixed(2)}€)</span>}
+                              {oIdx < grp.items.length - 1 ? ', ' : ''}
+                            </span>
+                          ))}
                         </div>
                       ))}
                     </div>

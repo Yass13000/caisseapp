@@ -55,6 +55,11 @@ const ProductVariantsModal: React.FC<ProductVariantsModalProps> = ({
   }, [isOpen, product]);
 
   const loadVariants = async () => {
+    if (!product?.id || product.id === 'undefined' || product.id === 'null') {
+      setVariants([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const { data, error } = await supabase

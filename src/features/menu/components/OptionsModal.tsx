@@ -1,33 +1,85 @@
 // @ts-nocheck
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { supabase } from '@/lib/supabaseClient';
+import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 
-export interface CustomizationOption { id: number | string; name: string; price: number; }
-interface StepData { id: string; min_choices: number; max_choices: number; step_order: number; group_name: string; allow_multiple: boolean; options: CustomizationOption[]; isSubOption?: boolean; free_choices_count?: number; }
+export interface CustomizationOption { 
+  id: number | string; 
+  name: string; 
+  price: number;
+  type?: string;
+  image?: string;
+  description?: string;
+  sort_order?: number;
+  is_dynamic?: boolean;
+  original_product_id?: number;
+  group_name?: string;
+  option_group_name?: string;
+  groupName?: string;
+  option_group_id?: number | string;
+}
+
+interface Ingredient { 
+  id: number; 
+  product_id?: number; 
+  name: string; 
+  image_url?: string | null; 
+  is_available?: boolean; 
+}
+
+interface StepData { 
+  id: string; 
+  min_choices: number; 
+  max_choices: number; 
+  step_order: number; 
+  group_name: string; 
+  allow_multiple: boolean; 
+  options: CustomizationOption[]; 
+  isSubOption?: boolean; 
+  isIngredientStep?: boolean;
+  free_choices_count?: number; 
+  option_group_id?: number | string;
+}
+
+const cleanId = (id: string | number) => String(id).replace('dyn_', '');
 
 const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [baseSteps, setBaseSteps] = useState<StepData[]>([]);
   const [allSubGroups, setAllSubGroups] = useState<any[]>([]);
+  const [ingredients, setIngredients] = useState<Ingredient[]>([]);
+  const [removedIngredientIds, setRemovedIngredientIds] = useState<Set<number>>(new Set());
+  
   const [stepSelections, setStepSelections] = useState<Record<string, CustomizationOption[]>>({});
   
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [bubbleOption, setBubbleOption] = useState<{ parentItem: CustomizationOption, childGroups: any[], baseStepId: string } | null>(null);
 
+  const onAddToCartRef = useRef(onAddToCart);
+  onAddToCartRef.current = onAddToCart;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   const stepSelectionsRef = useRef(stepSelections);
   stepSelectionsRef.current = stepSelections;
   const activeStepsRef = useRef<StepData[]>([]);
+  const hasInitializedStepRef = useRef(false);
 
   const formatSubGroup = useCallback((sg: any, parentOptName?: string): StepData => {
+    const groupName = parentOptName ? `${sg.name} (${parentOptName})` : sg.name;
     const validChoices = (sg.sub_option_choices || [])
         .filter((c: any) => c.is_available !== false)
         .sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0))
         .map((c: any) => ({
             id: c.id, 
             name: c.name,
-            price: c.price || 0
+            price: c.price || 0,
+            sort_order: c.sort_order || 0,
+            group_name: groupName,
+            option_group_name: groupName,
+            groupName: groupName,
+            option_group_id: sg.id
         }));
 
     return {
@@ -35,46 +87,154 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         min_choices: sg.min_choices != null ? Number(sg.min_choices) : 0,
         max_choices: sg.max_choices != null ? Number(sg.max_choices) : 1,
         step_order: sg.sort_order || 0,
-        group_name: parentOptName ? `${sg.name} (${parentOptName})` : sg.name,
+        group_name: groupName,
         allow_multiple: (sg.max_choices != null ? Number(sg.max_choices) : 1) > 1, 
         options: validChoices,
         isSubOption: true,
-        free_choices_count: sg.free_choices_count || 0 
+        free_choices_count: sg.free_choices_count || 0,
+        option_group_id: sg.id
     };
   }, []);
 
   useEffect(() => {
+    hasInitializedStepRef.current = false;
+  }, [product?.id]);
+
+  useEffect(() => {
     let isMounted = true;
     
-    const fetchRules = async () => {
+    const fetchRulesAndOptions = async () => {
+      if (!product?.id || product.id === 'undefined' || product.id === 'null') {
+        if (isMounted) setIsLoading(false);
+        return;
+      }
       setIsLoading(true);
-      try {
-        // ✅ REQUÊTE MODIFIÉE : Récupération de free_choices_count au niveau de product_option_groups + option_groups
-        const { data: baseData, error } = await supabase
-          .from('product_option_groups')
-          .select(`id, min_choices, max_choices, step_order, free_choices_count, option_groups (id, name, allow_multiple, free_choices_count, option_group_links ( sort_order, options ( id, name, price, is_available ) ))`)
-          .eq('product_id', product.id)
-          .order('step_order');
 
-        if (error) throw error;
+      const rawId = String(product.id);
+      const realProductId = parseInt(rawId.split('-')[0], 10);
+      const activeRestoId = product?.restaurant_id || (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) || localStorage.getItem('pos_restaurant_id') || RESTAURANT_ID;
+
+      try {
+        const [baseRes, subProdRes, ingRes] = await Promise.all([
+          supabase
+            .from('product_option_groups')
+            .select(`id, min_choices, max_choices, step_order, free_choices_count, option_groups (id, name, allow_multiple, free_choices_count, target_category_name, target_subcategory_id, product_overrides, option_group_links ( sort_order, options ( id, name, price, image_url, is_available, description ) ))`)
+            .eq('product_id', product.id)
+            .order('step_order'),
+          supabase
+            .from('sub_option_groups')
+            .select(`id, name, min_choices, max_choices, free_choices_count, sort_order, option_id, product_id, sub_option_choices ( id, name, price, is_available, sort_order )`)
+            .eq('product_id', product.id),
+          realProductId ? supabase
+            .from('product_ingredients')
+            .select(`global_ingredients ( id, name, image_url, is_available )`)
+            .eq('product_id', realProductId) : Promise.resolve({ data: [] })
+        ]);
 
         let formattedBaseSteps: StepData[] = [];
         const optionIds = new Set<string>();
 
-        if (baseData && baseData.length > 0) {
-          formattedBaseSteps = baseData.map((rule: any) => {
+        if (baseRes.data && baseRes.data.length > 0) {
+          formattedBaseSteps = await Promise.all(baseRes.data.map(async (rule: any) => {
+            const groupName = rule.option_groups?.name || 'Options';
+            const groupGroupId = rule.option_groups?.id;
             const rawLinks = rule.option_groups?.option_group_links || [];
             const sortedLinks = rawLinks.sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0));
             
-            const validOptions = sortedLinks
+            const validOptions: CustomizationOption[] = sortedLinks
               .map((link: any) => link.options)
               .filter((opt: any) => opt && opt.is_available !== false)
-              .map((opt: any) => {
+              .map((opt: any, idx: number) => {
                  optionIds.add(String(opt.id));
-                 return { id: opt.id, name: opt.name, price: opt.price };
+                 return { 
+                   id: opt.id, 
+                   name: opt.name, 
+                   price: opt.price || 0,
+                   sort_order: sortedLinks[idx]?.sort_order || 0,
+                   image: opt.image_url || '',
+                   description: opt.description || '',
+                   group_name: groupName,
+                   option_group_name: groupName,
+                   groupName: groupName,
+                   option_group_id: groupGroupId
+                 };
               });
 
-            // ✅ BACKWARD COMPATIBILITY : On priorise la règle produit, sinon on prend la règle du groupe global
+            let dynamicOptions: CustomizationOption[] = [];
+            const targetSubcatId = rule.option_groups?.target_subcategory_id;
+            const targetCatName = rule.option_groups?.target_category_name;
+            const overrides = rule.option_groups?.product_overrides || {};
+
+            let fetchedProds: any[] = [];
+
+            if (targetSubcatId) {
+              const { data: dynProds } = await supabase
+                .from('product')
+                .select('id, name, price, image, description, is_available, sort_order')
+                .eq('subcategory_id', targetSubcatId)
+                .eq('restaurant_id', activeRestoId)
+                .eq('is_available', true)
+                .order('sort_order', { ascending: true, nullsFirst: false })
+                .order('name', { ascending: true });
+
+              if (dynProds) fetchedProds = dynProds;
+            } else if (targetCatName) {
+              const { data: dynProds } = await supabase
+                .from('product')
+                .select('id, name, price, image, description, is_available, sort_order')
+                .ilike('category', targetCatName.trim())
+                .eq('restaurant_id', activeRestoId)
+                .eq('is_available', true)
+                .order('sort_order', { ascending: true, nullsFirst: false })
+                .order('name', { ascending: true });
+
+              if (dynProds) fetchedProds = dynProds;
+            }
+
+            if (fetchedProds.length > 0) {
+              dynamicOptions = fetchedProds
+                .filter((p: any) => p.is_available !== false)
+                .map((p: any, idx: number) => {
+                  optionIds.add(String(p.id)); // 👈 AJOUTÉ: enregistrement de l'ID pour le chargement des sous-options
+                  const entry = overrides[String(p.id)];
+                  const customPrice = typeof entry === 'object' && entry?.price !== undefined ? entry.price : (typeof entry === 'number' ? entry : null);
+                  const customSortOrder = (typeof entry === 'object' && entry?.sort_order !== undefined && entry?.sort_order !== '') 
+                    ? Number(entry.sort_order) 
+                    : (p.sort_order ?? idx);
+
+                  const finalPrice = customPrice !== null ? Number(customPrice) : (p.price || 0);
+
+                  return {
+                    id: `dyn_${p.id}`,
+                    name: p.name,
+                    price: finalPrice,
+                    sort_order: Number(customSortOrder),
+                    image: p.image || '',
+                    description: p.description || '',
+                    is_dynamic: true,
+                    original_product_id: p.id,
+                    group_name: groupName,
+                    option_group_name: groupName,
+                    groupName: groupName,
+                    option_group_id: groupGroupId
+                  };
+                });
+            }
+
+            const allOptionsForStep = [...validOptions];
+            dynamicOptions.forEach(dynOpt => {
+              if (!allOptionsForStep.some(o => o.name.toLowerCase() === dynOpt.name.toLowerCase())) {
+                allOptionsForStep.push(dynOpt);
+              }
+            });
+
+            allOptionsForStep.sort((a, b) => {
+              const orderA = a.sort_order ?? 0;
+              const orderB = b.sort_order ?? 0;
+              if (orderA !== orderB) return orderA - orderB;
+              return (a.name || '').localeCompare(b.name || '');
+            });
+
             const finalFreeChoices = rule.free_choices_count != null 
               ? Number(rule.free_choices_count) 
               : (rule.option_groups?.free_choices_count || 0);
@@ -84,12 +244,13 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
               min_choices: rule.min_choices != null ? Number(rule.min_choices) : 0, 
               max_choices: rule.max_choices != null ? Number(rule.max_choices) : 1, 
               step_order: rule.step_order, 
-              group_name: rule.option_groups?.name || 'Options', 
+              group_name: groupName, 
               allow_multiple: rule.option_groups?.allow_multiple === true, 
               free_choices_count: finalFreeChoices,
-              options: validOptions 
+              options: allOptionsForStep,
+              option_group_id: groupGroupId
             };
-          });
+          }));
 
           if (product.isSolo) {
             const motsAExclure = ['boisson', 'accompagnement', 'frite']; 
@@ -98,29 +259,36 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
           formattedBaseSteps = formattedBaseSteps.filter(step => step.options.length > 0);
         }
 
-        let subGroupsData: any[] = [];
-        if (product.id) {
-            const { data: sgProd } = await supabase.from('sub_option_groups').select(`id, name, min_choices, max_choices, free_choices_count, sort_order, option_id, product_id, sub_option_choices ( id, name, price, is_available, sort_order )`).eq('product_id', product.id);
-            if (sgProd) subGroupsData = [...subGroupsData, ...sgProd];
-        }
+        let subGroupsData: any[] = subProdRes.data || [];
 
-        const optArray = Array.from(optionIds);
+        const optArray = Array.from(optionIds).map(cleanId).filter(Boolean);
         if (optArray.length > 0) {
-            const { data: sgOpt } = await supabase.from('sub_option_groups').select(`id, name, min_choices, max_choices, free_choices_count, sort_order, option_id, product_id, sub_option_choices ( id, name, price, is_available, sort_order )`).in('option_id', optArray);
+            const { data: sgOpt } = await supabase
+              .from('sub_option_groups')
+              .select(`id, name, min_choices, max_choices, free_choices_count, sort_order, option_id, product_id, sub_option_choices ( id, name, price, is_available, sort_order )`)
+              .in('option_id', optArray);
             if (sgOpt) subGroupsData = [...subGroupsData, ...sgOpt];
         }
+
+        const validIngredients = (ingRes.data || [])
+          .map((row: any) => row.global_ingredients)
+          .filter((ing: any) => ing && ing.is_available !== false);
 
         const finalProdGroups = subGroupsData.filter(g => String(g.product_id) === String(product.id));
         const hasValidSubGroups = finalProdGroups.some(g => formatSubGroup(g).options.length > 0);
 
-        if (formattedBaseSteps.length === 0 && !hasValidSubGroups) {
-            if (isMounted) { setTimeout(() => { onAddToCart(product, []); onClose(); }, 0); }
+        if (formattedBaseSteps.length === 0 && !hasValidSubGroups && validIngredients.length === 0) {
+            if (isMounted) { 
+               onAddToCartRef.current(product, []); 
+               onCloseRef.current(); 
+            }
             return;
         }
 
         if (isMounted) {
           setBaseSteps(formattedBaseSteps);
           setAllSubGroups(subGroupsData);
+          setIngredients(validIngredients);
           
           if (initialSelections && Object.keys(initialSelections).length > 0) {
             setStepSelections(initialSelections);
@@ -130,32 +298,80 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         }
 
       } catch (e) { 
-        if (isMounted) { onAddToCart(product, []); onClose(); }
+        console.error("Erreur chargement options :", e);
       } finally { 
         if (isMounted) setIsLoading(false); 
       }
     };
 
-    fetchRules();
+    fetchRulesAndOptions();
 
     return () => { isMounted = false; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product.id, product.isSolo]); 
+  }, [product?.id, product?.isSolo, formatSubGroup]); 
 
+  // 🟢 Construction des étapes (Ingrédients placé à l'index 0)
   const activeSteps = useMemo(() => {
-    const steps: StepData[] = [];
+    const optionSteps: StepData[] = [];
     const prodGroups = allSubGroups.filter(g => String(g.product_id) === String(product.id)).sort((a,b)=> (a.sort_order||0) - (b.sort_order||0));
+    
     prodGroups.forEach(g => {
         const formatted = formatSubGroup(g);
-        if (formatted.options.length > 0) steps.push(formatted);
+        if (formatted.options.length > 0) optionSteps.push(formatted);
     });
+    
     baseSteps.forEach(baseStep => {
-        if (baseStep.options.length > 0) steps.push(baseStep);
+        if (baseStep.options.length > 0) optionSteps.push(baseStep);
     });
-    return steps.sort((a, b) => (a.step_order || 0) - (b.step_order || 0));
-  }, [baseSteps, allSubGroups, product.id, formatSubGroup]);
+
+    optionSteps.sort((a, b) => (a.step_order || 0) - (b.step_order || 0));
+
+    const steps: StepData[] = [];
+
+    if (ingredients.length > 0) {
+      steps.push({
+        id: 'ingredients_step',
+        min_choices: 0,
+        max_choices: ingredients.length,
+        step_order: -9999,
+        group_name: 'Ingrédients',
+        allow_multiple: true,
+        options: [],
+        isIngredientStep: true
+      });
+    }
+
+    steps.push(...optionSteps);
+    return steps;
+  }, [baseSteps, allSubGroups, product.id, formatSubGroup, ingredients]);
 
   activeStepsRef.current = activeSteps;
+
+  // 🟢 Positionne automatiquement l'étape initiale sur la première OPTION et non sur les ingrédients
+  useEffect(() => {
+    if (!hasInitializedStepRef.current && activeSteps.length > 0) {
+      const firstOptIndex = activeSteps.findIndex(s => !s.isIngredientStep);
+      if (firstOptIndex !== -1) {
+        setCurrentStep(firstOptIndex);
+        hasInitializedStepRef.current = true;
+      }
+    }
+  }, [activeSteps]);
+
+  const lastOptionStepIndex = useMemo(() => {
+    const optionSteps = activeSteps.filter(s => !s.isIngredientStep);
+    if (optionSteps.length === 0) return 0;
+    const lastId = optionSteps[optionSteps.length - 1].id;
+    return activeSteps.findIndex(s => s.id === lastId);
+  }, [activeSteps]);
+
+  const toggleIngredient = useCallback((ingredientId: number) => {
+    setRemovedIngredientIds(prev => {
+      const next = new Set(prev);
+      if (next.has(ingredientId)) next.delete(ingredientId);
+      else next.add(ingredientId);
+      return next;
+    });
+  }, []);
 
   const compileFinalOptionsAndSubmit = useCallback(() => {
     if (isProcessing) return;
@@ -164,11 +380,13 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     setTimeout(() => {
         const flatOrderedOptions: any[] = [];
         let absoluteOrder = 1;
-        const parentOptionIds = new Set(allSubGroups.map(g => String(g.option_id)));
+        const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
 
         const latestSelections = stepSelectionsRef.current;
 
         activeStepsRef.current.forEach((step, stepIdx) => {
+            if (step.isIngredientStep) return;
+
             const sels = latestSelections[step.id] || [];
             const mappedSels = sels.map((opt, index) => ({ ...opt, originalIndex: index }));
             const paidSels = mappedSels.filter(x => x.price > 0).sort((a,b) => a.price - b.price);
@@ -181,9 +399,10 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                 const finalOptPrice = mappedSels[optIndex].price;
                 let hasSelectedChildren = false;
                 const childrenToPush: any[] = [];
+                const cleanOptId = cleanId(opt.id);
 
-                if (parentOptionIds.has(String(opt.id))) {
-                    const childGroups = allSubGroups.filter(g => String(g.option_id) === String(opt.id));
+                if (parentOptionIds.has(cleanOptId)) {
+                    const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
                     childGroups.forEach(cg => {
                         const childSels = latestSelections[`sub_${cg.id}`] || [];
                         if (childSels.length > 0) hasSelectedChildren = true;
@@ -196,20 +415,42 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                         }
 
                         childSels.forEach((cOpt, cIndex) => {
+                            const groupName = cOpt.group_name || cg.name || step.group_name;
                             childrenToPush.push({
-                                id: cOpt.id, name: cOpt.name, price: mappedChild[cIndex].price,
-                                step_order: stepIdx, sort_order: optIndex,
-                                _print_order: absoluteOrder++, isSubOption: true
+                                id: cOpt.id, 
+                                name: cOpt.name, 
+                                option_name: cOpt.name,
+                                price: mappedChild[cIndex].price,
+                                step_order: stepIdx, 
+                                sort_order: optIndex,
+                                group_name: groupName,
+                                option_group_name: groupName,
+                                groupName: groupName,
+                                option_group_id: cOpt.option_group_id || cg.id || step.option_group_id,
+                                _print_order: absoluteOrder++, 
+                                isSubOption: true,
+                                is_sub_option: true
                             });
                         });
                     });
                 }
 
                 if (!hasSelectedChildren) {
+                    const groupName = opt.group_name || step.group_name || 'Options';
                     flatOrderedOptions.push({
-                        id: opt.id, name: opt.name, price: finalOptPrice,
-                        step_order: stepIdx, sort_order: optIndex,
-                        _print_order: absoluteOrder++, isSubOption: step.isSubOption
+                        id: opt.id, 
+                        name: opt.name, 
+                        option_name: opt.name,
+                        price: finalOptPrice,
+                        step_order: stepIdx, 
+                        sort_order: optIndex,
+                        group_name: groupName,
+                        option_group_name: groupName,
+                        groupName: groupName,
+                        option_group_id: opt.option_group_id || step.option_group_id,
+                        _print_order: absoluteOrder++, 
+                        isSubOption: step.isSubOption,
+                        is_sub_option: step.isSubOption
                     });
                 }
 
@@ -217,33 +458,48 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             });
         });
 
+        const removedList = ingredients.filter(ing => removedIngredientIds.has(ing.id));
         const optionsSignature = flatOrderedOptions.map(o => `${o.id}${o.isSubOption ? '_sub' : ''}`).join('-');
-        const cartItemId = `${product.id}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}-${optionsSignature}`;
-
-        const uniqueProduct = {
-            ...product,
-            cartItemId: cartItemId, 
-            uniqueId: cartItemId,   
-            uuid: cartItemId        
-        };
+        const removedSignature = removedList.map(i => `no_${i.id}`).join('-');
+        const cartItemId = `${product.id}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}-${optionsSignature}-${removedSignature}`;
 
         const finalOptionsToCart = flatOrderedOptions.map(opt => ({
             ...opt,
             _fusionId: cartItemId 
         }));
 
-        onAddToCart(uniqueProduct, { flatOptions: finalOptionsToCart, rawSelections: latestSelections });
+        const uniqueProduct = {
+            ...product,
+            cartItemId: cartItemId, 
+            uniqueId: cartItemId,   
+            uuid: cartItemId,
+            options: finalOptionsToCart,
+            selectedOptions: finalOptionsToCart,
+            flatOptions: finalOptionsToCart,
+            selectedSubOptions: finalOptionsToCart,
+            removedIngredients: removedList,
+            rawSelections: latestSelections
+        };
+
+        const optionsPayload = finalOptionsToCart as any;
+        optionsPayload.flatOptions = finalOptionsToCart;
+        optionsPayload.rawSelections = latestSelections;
+        optionsPayload.removedIngredients = removedList;
+
+        onAddToCartRef.current(uniqueProduct, optionsPayload);
         
         setIsProcessing(false);
-        onClose();
+        onCloseRef.current();
     }, 150);
-  }, [isProcessing, allSubGroups, onAddToCart, product, onClose]);
+  }, [isProcessing, allSubGroups, product, ingredients, removedIngredientIds]);
 
   const handleNextStep = useCallback(() => {
-    const maxIndex = activeStepsRef.current.length - 1;
-    if (currentStep < maxIndex) setCurrentStep(prev => prev + 1);
-    else compileFinalOptionsAndSubmit();
-  }, [currentStep, compileFinalOptionsAndSubmit]);
+    if (currentStep >= lastOptionStepIndex) {
+      compileFinalOptionsAndSubmit();
+    } else {
+      setCurrentStep(prev => prev + 1);
+    }
+  }, [currentStep, lastOptionStepIndex, compileFinalOptionsAndSubmit]);
 
   const handleSkipStep = useCallback(() => {
     const stepId = activeStepsRef.current[currentStep].id;
@@ -254,6 +510,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   const handleRemoveOption = useCallback((option: CustomizationOption, e: React.MouseEvent) => {
     e.stopPropagation();
     const stepId = activeSteps[currentStep].id;
+    const cleanOptId = cleanId(option.id);
     
     setStepSelections(prev => {
         const currentSels = prev[stepId] || [];
@@ -264,8 +521,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             newSels.splice(indexToRemove, 1);
             const newState = { ...prev, [stepId]: newSels };
             
-            if (!newSels.some(s => String(s.id) === String(option.id))) {
-                const childGroups = allSubGroups.filter(g => String(g.option_id) === String(option.id));
+            if (!newSels.some(s => cleanId(s.id) === cleanOptId)) {
+                const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
                 childGroups.forEach(cg => { newState[`sub_${cg.id}`] = []; });
             }
             return newState;
@@ -279,13 +536,14 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     const stepId = stepData.id;
     const max = stepData.max_choices;
     const allowMultiple = stepData.allow_multiple;
+    const cleanOptId = cleanId(option.id);
     
     setStepSelections(prev => {
         const currentSels = prev[stepId] || [];
         const occurrenceCount = currentSels.filter(s => String(s.id) === String(option.id)).length;
         const isAlreadySelected = occurrenceCount > 0;
         
-        const childGroups = allSubGroups.filter(g => String(g.option_id) === String(option.id))
+        const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId)
                                         .filter(g => formatSubGroup(g).options.length > 0)
                                         .sort((a,b)=> (a.sort_order||0) - (b.sort_order||0));
 
@@ -327,11 +585,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
         const newState = { ...prev, [stepId]: newSels };
         removedOptions.forEach(removedOpt => {
-            const cgs = allSubGroups.filter(g => String(g.option_id) === String(removedOpt.id));
+            const cgs = allSubGroups.filter(g => cleanId(g.option_id) === cleanId(removedOpt.id));
             cgs.forEach(cg => { newState[`sub_${cg.id}`] = []; });
         });
 
-        if (!isAlreadySelected && newSels.length === max && !allowMultiple) {
+        if (!isAlreadySelected && newSels.length >= max) {
            setTimeout(() => {
              handleNextStep();
            }, 150);
@@ -391,7 +649,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
       if (!stepData) return;
 
       const max = stepData.max_choices;
-      const allowMultiple = stepData.allow_multiple;
 
       setStepSelections(prev => {
           const currentSels = prev[baseStepId] || [];
@@ -410,11 +667,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
           const newState = { ...prev, [baseStepId]: newSels };
           removedOptions.forEach(removedOpt => {
-              const childGroups = allSubGroups.filter(g => String(g.option_id) === String(removedOpt.id));
+              const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanId(removedOpt.id));
               childGroups.forEach(cg => { newState[`sub_${cg.id}`] = []; });
           });
 
-          if (!isAlreadySelected && newSels.length === max && !allowMultiple) {
+          if (!isAlreadySelected && newSels.length >= max) {
             setTimeout(() => {
                 handleNextStep();
             }, 200);
@@ -427,16 +684,19 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
   const total = useMemo(() => {
     let t = product.price || 0;
-    const parentOptionIds = new Set(allSubGroups.map(g => String(g.option_id)));
+    const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
 
     activeSteps.forEach((step) => {
+        if (step.isIngredientStep) return;
+
         const sels = stepSelections[step.id] || [];
         let stepPrices: number[] = [];
 
         sels.forEach((opt) => {
-            if (parentOptionIds.has(String(opt.id))) {
+            const cleanOptId = cleanId(opt.id);
+            if (parentOptionIds.has(cleanOptId)) {
                 stepPrices.push(opt.price || 0);
-                const childGroups = allSubGroups.filter(g => String(g.option_id) === String(opt.id));
+                const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
                 childGroups.forEach(cg => {
                     const childSels = stepSelections[`sub_${cg.id}`] || [];
                     const subFreeCount = cg.free_choices_count || 0;
@@ -462,7 +722,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
   const stepData = activeSteps[currentStep];
   const currentSels = stepSelections[stepData.id] || [];
-  const canProceed = currentSels.length >= stepData.min_choices && currentSels.length <= stepData.max_choices;
+  const canProceed = stepData.isIngredientStep 
+    ? true 
+    : (currentSels.length >= stepData.min_choices && currentSels.length <= stepData.max_choices);
+
+  const isFinalAction = currentStep >= lastOptionStepIndex;
 
   const paidSelectionCount = currentSels.filter(s => (s.price || 0) > 0).length;
   const isNextChoiceFree = paidSelectionCount < (stepData.free_choices_count || 0);
@@ -471,6 +735,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     <div className="fixed inset-0 z-[99999] bg-black/80 backdrop-blur-md flex items-center justify-center font-helvetica p-4">
       <div className="bg-[#F3F4F6] w-full h-full flex flex-col overflow-hidden select-none">
         
+        {/* Header */}
         <div className="bg-white border-b border-gray-200 shadow-sm p-4 flex-shrink-0 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <button onClick={onClose} className="bg-red-500 text-white font-black px-6 py-3 rounded-xl uppercase tracking-wider active:scale-95 transition-transform">
@@ -479,7 +744,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             <div className="h-10 w-px bg-gray-200"></div>
             <h2 className="text-2xl font-black text-secondary uppercase tracking-widest flex items-center gap-4">
               Options : {product.name}
-              {(stepData.free_choices_count ?? 0) > 0 && (
+              {!stepData.isIngredientStep && (stepData.free_choices_count ?? 0) > 0 && (
                   <span className="text-sm text-white font-bold bg-[#04B855] px-3 py-1.5 rounded-lg shadow-sm tracking-normal whitespace-nowrap">
                       {stepData.free_choices_count === 1 ? '1er choix offert' : `${stepData.free_choices_count} choix offerts`}
                   </span>
@@ -497,103 +762,166 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                 onClick={() => { if (canProceed) handleNextStep(); }}
                 className={`px-10 py-4 rounded-xl font-black text-xl uppercase tracking-widest shadow-lg transition-all active:scale-95 ${canProceed ? 'bg-[#04B855] text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
              >
-                {currentStep < activeSteps.length - 1 ? 'Suivant ➔' : 'Valider'}
+                {isFinalAction ? 'Valider' : 'Suivant ➔'}
              </button>
           </div>
         </div>
 
+        {/* Barre d'onglets */}
         <div className="bg-white border-b border-gray-200 p-4 flex gap-3 overflow-x-auto no-scrollbar">
-            {activeSteps.map((s, i) => (
-                <button
-                    key={s.id}
-                    onClick={() => setCurrentStep(i)}
-                    className={`h-[60px] px-8 rounded-xl font-black text-sm uppercase tracking-wide transition-all border-4 flex flex-col items-center justify-center min-w-[200px] ${
-                        currentStep === i
-                        ? 'bg-secondary text-white border-secondary shadow-md'
-                        : 'bg-gray-50 text-secondary border-gray-100'
-                    }`}
-                >
-                    <span>{s.group_name}</span>
-                    <span className="text-[10px] opacity-70">
-                        {(stepSelections[s.id] || []).length} / {s.max_choices}
-                    </span>
-                </button>
-            ))}
+            {activeSteps.map((s, i) => {
+                const countText = s.isIngredientStep 
+                  ? (removedIngredientIds.size > 0 ? `${removedIngredientIds.size} retiré(s)` : 'Tous inclus')
+                  : `${(stepSelections[s.id] || []).length} / ${s.max_choices}`;
+
+                return (
+                  <button
+                      key={s.id}
+                      onClick={() => setCurrentStep(i)}
+                      className={`h-[60px] px-8 rounded-xl font-black text-sm uppercase tracking-wide transition-all border-4 flex flex-col items-center justify-center min-w-[200px] ${
+                          currentStep === i
+                          ? 'bg-secondary text-white border-secondary shadow-md'
+                          : 'bg-gray-50 text-secondary border-gray-100'
+                      }`}
+                  >
+                      <span>{s.group_name}</span>
+                      <span className="text-[10px] opacity-70">
+                          {countText}
+                      </span>
+                  </button>
+                );
+            })}
         </div>
 
+        {/* Contenu principal */}
         <div className="flex-1 p-6 overflow-y-auto custom-scrollbar">
-          <div className="grid grid-cols-4 gap-4 content-start">
-            
-            {stepData.min_choices === 0 && (
-              <div 
-                onClick={handleSkipStep}
-                className={`w-full h-[100px] rounded-xl border-[3px] flex flex-col justify-center items-center p-3 select-none transition-all duration-75 relative cursor-pointer group ${
-                  currentSels.length === 0
-                    ? 'bg-red-50 border-red-400 shadow-md scale-[0.98]'
-                    : 'bg-white border-gray-100 hover:border-red-300 hover:bg-red-50/30 shadow-sm'
-                }`}
-              >
-                {currentSels.length === 0 && (
-                  <div className="absolute -top-2 -right-2 bg-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center font-black text-xs shadow-md border-2 border-white z-10">
-                    ✓
-                  </div>
-                )}
-                <svg className={`w-8 h-8 mb-1 transition-transform group-hover:scale-110 ${currentSels.length === 0 ? 'text-red-500' : 'text-gray-400 group-hover:text-red-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-                <h3 className={`text-[14px] font-black uppercase tracking-widest ${currentSels.length === 0 ? 'text-red-500' : 'text-gray-500 group-hover:text-red-500'}`}>
-                  Non merci
-                </h3>
+          {stepData.isIngredientStep ? (
+            /* --- VUE ONGLET INGRÉDIENTS (Optionnel, affiché uniquement sur clic) --- */
+            <div className="space-y-4">
+              <div className="flex items-center justify-between bg-primary/10 border border-primary/20 p-4 rounded-xl">
+                <p className="text-sm font-bold text-secondary uppercase tracking-wider">
+                  Cliquez sur un ingrédient pour le retirer de votre préparation
+                </p>
+                <span className="text-xs font-bold text-primary bg-white px-3 py-1 rounded-full border border-primary/20">
+                  {removedIngredientIds.size > 0 ? `${removedIngredientIds.size} ingrédient(s) retiré(s)` : 'Tous les ingrédients sont inclus'}
+                </span>
               </div>
-            )}
 
-            {stepData.options.map(opt => {
-              const occurrences = currentSels.filter(o => String(o.id) === String(opt.id));
-              const qty = occurrences.length;
-              const isSel = qty > 0;
-              let displayPrice = opt.price;
-              if (opt.price === 0 || isNextChoiceFree) displayPrice = 0;
+              <div className="grid grid-cols-4 gap-4 content-start">
+                {ingredients.map(ing => {
+                  const isRemoved = removedIngredientIds.has(ing.id);
 
-              return (
-                <div 
-                  key={opt.id} 
-                  className={`w-full h-[100px] rounded-xl border-[3px] flex flex-col justify-between p-3 select-none transition-all duration-75 relative ${
-                    isSel
-                      ? 'bg-primary/5 border-primary shadow-md scale-[0.98]'
-                      : 'bg-white border-gray-100 shadow-sm cursor-pointer hover:border-gray-300'
-                  }`} 
-                  onClick={() => toggleOption(opt)}
-                >
-                  {isSel && (
-                    <>
-                      <div className="absolute -top-2 -right-2 bg-primary text-white w-6 h-6 rounded-full flex items-center justify-center font-black text-xs shadow-md border-2 border-white z-10">
-                        {qty > 1 ? `${qty}x` : '✓'}
+                  return (
+                    <div
+                      key={ing.id}
+                      onClick={() => toggleIngredient(ing.id)}
+                      className={`w-full h-[100px] rounded-xl border-[3px] flex flex-col justify-between p-3 select-none transition-all duration-75 relative cursor-pointer ${
+                        isRemoved
+                          ? 'bg-red-50 border-red-400 shadow-md scale-[0.98]'
+                          : 'bg-white border-gray-100 shadow-sm hover:border-gray-300'
+                      }`}
+                    >
+                      <div className={`absolute -top-2 -right-2 w-6 h-6 rounded-full flex items-center justify-center font-black text-xs shadow-md border-2 border-white z-10 ${
+                        isRemoved ? 'bg-red-500 text-white' : 'bg-green-500 text-white'
+                      }`}>
+                        {isRemoved ? '✕' : '✓'}
                       </div>
-                      <button 
-                        onClick={(e) => handleRemoveOption(opt, e)} 
-                        className="absolute -top-2 -left-2 bg-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center font-black text-lg shadow-md border-2 border-white z-20 hover:bg-red-600 transition-transform active:scale-90"
-                      >
-                        −
-                      </button>
-                    </>
+
+                      <div className="flex items-center gap-2">
+                        {ing.image_url && (
+                          <img src={ing.image_url} alt={ing.name} className="w-8 h-8 object-contain shrink-0" />
+                        )}
+                        <h3 className={`text-[16px] font-bold leading-tight line-clamp-2 ${isRemoved ? 'text-red-600 line-through' : 'text-gray-800'}`}>
+                          {ing.name}
+                        </h3>
+                      </div>
+
+                      <div className="flex items-end justify-end w-full">
+                        <span className={`text-[11px] font-bold uppercase ${isRemoved ? 'text-red-500 font-black' : 'text-gray-400'}`}>
+                          {isRemoved ? 'Retiré' : 'Inclus'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            /* --- VUE OPTIONS STANDARD --- */
+            <div className="grid grid-cols-4 gap-4 content-start">
+              
+              {stepData.min_choices === 0 && (
+                <div 
+                  onClick={handleSkipStep}
+                  className={`w-full h-[100px] rounded-xl border-[3px] flex flex-col justify-center items-center p-3 select-none transition-all duration-75 relative cursor-pointer group ${
+                    currentSels.length === 0
+                      ? 'bg-red-50 border-red-400 shadow-md scale-[0.98]'
+                      : 'bg-white border-gray-100 hover:border-red-300 hover:bg-red-50/30 shadow-sm'
+                  }`}
+                >
+                  {currentSels.length === 0 && (
+                    <div className="absolute -top-2 -right-2 bg-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center font-black text-xs shadow-md border-2 border-white z-10">
+                      ✓
+                    </div>
                   )}
-                  <h3 className={`text-[16px] font-bold leading-tight line-clamp-2 ${isSel ? 'text-primary' : 'text-gray-800'}`}>
-                    {opt.name}
+                  <svg className={`w-8 h-8 mb-1 transition-transform group-hover:scale-110 ${currentSels.length === 0 ? 'text-red-500' : 'text-gray-400 group-hover:text-red-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  <h3 className={`text-[14px] font-black uppercase tracking-widest ${currentSels.length === 0 ? 'text-red-500' : 'text-gray-500 group-hover:text-red-500'}`}>
+                    Non merci
                   </h3>
-                  <div className="flex items-end justify-end w-full">
-                    {displayPrice > 0 ? (
-                      <span className="text-[18px] font-black tracking-tight text-primary">+{displayPrice.toFixed(2)} €</span>
-                    ) : (
-                      <span className="text-[12px] font-bold text-gray-300 uppercase">Inclus</span>
-                    )}
-                  </div>
                 </div>
-              )
-            })}
-          </div>
+              )}
+
+              {stepData.options.map(opt => {
+                const occurrences = currentSels.filter(o => String(o.id) === String(opt.id));
+                const qty = occurrences.length;
+                const isSel = qty > 0;
+                let displayPrice = opt.price;
+                if (opt.price === 0 || isNextChoiceFree) displayPrice = 0;
+
+                return (
+                  <div 
+                    key={opt.id} 
+                    className={`w-full h-[100px] rounded-xl border-[3px] flex flex-col justify-between p-3 select-none transition-all duration-75 relative ${
+                      isSel
+                        ? 'bg-primary/5 border-primary shadow-md scale-[0.98]'
+                        : 'bg-white border-gray-100 shadow-sm cursor-pointer hover:border-gray-300'
+                    }`} 
+                    onClick={() => toggleOption(opt)}
+                  >
+                    {isSel && (
+                      <>
+                        <div className="absolute -top-2 -right-2 bg-primary text-white w-6 h-6 rounded-full flex items-center justify-center font-black text-xs shadow-md border-2 border-white z-10">
+                          {qty > 1 ? `${qty}x` : '✓'}
+                        </div>
+                        <button 
+                          onClick={(e) => handleRemoveOption(opt, e)} 
+                          className="absolute -top-2 -left-2 bg-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center font-black text-lg shadow-md border-2 border-white z-20 hover:bg-red-600 transition-transform active:scale-90"
+                        >
+                          −
+                        </button>
+                      </>
+                    )}
+                    <h3 className={`text-[16px] font-bold leading-tight line-clamp-2 ${isSel ? 'text-primary' : 'text-gray-800'}`}>
+                      {opt.name}
+                    </h3>
+                    <div className="flex items-end justify-end w-full">
+                      {displayPrice > 0 ? (
+                        <span className="text-[18px] font-black tracking-tight text-primary">+{displayPrice.toFixed(2)} €</span>
+                      ) : (
+                        <span className="text-[12px] font-bold text-gray-300 uppercase">Inclus</span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       </div>
 
+      {/* Bulle d'options secondaires */}
       {bubbleOption && (
         <div className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={() => setBubbleOption(null)}>
           <div 

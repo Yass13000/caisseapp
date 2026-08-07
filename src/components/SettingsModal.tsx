@@ -24,10 +24,9 @@ const getSecureSetting = (key: string, defaultValue: any) => {
 };
 
 const setSecureSetting = (key: string, value: any) => {
+  localStorage.setItem(key, String(value));
   if ((window as any).electronAPI?.setSetting) {
     (window as any).electronAPI.setSetting(key, value);
-  } else {
-    localStorage.setItem(key, String(value));
   }
 };
 

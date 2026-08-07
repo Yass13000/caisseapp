@@ -160,3 +160,10 @@ p, span, h1, h2, h3, div, button {
   transform: translate3d(0, 0, 0) scale(1);
   -webkit-font-smoothing: subpixel-antialiased;
 }
+
+/* =========================================
+   7. Z-INDEX MAXIMAL DES TOASTS (SONNER)
+   ========================================= */
+.sonner-toaster, [data-sonner-toaster] {
+  z-index: 999999 !important;
+}

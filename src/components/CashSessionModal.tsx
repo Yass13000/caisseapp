@@ -1,6 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabaseClient';
+import { supabase, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { toast } from "sonner";
 import { Calculator, Lock, Printer, AlertTriangle, History, ArrowLeft, Eye, X } from 'lucide-react';
 
@@ -112,7 +112,11 @@ export default function CashSessionModal({ onClose, currentSessionId, onSessionO
 
     const fetchSessionData = async () => {
       try {
-        const activeRestoId = localStorage.getItem('pos_restaurant_id');
+        const activeRestoId = getActiveRestaurantId();
+        if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') {
+          setMode('OPENING');
+          return;
+        }
 
         // 1. On récupère les infos de la session de caisse
         const { data: sessionData } = await supabase

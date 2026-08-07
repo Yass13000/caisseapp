@@ -21,6 +21,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      partition: 'persist:caisse_session',
       preload: path.join(__dirname, 'preload.js')
     }
   });

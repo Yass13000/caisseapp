@@ -2,16 +2,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion'; // ✅ FIX : Importation manquante ajoutée
+import { motion, AnimatePresence } from 'framer-motion';
 import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
 import { useCart } from '@/context/CartContext';
 import { toast } from "sonner";
+import { getFormattedOrderOptions, fetchOptionGroupMapping } from '@/lib/orderFormatter';
 import { 
   Trash2, Delete, ShoppingBag, Settings, Lock, 
   ClipboardList, History, Package, Wifi, WifiOff,
   UserRound, CalendarDays, LayoutDashboard, AlertTriangle,
   CreditCard, Banknote, CheckCircle2, Store, ArchiveRestore,
-  Calculator, Hourglass, Plus, RotateCcw
+  Calculator, Hourglass, Plus, RotateCcw, RotateCw
 } from 'lucide-react';
 
 // Composants
@@ -57,10 +58,9 @@ const getSecureSetting = (key: string, defaultValue: any) => {
 };
 
 const setSecureSetting = (key: string, value: any) => {
+  localStorage.setItem(key, String(value));
   if ((window as any).electronAPI?.setSetting) {
     (window as any).electronAPI.setSetting(key, value);
-  } else {
-    localStorage.setItem(key, String(value));
   }
 };
 
@@ -83,43 +83,10 @@ const hexToHslString = (hex: string) => {
   return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
 };
 
-const getFormattedOptions = (item: any) => {
-  let rawOptions: any[] = [];
-  const dynOpts = item.selectedSubOptions || item.selections || item.options;
-
-  if (item.boisson) rawOptions.push({ name: item.boisson.name || item.boisson, price: parseFloat(item.boisson.price || 0), print_order: -2 });
-  if (item.accompagnement) rawOptions.push({ name: item.accompagnement.name || item.accompagnement, price: parseFloat(item.accompagnement.price || 0), print_order: -1 });
-
-  if (Array.isArray(dynOpts)) {
-    rawOptions.push(...dynOpts);
-  } else if (typeof dynOpts === 'object' && dynOpts !== null) {
-    Object.values(dynOpts).forEach((val: any) => {
-      if (Array.isArray(val)) rawOptions.push(...val);
-      else rawOptions.push(val);
-    });
-  }
-
-  const formattedList = rawOptions.map((opt, i) => {
-    const order = opt.print_order !== undefined ? opt.print_order : i;
-    if (typeof opt === 'string') return { name: opt.trim().toLowerCase(), price: 0, order };
-    return { name: (opt.name || opt.title || opt.value || '').trim().toLowerCase(), price: parseFloat(opt.price || 0), order };
-  }).filter(o => o.name && o.name !== 'option' && o.name !== 'options...');
-
-  formattedList.sort((a, b) => a.order - b.order);
-
-  const finalOptions: { name: string; price: number; qty: number }[] = [];
-  formattedList.forEach(opt => {
-    const existing = finalOptions.find(o => o.name === opt.name);
-    if (existing) { existing.qty += 1; existing.price += opt.price; }
-    else finalOptions.push({ name: opt.name, price: opt.price, qty: 1 });
-  });
-
-  return finalOptions.map(o => ({ name: o.qty > 1 ? `${o.qty}x ${o.name}` : o.name, price: o.price }));
-};
-
-const getItemTotal = (item: any) => {
+const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   const basePrice = parseFloat(item.product?.price || item.price || 0);
-  const optsPrice = getFormattedOptions(item).reduce((sum, o) => sum + o.price, 0);
+  const groups = getFormattedOrderOptions(item, groupMapping);
+  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + o.price, 0);
   return (basePrice + optsPrice) * (item.quantity || 1);
 };
 
@@ -140,87 +107,132 @@ const openCashDrawer = async () => {
   }
 };
 
-const generateAndPrintReceipt = async (restaurantName: string, orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, deliveryFee: number, finalTotal: number, cashAmount: number) => {
+const generateAndPrintReceipt = async (restaurantInfo: { name: string; address: string | null; phone: string | null; tva: number }, orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, deliveryFee: number, finalTotal: number, cashAmount: number, clientInfo?: { name?: string; phone?: string; address?: string; notes?: string; additionalInfo?: string } | null, groupMapping: Record<string, string> = {}) => {
   if (!(window as any).electronAPI) return;
   const printerName = getSecureSetting('imprimante_caisse', undefined) || undefined;
   const receiptWidth = getSecureSetting('receipt_width', '72');
   
   const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const isCash = paymentMethod === 'counter' || paymentMethod.toLowerCase().includes('espèces');
-  const isPending = paymentMethod === 'en attente';
+  const isCash = paymentMethod === 'counter' || paymentMethod.toLowerCase().includes('espèces') || paymentMethod.toLowerCase().includes('especes');
+  const isPending = paymentMethod === 'en attente' || paymentMethod.toLowerCase().includes('attente');
   const changeDue = Math.max(0, cashAmount - finalTotal);
 
-  const totalHT = finalTotal / 1.055;
+  const tvaRate = restaurantInfo.tva || 10;
+  const totalHT = finalTotal / (1 + tvaRate / 100);
   const totalTVA = finalTotal - totalHT;
 
+  const orderTypeFormatted = orderType.toUpperCase().includes('PLACE') 
+    ? '*** SUR PLACE ***' 
+    : orderType.toUpperCase().includes('EMPORTER') 
+      ? '*** À EMPORTER ***' 
+      : `*** ${orderType.toUpperCase()} ***`;
+
   const itemsHtml = items.map(item => {
-    const itemTotal = getItemTotal(item);
-    let html = `<div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-      <span class="bold" style="max-width: 75%; word-wrap: break-word;">${item.quantity}x ${item.product?.name || item.name}</span>
-      <span class="bold" style="white-space: nowrap;">${itemTotal.toFixed(2)} €</span>
+    const itemTotal = getItemTotal(item, groupMapping);
+    let html = `<div style="display: flex; justify-content: space-between; margin-bottom: 2px; font-weight: bold;">
+      <span style="max-width: 75%; word-wrap: break-word;">${item.quantity}x ${item.product?.name || item.name}</span>
+      <span style="white-space: nowrap;">${itemTotal.toFixed(2)} €</span>
     </div>`;
-    const options = getFormattedOptions(item);
-    if (options.length > 0) {
-      options.forEach(opt => {
-        html += `<div style="display: flex; justify-content: space-between; font-size: 11px; color: #333; padding-left: 10px;">
-          <span style="max-width: 75%; word-wrap: break-word;">- ${opt.name}</span>
-          <span style="white-space: nowrap;">${opt.price > 0 ? opt.price.toFixed(2) + ' €' : ''}</span>
-        </div>`;
+    
+    const optionGroups = getFormattedOrderOptions(item, groupMapping);
+    if (optionGroups.length > 0) {
+      optionGroups.forEach(grp => {
+        grp.items.forEach(opt => {
+          const colorStyle = opt.isSans ? 'color: red; font-weight: bold;' : 'color: #333;';
+          const groupPrefix = grp.groupName ? `${grp.groupName}: ` : '';
+          html += `<div style="display: flex; justify-content: space-between; font-size: 11px; ${colorStyle} padding-left: 10px;">
+            <span style="max-width: 75%; word-wrap: break-word;">- ${groupPrefix}${opt.qty > 1 ? opt.qty + 'x ' : ''}${opt.name}</span>
+            <span style="white-space: nowrap;">${opt.price > 0 ? '+' + opt.price.toFixed(2) + ' €' : ''}</span>
+          </div>`;
+        });
       });
     }
     return html;
   }).join('');
 
   const receiptHtml = `
-    <div style="width: ${receiptWidth}mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px;">
-      <div style="text-align: center; margin-bottom: 10px;">
-        <h2 style="margin: 0; font-size: 18px; font-weight: bold; text-transform: uppercase;">${restaurantName}</h2>
-        <p style="margin: 2px 0; font-size: 12px;">${date}</p>
-        <p style="margin: 5px 0; font-size: 15px; font-weight: bold; padding: 3px; border: 1px solid black;">CMD ${orderNumber}</p>
-        <p style="margin: 5px 0; font-size: 14px; font-weight: bold;">${orderType}</p>
+    <div style="width: ${receiptWidth}mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; font-size: 12px; color: black;">
+      <div style="text-align: center; margin-bottom: 8px;">
+        <h2 style="margin: 0; font-size: 18px; font-weight: 900; text-transform: uppercase;">${restaurantInfo.name}</h2>
+        ${restaurantInfo.address ? `<p style="margin: 2px 0; font-size: 11px;">${restaurantInfo.address}</p>` : ''}
+        ${restaurantInfo.phone ? `<p style="margin: 1px 0; font-size: 11px;">Tél: ${restaurantInfo.phone}</p>` : ''}
       </div>
-      <hr style="border-top: 1px dashed black; margin: 10px 0;">
-      <div style="margin-bottom: 10px;">${itemsHtml}</div>
-      <hr style="border-top: 1px dashed black; margin: 10px 0;">
-      
-      ${deliveryFee > 0 ? `
-      <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px;">
-        <span>Frais Livraison</span><span>${deliveryFee.toFixed(2)} €</span>
+
+      <div style="text-align: center; margin: 8px 0;">
+        <div style="display: inline-block; font-size: 22px; font-weight: 900; border: 2px solid black; padding: 4px 14px;">
+          CMD N° ${orderNumber}
+        </div>
+      </div>
+
+      <div style="text-align: center; margin-bottom: 8px;">
+        <div style="font-size: 14px; font-weight: 900; margin-bottom: 4px;">${orderTypeFormatted}</div>
+        <div style="font-size: 10px; color: #444;">${date} | Caisse N°1</div>
+      </div>
+
+      ${(orderType.toUpperCase().includes('LIVRAISON') || orderType === '3') && (clientInfo?.name || clientInfo?.phone || clientInfo?.address || clientInfo?.notes || clientInfo?.additionalInfo) ? `
+      <hr style="border-top: 1px dashed black; margin: 8px 0;">
+      <div style="margin-bottom: 8px; font-size: 11px;">
+        <div style="text-align: center; margin-bottom: 4px;">
+          <span style="font-weight: 900; border: 1px solid black; padding: 1px 8px; display: inline-block;">INFORMATIONS CLIENT</span>
+        </div>
+        ${clientInfo?.name ? `
+        <div style="display: flex; margin-bottom: 2px;">
+          <span style="font-weight: bold; width: 65px; flex-shrink: 0;">CLIENT</span><span>: ${clientInfo.name}</span>
+        </div>` : ''}
+        ${clientInfo?.phone ? `
+        <div style="display: flex; margin-bottom: 2px;">
+          <span style="font-weight: bold; width: 65px; flex-shrink: 0;">TÉL</span><span>: ${clientInfo.phone}</span>
+        </div>` : ''}
+        ${clientInfo?.address ? `
+        <div style="margin-bottom: 2px;">
+          <span style="font-weight: bold;">ADRESSE :</span><br>
+          <span style="white-space: pre-wrap; word-break: break-word;">${clientInfo.address}</span>
+        </div>` : ''}
+        ${(clientInfo?.notes || clientInfo?.additionalInfo) ? `
+        <div style="margin-bottom: 2px;">
+          <span style="font-weight: bold;">NOTE :</span>
+          <span>${clientInfo.notes || clientInfo.additionalInfo}</span>
+        </div>` : ''}
       </div>
       ` : ''}
 
-      <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: bold; margin-bottom: 5px;">
+      <hr style="border-top: 1px dashed black; margin: 8px 0;">
+      <div style="margin-bottom: 8px;">${itemsHtml}</div>
+      <hr style="border-top: 1px dashed black; margin: 8px 0;">
+      
+      ${deliveryFee > 0 ? `
+      <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
+        <span>Frais de livraison</span><span>${deliveryFee.toFixed(2)} €</span>
+      </div>
+      ` : ''}
+
+      <div style="font-size: 11px; margin-bottom: 4px;">
+        <div style="display: flex; justify-content: space-between;">
+          <span>Sous-total HT</span><span>${totalHT.toFixed(2)} €</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 2px;">
+          <span>TVA (${tvaRate.toFixed(1)}%)</span><span>${totalTVA.toFixed(2)} €</span>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 900; margin: 6px 0; padding-top: 4px; border-top: 1px solid black;">
         <span>TOTAL TTC</span><span>${finalTotal.toFixed(2)} €</span>
       </div>
-      
+
+      <div style="margin-top: 8px; font-size: 12px; font-weight: bold;">
       ${isPending ? `
-      <div style="display: flex; justify-content: center; font-size: 16px; font-weight: bold; margin-top: 10px; padding: 5px; border: 2px solid black;">
-        RESTE À PAYER : ${finalTotal.toFixed(2)} €
-      </div>
+        <div style="text-align: center; border: 1px solid black; padding: 4px;">[ ] À PAYER - RESTE : ${finalTotal.toFixed(2)} €</div>
       ` : isCash ? `
-      <div style="display: flex; justify-content: space-between; font-size: 12px; color: #555;"><span>Espèces</span><span>${cashAmount.toFixed(2)} €</span></div>
-      <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold; margin-top: 2px;"><span>Rendu</span><span>${changeDue.toFixed(2)} €</span></div>
+        <div style="display: flex; justify-content: space-between;"><span>[X] PAYÉ EN ESPÈCES</span><span>${cashAmount.toFixed(2)} €</span></div>
+        ${changeDue > 0 ? `<div style="display: flex; justify-content: space-between; font-size: 11px; margin-top: 2px;"><span>Rendu monnaie</span><span>${changeDue.toFixed(2)} €</span></div>` : ''}
       ` : `
-      <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold;"><span>Payé par</span><span>${paymentMethod.toUpperCase()}</span></div>
+        <div style="display: flex; justify-content: space-between;"><span>[X] PAYÉ PAR CARTE</span><span>${finalTotal.toFixed(2)} €</span></div>
       `}
-
-      <div style="width: 100%; border-top: 1px dashed black; margin: 10px 0; padding-top: 5px;">
-        <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 11px;">
-          <span style="width: 25%;">Taux</span>
-          <span style="width: 25%; text-align: right;">HT</span>
-          <span style="width: 25%; text-align: right;">TVA</span>
-          <span style="width: 25%; text-align: right;">TTC</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; font-size: 11px; margin-top: 3px;">
-          <span style="width: 25%;">5.5%</span>
-          <span style="width: 25%; text-align: right;">${totalHT.toFixed(2)} €</span>
-          <span style="width: 25%; text-align: right;">${totalTVA.toFixed(2)} €</span>
-          <span style="width: 25%; text-align: right;">${finalTotal.toFixed(2)} €</span>
-        </div>
       </div>
 
-      <div style="text-align: center; margin-top: 20px; font-size: 12px;">
-        <p style="margin: 0;">Merci de votre visite !</p><p style="margin: 2px 0;">A bientot.</p>
+      <div style="text-align: center; margin-top: 16px; font-size: 11px;">
+        <p style="margin: 0;">Merci de votre visite !</p>
+        <p style="margin: 2px 0;">À bientôt.</p>
       </div>
     </div>
   `;
@@ -231,7 +243,7 @@ const generateAndPrintReceipt = async (restaurantName: string, orderNumber: stri
   } catch (error) { console.error("Erreur API impression :", error); }
 };
 
-const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: string, items: any[]) => {
+const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: string, items: any[], groupMapping: Record<string, string> = {}) => {
   if (!(window as any).electronAPI) return;
   const printerName = getSecureSetting('imprimante_cuisine', undefined) || undefined;
   const receiptWidth = getSecureSetting('receipt_width', '72');
@@ -244,10 +256,15 @@ const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: str
         <span style="font-weight: 900; font-size: 18px;">${item.quantity}x</span> 
         <span style="font-weight: bold;">${item.product?.name || item.name}</span>
       </div>`;
-    const options = getFormattedOptions(item);
-    if (options.length > 0) {
-      options.forEach(opt => {
-        html += `<div style="font-size: 13px; font-weight: bold; padding-left: 20px; line-height: 1.1; margin-bottom: 2px;">- ${opt.name}</div>`;
+    
+    const optionGroups = getFormattedOrderOptions(item, groupMapping);
+    if (optionGroups.length > 0) {
+      optionGroups.forEach(grp => {
+        grp.items.forEach(opt => {
+          const colorStyle = opt.isSans ? 'color: red; font-weight: bold;' : '';
+          const groupPrefix = grp.groupName ? `${grp.groupName}: ` : '';
+          html += `<div style="font-size: 13px; font-weight: bold; padding-left: 20px; line-height: 1.1; margin-bottom: 2px; ${colorStyle}">- ${groupPrefix}${opt.qty > 1 ? opt.qty + 'x ' : ''}${opt.name}</div>`;
+        });
       });
       html += `<div style="height: 5px;"></div>`;
     }
@@ -460,6 +477,12 @@ const Caisse = () => {
 
   const [restaurantLogo, setRestaurantLogo] = useState<string | null>(null);
   const [restaurantName, setRestaurantName] = useState<string>("VOTRE RESTAURANT");
+  const [restaurantInfo, setRestaurantInfo] = useState<{ name: string; address: string | null; phone: string | null; tva: number }>({
+    name: 'VOTRE RESTAURANT',
+    address: null,
+    phone: null,
+    tva: 10,
+  });
   const [themeColors, setThemeColors] = useState({ primary: '#04B855', secondary: '#1f2937', accent: '#FBBF24' });
   const [currentTime, setCurrentTime] = useState(new Date());
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -469,6 +492,7 @@ const Caisse = () => {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
   const [isOrderTrackerOpen, setIsOrderTrackerOpen] = useState(false);
@@ -502,19 +526,32 @@ const Caisse = () => {
 
   const [editingItemKey, setEditingItemKey] = useState<string | null>(null);
   const lastClickRef = useRef<{ id: string; time: number }>({ id: '', time: 0 });
+  const [optionGroupMapping, setOptionGroupMapping] = useState<Record<string, string>>({});
 
   const customToast = (msg: string, type: 'success' | 'error' = 'success', options = {}) => 
   toast[type](msg, { duration: 800, ...options });
 
-  const subtotal = cartState.items.reduce((total, item) => total + getItemTotal(item), 0);
+  // 🟢 Chargement dynamique du mapping pour la caisse
+  useEffect(() => {
+    const loadMapping = async () => {
+      if (cartState.items && cartState.items.length > 0) {
+        const activeRestoId = getActiveRestaurantId() || RESTAURANT_ID;
+        const mapping = await fetchOptionGroupMapping(cartState.items, activeRestoId);
+        setOptionGroupMapping(mapping);
+      }
+    };
+    loadMapping();
+  }, [cartState.items]);
+
+  const subtotal = cartState.items.reduce((total, item) => total + getItemTotal(item, optionGroupMapping), 0);
   const cartItemCount = cartState.items.reduce((sum, item) => sum + (item.quantity || 1), 0);
-  const activeDeliveryFee = orderType === 'LIVRAISON' ? deliveryFee : 0;
+  const activeDeliveryFee = orderType === 'LIVRAISON' ? (parseFloat(deliveryFee) || 0) : 0;
   const finalTotal = subtotal + activeDeliveryFee;
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
+    const handleOffline = () => setIsOffline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     return () => { clearInterval(timer); window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
@@ -608,6 +645,7 @@ const Caisse = () => {
   }, [isAuthenticated, posRestoId, currentSessionId]);
 
   const loadMenuData = async (activeRestoId: string) => {
+    if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') return;
     const [categoriesResponse, productsResponse] = await Promise.all([
       supabase.from('categories').select('*').eq('restaurant_id', activeRestoId).order('sort_order', { ascending: true, nullsFirst: false }).order('name', { ascending: true }),
       supabase.from('product').select('*').eq('restaurant_id', activeRestoId).order('sort_order', { ascending: true, nullsFirst: false }).order('name', { ascending: true })
@@ -642,19 +680,40 @@ const Caisse = () => {
     }
   };
 
+  const handleRefreshData = async () => {
+    const activeRestoId = getActiveRestaurantId();
+    if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') return;
+    setIsRefreshing(true);
+    try {
+      await loadMenuData(activeRestoId);
+      customToast("Données actualisées", "success");
+    } catch (e) {
+      customToast("Erreur d'actualisation", "error");
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   useEffect(() => {
-    if (!posRestoId) return;
+    const activeRestoId = getActiveRestaurantId();
+    if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') return;
 
     const init = async () => {
       setIsLoading(true);
       try {
-        const activeRestoId = getActiveRestaurantId();
-        if (!activeRestoId) throw new Error("ID manquant");
+        if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') throw new Error("ID manquant");
         
-        const { data: restoData } = await supabase.from('restaurants').select('name, logo_url, theme_primary, theme_secondary, theme_accent, allow_dine_in, allow_takeaway, allow_delivery').eq('id', activeRestoId).single();
+        const { data: restoData } = await supabase.from('restaurants').select('name, address, phone, tva, logo_url, theme_primary, theme_secondary, theme_accent, allow_dine_in, allow_takeaway, allow_delivery').eq('id', activeRestoId).single();
         if (restoData) {
           if (restoData.name) setRestaurantName(restoData.name);
           if (restoData.logo_url) setRestaurantLogo(restoData.logo_url);
+          const tvaRate = (restoData.tva !== null && restoData.tva !== undefined) ? Number(restoData.tva) : 10;
+          setRestaurantInfo({
+            name: restoData.name || 'VOTRE RESTAURANT',
+            address: restoData.address || null,
+            phone: restoData.phone || null,
+            tva: tvaRate,
+          });
           setThemeColors({
             primary: restoData.theme_primary || '#04B855',
             secondary: restoData.theme_secondary || '#1f2937',
@@ -689,19 +748,31 @@ const Caisse = () => {
     return () => { document.body.style.overflow = 'auto'; };
   }, [posRestoId]);
 
+  const [previousOrderType, setPreviousOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>('SUR PLACE');
+
   const handleOrderTypeChange = (type: any) => {
-    setOrderType(type);
     if (type === 'LIVRAISON') {
+      if (orderType !== 'LIVRAISON') {
+        setPreviousOrderType(orderType);
+      }
+      setOrderType('LIVRAISON');
       setIsDeliveryModalOpen(true);
     } else {
+      setOrderType(type);
       setDeliveryFee(0);
     }
   };
 
   const handleClientConfirm = (data: any) => {
     setClientInfo(data);
-    setDeliveryFee(data.fee || 0);
-    toast.success(`Client ${data.name} enregistré !`);
+    const fee = parseFloat(data?.fee ?? data?.delivery_fee ?? data?.deliveryFee ?? data?.frais_livraison ?? 0);
+    setDeliveryFee(isNaN(fee) ? 0 : fee);
+    setIsDeliveryModalOpen(false);
+    toast.success(`Client ${data?.name || ''} enregistré !`);
+  };
+
+  const handleDeliveryModalClose = () => {
+    setIsDeliveryModalOpen(false);
   };
 
   const handleLoadOrderIntoCart = (items: any[], orderId: string | number, loadedOrderType?: string, loadedClientInfo?: any) => {
@@ -716,8 +787,8 @@ const Caisse = () => {
 
     if (loadedClientInfo && Object.keys(loadedClientInfo).length > 0) {
       setClientInfo(loadedClientInfo);
-      if (loadedClientInfo.fee) {
-        setDeliveryFee(parseFloat(loadedClientInfo.fee) || 0);
+      if (loadedClientInfo.fee || loadedClientInfo.delivery_fee) {
+        setDeliveryFee(parseFloat(loadedClientInfo.fee || loadedClientInfo.delivery_fee) || 0);
       }
     }
 
@@ -764,14 +835,17 @@ const Caisse = () => {
   const handleAddToCartFromModal = (p: Product, incomingData: any) => {
     let finalFlatOptions: any[] = [];
     let finalRawSelections: any = null;
+    let removedIngredientsList: any[] = [];
 
     if (incomingData && incomingData.flatOptions && incomingData.rawSelections) {
       finalFlatOptions = incomingData.flatOptions;
       finalRawSelections = incomingData.rawSelections;
+      removedIngredientsList = incomingData.removedIngredients || [];
     } 
     else {
       if (Array.isArray(incomingData)) {
         incomingData.forEach(opt => { finalFlatOptions.push({ ...opt, print_order: 1 }); });
+        removedIngredientsList = incomingData.removedIngredients || [];
       } else if (typeof incomingData === 'object' && incomingData !== null) {
         const sortedKeys = Object.keys(incomingData).sort((a, b) => parseInt(a) - parseInt(b));
         sortedKeys.forEach(key => {
@@ -782,12 +856,14 @@ const Caisse = () => {
             else if (typeof opt === 'string') finalFlatOptions.push({ name: opt, price: 0, print_order: 1 });
           });
         });
+        removedIngredientsList = incomingData.removedIngredients || [];
       }
       finalRawSelections = incomingData;
     }
 
-    const optionsString = finalFlatOptions.map(o => o.name).join('-');
-    const optionsHash = btoa(encodeURIComponent(optionsString)).substring(0, 15);
+    const optionsString = finalFlatOptions.map(o => `${o.group_name || o.option_group_name || 'Opt'}:${o.name}`).join('-');
+    const removedString = removedIngredientsList.map((i: any) => i.name || i.id).join('-');
+    const optionsHash = btoa(encodeURIComponent(`${optionsString}_${removedString}`)).substring(0, 15);
     const uniqueCartKey = `${p.id}-${optionsHash}`;
 
     let originalQty = 1;
@@ -803,6 +879,7 @@ const Caisse = () => {
       product: p,
       selectedSubOptions: finalFlatOptions,
       rawSelections: finalRawSelections,
+      removedIngredients: removedIngredientsList,
       quantity: originalQty,
       cartKey: uniqueCartKey,
       customKey: uniqueCartKey
@@ -857,12 +934,12 @@ const Caisse = () => {
       if ((window as any).electronAPI?.saveOfflineOrder) {
         await (window as any).electronAPI.saveOfflineOrder(orderPayload);
         customToast(`Encaissé (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
-        await generateAndPrintReceipt(restaurantName, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount);
+        await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
         
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
         if (isKitchenTicketEnabled && !loadedOrderId) {
           setTimeout(async () => {
-            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items);
+            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
           }, 500);
         }
 
@@ -916,13 +993,13 @@ const Caisse = () => {
 
       const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'false') === 'true';
       if (isAutoPrintReceiptEnabled) {
-        await generateAndPrintReceipt(restaurantName, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount);
+        await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
       }
       
       const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
       if (isKitchenTicketEnabled && !loadedOrderId) {
         setTimeout(async () => {
-          await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items);
+          await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
         }, 500);
       }
 
@@ -938,7 +1015,7 @@ const Caisse = () => {
         orderPayload.order_number = targetOrderNumber;
         await (window as any).electronAPI.saveOfflineOrder(orderPayload);
         customToast(`Encaissé (Local de secours) ${finalTotal.toFixed(2)}€`, "success");
-        await generateAndPrintReceipt(restaurantName, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount);
+        await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
         
         clearCart();
         setLoadedOrderId(null);
@@ -1000,7 +1077,7 @@ const Caisse = () => {
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
         if (isKitchenTicketEnabled && !loadedOrderId) {
           setTimeout(async () => {
-            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items);
+            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
           }, 500);
         }
 
@@ -1054,7 +1131,7 @@ const Caisse = () => {
       const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
       if (isKitchenTicketEnabled && !loadedOrderId) {
         setTimeout(async () => {
-          await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items);
+          await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
         }, 500);
       }
 
@@ -1174,7 +1251,19 @@ const Caisse = () => {
           <div className="flex items-center gap-1.5 text-white/80"><UserRound size={14} /> <span>Caisse Principale</span></div>
         </div>
         <div className="absolute left-1/2 -translate-x-1/2 text-white font-black text-[13px] tracking-[0.2em]">{currentTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</div>
-        <div className="flex items-center gap-4"><CalendarDays size={14} /> <span>{currentTime.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}</span></div>
+        <div className="flex items-center gap-4">
+          <CalendarDays size={14} /> <span>{currentTime.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}</span>
+          <div className="w-px h-3 bg-white/20"></div>
+          <button 
+            onClick={handleRefreshData} 
+            disabled={isRefreshing}
+            className="flex items-center gap-1.5 hover:text-white text-white/80 transition-colors active:scale-95 disabled:opacity-50"
+            title="Actualiser les données"
+          >
+            <RotateCw size={14} className={isRefreshing ? 'animate-spin text-primary' : ''} />
+            <span>Actualiser</span>
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -1210,6 +1299,7 @@ const Caisse = () => {
           </div>
         </div>
 
+        {/* 🟢 PANNEAU DU TICKET DE CAISSE DE DROITE AVEC ORDER FORMATTER */}
         <div className="w-[260px] bg-white border-l border-gray-200 flex flex-col h-full z-30 shadow-xl flex-shrink-0">
           
           <div className="p-3 border-b border-gray-100 bg-gray-50 flex-shrink-0 flex justify-between items-center">
@@ -1227,7 +1317,7 @@ const Caisse = () => {
           <div className="flex-1 overflow-y-auto p-2 space-y-1.5 bg-gray-50/50 custom-scrollbar">
             {cartState.items.map((item: any, index: number) => {
               const itemKey = item.customKey || item.cartKey || item.id || String(item.product?.id);
-              const options = getFormattedOptions(item);
+              const optionGroups = getFormattedOrderOptions(item, optionGroupMapping);
 
               return (
                 <div 
@@ -1252,18 +1342,33 @@ const Caisse = () => {
                   <div className="flex justify-between items-start gap-1">
                     <div className="flex-1 min-w-0 pr-1">
                       <h4 className="font-bold text-gray-800 text-[11px] leading-tight line-clamp-2">{item.product?.name || item.name}</h4>
-                      {options.length > 0 && (
-                        <div className="mt-0.5 space-y-0.5">
-                          {options.map((opt: any, i: number) => (
-                            <div key={i} className="text-[9px] text-gray-500 flex justify-between font-bold">
-                              <span className="truncate pr-1">- {opt.name}</span>
-                              {opt.price > 0 && <span className="flex-shrink-0">{opt.price.toFixed(2)}€</span>}
+                      
+                      {/* 🟢 AFFICHAGE UNIFIÉ DES OPTIONS PAR GROUPE */}
+                      {optionGroups.length > 0 && (
+                        <div className="mt-1 space-y-0.5 text-[9px]">
+                          {optionGroups.map((grp, gIdx) => (
+                            <div key={gIdx} className="flex flex-wrap items-baseline gap-0.5 leading-tight">
+                              {grp.groupName ? (
+                                <span className="font-bold text-slate-500 uppercase text-[8px] tracking-wider">
+                                  {grp.groupName} :
+                                </span>
+                              ) : null}
+                              {grp.items.map((opt, oIdx) => (
+                                <span key={oIdx} className="inline">
+                                  <span className={opt.isSans ? "text-red-500 font-bold" : "text-gray-600 font-medium"}>
+                                    {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
+                                  </span>
+                                  {opt.price > 0 && <span className="text-gray-400"> (+{opt.price.toFixed(2)}€)</span>}
+                                  {oIdx < grp.items.length - 1 ? ', ' : ''}
+                                </span>
+                              ))}
                             </div>
                           ))}
                         </div>
                       )}
+
                     </div>
-                    <div className="font-black text-[12px] whitespace-nowrap" style={{ color: themeColors.secondary }}>{getItemTotal(item).toFixed(2)}€</div>
+                    <div className="font-black text-[12px] whitespace-nowrap" style={{ color: themeColors.secondary }}>{getItemTotal(item, optionGroupMapping).toFixed(2)}€</div>
                   </div>
                   
                   <div className="mt-1.5 flex items-center justify-between">
@@ -1362,7 +1467,7 @@ const Caisse = () => {
       {isDeliveryModalOpen && (
         <DeliveryModalCaisse 
           isOpen={isDeliveryModalOpen}
-          onClose={() => setIsDeliveryModalOpen(false)}
+          onClose={handleDeliveryModalClose}
           onConfirm={handleClientConfirm}
           initialData={clientInfo} 
         />
@@ -1458,7 +1563,15 @@ const Caisse = () => {
       {isDashboardOpen && <OrdersDashboardModal onClose={() => setIsDashboardOpen(false)} />}
       {isOrderTrackerOpen && <OrderTrackerModal onClose={() => setIsOrderTrackerOpen(false)} onLoadOrder={handleLoadOrderIntoCart} />}
       {isHistoryOpen && <OrderHistoryModal onClose={() => setIsHistoryOpen(false)} />}
-      {isStockOpen && <StockModal onClose={() => setIsStockOpen(false)} loadMenuData={() => loadMenuData(getActiveRestaurantId() || RESTAURANT_ID)} />}
+      {isStockOpen && (
+        <StockModal 
+          onClose={() => {
+            setIsStockOpen(false);
+            const activeRestoId = getActiveRestaurantId() || RESTAURANT_ID;
+            if (activeRestoId) loadMenuData(activeRestoId);
+          }} 
+        />
+      )}
       {isSettingsOpen && <SettingsModal onClose={() => setIsSettingsOpen(false)} />}
 
     </div>

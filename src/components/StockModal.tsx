@@ -41,7 +41,7 @@ const StockModal = ({ onClose }: StockModalProps) => {
     try {
       const activeRestoId = localStorage.getItem('pos_restaurant_id') || localStorage.getItem('admin_override_restaurant_id') || RESTAURANT_ID;
       
-      if (!activeRestoId) {
+      if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') {
         toast.error("Veuillez configurer la caisse (ID restaurant manquant)");
         setIsLoading(false);
         return;

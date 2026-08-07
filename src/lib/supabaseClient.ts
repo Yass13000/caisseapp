@@ -10,3 +10,23 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 export const RESTAURANT_ID = typeof window !== 'undefined' 
   ? (localStorage.getItem('admin_override_restaurant_id') || import.meta.env.VITE_RESTAURANT_ID)
   : import.meta.env.VITE_RESTAURANT_ID;
+
+export const getActiveRestaurantId = (): string => {
+  if (typeof window !== 'undefined') {
+    if ((window as any).electronAPI?.getSetting) {
+      const electronId = (window as any).electronAPI.getSetting('pos_restaurant_id', null);
+      if (electronId && electronId !== 'undefined' && electronId !== 'null') {
+        return electronId;
+      }
+    }
+    const localPosId = localStorage.getItem('pos_restaurant_id');
+    if (localPosId && localPosId !== 'undefined' && localPosId !== 'null') {
+      return localPosId;
+    }
+    const overrideId = localStorage.getItem('admin_override_restaurant_id');
+    if (overrideId && overrideId !== 'undefined' && overrideId !== 'null') {
+      return overrideId;
+    }
+  }
+  return RESTAURANT_ID || '';
+};
