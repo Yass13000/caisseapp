@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, CreditCard, Trash2, Banknote } from 'lucide-react';
 import { toast } from 'sonner';
@@ -48,6 +49,7 @@ const ORDER_TYPE_LABELS = {
 const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTAURANT" }: OrderTrackerModalProps) => {
   const [orders, setOrders] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [expandedOrderId, setExpandedOrderId] = useState<string | number | null>(null);
   const [paymentOrder, setPaymentOrder] = useState<any | null>(null);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -190,7 +192,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const toggleExpand = (id: string | number) => setExpandedOrderId(prev => prev === id ? null : id);
 
-  // 🟢 CORRECTION MAJEURE ICI : CONSERVATION INTACTE DES OPTIONS ET DES NOMS DE GROUPES (SAUCES, BOISSONS...)
   const handleSelectOrder = (order: any) => {
     let items = [];
     try {
@@ -202,7 +203,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
          const productPrice = extractProductPrice(item);
          const productId = item.product?.id || item.id || `prod-${index}`;
 
-         // Conservons les options d'origine sans les altérer ni écraser leurs group_name !
          const rawOptions = item.selectedSubOptions || item.selections || item.flatOptions || item.options || [];
 
          const optionsString = JSON.stringify(rawOptions);
@@ -602,6 +602,22 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                 </div>
             </div>
         </div>
+
+        {/* MODALE DE PAIEMENT ESPÈCES */}
+        <AnimatePresence>
+          {isPaymentModalOpen && paymentOrder && (
+            <PaymentModal
+              subtotal={paymentOrder.total_price}
+              themeColors={{ primary: '#04B855', secondary: '#1f2937', accent: '#FBBF24' }}
+              onClose={() => {
+                setIsPaymentModalOpen(false);
+                setPaymentOrder(null);
+              }}
+              onConfirm={handleCashPaymentConfirm}
+              isProcessing={isProcessing}
+            />
+          )}
+        </AnimatePresence>
 
       </div>
     </div>,
