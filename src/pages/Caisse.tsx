@@ -839,7 +839,10 @@ const Caisse = () => {
       if ((window as any).electronAPI?.saveOfflineOrder) {
         await (window as any).electronAPI.saveOfflineOrder(orderPayload);
         customToast(`Encaissé (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
-        await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
+        const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
+        if (isAutoPrintReceiptEnabled) {
+          await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
+        }
         
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
         if (isKitchenTicketEnabled && !loadedOrderId) {
@@ -896,7 +899,7 @@ const Caisse = () => {
 
       customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
 
-      const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'false') === 'true';
+      const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
       if (isAutoPrintReceiptEnabled) {
         await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
       }
@@ -920,7 +923,18 @@ const Caisse = () => {
         orderPayload.order_number = targetOrderNumber;
         await (window as any).electronAPI.saveOfflineOrder(orderPayload);
         customToast(`Encaissé (Local de secours) ${finalTotal.toFixed(2)}€`, "success");
-        await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
+        
+        const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
+        if (isAutoPrintReceiptEnabled) {
+          await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
+        }
+
+        const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
+        if (isKitchenTicketEnabled && !loadedOrderId) {
+          setTimeout(async () => {
+            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
+          }, 500);
+        }
         
         clearCart();
         setLoadedOrderId(null);

@@ -45,14 +45,13 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
   const [isCheckingResto, setIsCheckingResto] = useState(false);
 
   // --- ÉTATS IMPRESSION AVANCÉS ---
-  const [autoPrintReceipt, setAutoPrintReceipt] = useState(() => getSecureSetting('auto_print_receipt', 'false') === 'true');
+  const [autoPrintReceipt, setAutoPrintReceipt] = useState(() => getSecureSetting('auto_print_receipt', 'true') !== 'false');
   const [printKitchenTicket, setPrintKitchenTicket] = useState(() => getSecureSetting('print_kitchen_ticket', 'true') !== 'false');
   const [receiptWidth, setReceiptWidth] = useState(() => getSecureSetting('receipt_width', '72'));
 
   const [availablePrinters, setAvailablePrinters] = useState<any[]>([]);
   const [caissePrinter, setCaissePrinter] = useState(getSecureSetting('imprimante_caisse', ''));
   const [kitchenPrinter, setKitchenPrinter] = useState(getSecureSetting('imprimante_cuisine', ''));
-  const [deliveryPrinter, setDeliveryPrinter] = useState(getSecureSetting('imprimante_livraison', ''));
   const [reportsPrinter, setReportsPrinter] = useState(getSecureSetting('imprimante_rapports', ''));
 
   const [fontSize, setFontSize] = useState(() => getSecureSetting('receipt_font_size', 'normal'));
@@ -371,6 +370,38 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
               <div className="bg-white rounded-[2rem] shadow-sm border border-gray-200 overflow-hidden space-y-2">
                 <div className="p-8 space-y-4">
                   
+                  {/* 0. INTERRUPTEURS AUTOMATIQUES D'IMPRESSION */}
+                  <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+                    <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Déclenchement Automatique</h3>
+                    <div className="grid grid-cols-2 gap-4">
+                      <label className="flex items-center gap-3 cursor-pointer p-3 bg-white rounded-xl border border-gray-200 shadow-sm">
+                        <input 
+                          type="checkbox" 
+                          checked={autoPrintReceipt} 
+                          onChange={(e) => { 
+                            setAutoPrintReceipt(e.target.checked); 
+                            setSecureSetting('auto_print_receipt', String(e.target.checked)); 
+                          }} 
+                          className="w-5 h-5 accent-primary" 
+                        />
+                        <span className="text-sm font-bold text-secondary">Imprimer automatiquement le Ticket Client</span>
+                      </label>
+
+                      <label className="flex items-center gap-3 cursor-pointer p-3 bg-white rounded-xl border border-gray-200 shadow-sm">
+                        <input 
+                          type="checkbox" 
+                          checked={printKitchenTicket} 
+                          onChange={(e) => { 
+                            setPrintKitchenTicket(e.target.checked); 
+                            setSecureSetting('print_kitchen_ticket', String(e.target.checked)); 
+                          }} 
+                          className="w-5 h-5 accent-primary" 
+                        />
+                        <span className="text-sm font-bold text-secondary">Imprimer automatiquement le Bon Cuisine</span>
+                      </label>
+                    </div>
+                  </div>
+
                   {/* 1. CONFIGURATION MULTI-IMPRIMANTES ET RÔLES */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <div className="flex items-center justify-between">
@@ -383,7 +414,7 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-6">
+                    <div className="grid grid-cols-3 gap-6">
                       <div>
                         <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Imprimante Ticket Client</label>
                         <select 
@@ -416,20 +447,6 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
                         <button onClick={() => handleTestPrint(kitchenPrinter)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1">
                           <Printer size={12} /> Test impression Cuisine
                         </button>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Imprimante Étiquette Livraison</label>
-                        <select 
-                          value={deliveryPrinter}
-                          onChange={(e) => { setDeliveryPrinter(e.target.value); setSecureSetting('imprimante_livraison', e.target.value); }}
-                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
-                        >
-                          <option value="">-- Même que Ticket Client --</option>
-                          {availablePrinters.map((p, idx) => (
-                            <option key={idx} value={p.name}>{p.name}</option>
-                          ))}
-                        </select>
                       </div>
 
                       <div>

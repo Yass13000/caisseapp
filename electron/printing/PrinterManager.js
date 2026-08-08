@@ -32,7 +32,7 @@ function readSettingsFile() {
 }
 
 // ----------------------------------------------------------------------------
-// 🛡️ GESTION RÉSILIENTE ET CLOISONNÉE DU LOGO PAR RESTAURANT
+// 🛡️ GESTION DU LOGO (SUPPORT PNG, JPEG ET WEBP)
 // ----------------------------------------------------------------------------
 async function getCachedLogoDataUrl(logoUrl, restaurantId) {
   if (!logoUrl || typeof logoUrl !== 'string') return '';
@@ -40,22 +40,24 @@ async function getCachedLogoDataUrl(logoUrl, restaurantId) {
 
   const cacheDir = app.getPath('userData');
   const safeRestoId = restaurantId ? String(restaurantId).replace(/[^a-zA-Z0-9_-]/g, '') : '';
-  const logoPath = safeRestoId ? path.join(cacheDir, `logo-cache-${safeRestoId}.png`) : null;
+  const logoPath = safeRestoId ? path.join(cacheDir, `logo-cache-${safeRestoId}.bin`) : null;
   const metaPath = safeRestoId ? path.join(cacheDir, `logo-cache-meta-${safeRestoId}.json`) : null;
 
   let cachedUrl = '';
+  let cachedMime = 'image/png';
   if (metaPath && logoPath) {
     try {
       if (fs.existsSync(metaPath)) {
         const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
         cachedUrl = meta.url || '';
+        cachedMime = meta.mimeType || 'image/png';
       }
     } catch (e) {}
 
     if (cachedUrl === logoUrl && fs.existsSync(logoPath)) {
       try {
         const buf = fs.readFileSync(logoPath);
-        return `data:image/png;base64,${buf.toString('base64')}`;
+        return `data:${cachedMime};base64,${buf.toString('base64')}`;
       } catch (e) {}
     }
   }
@@ -74,12 +76,11 @@ async function getCachedLogoDataUrl(logoUrl, restaurantId) {
       resolve(val);
     };
 
-    // 🛡️ Pas de fallback B64 générique ni cross-tenant : sert le cache du restaurant courant uniquement s'il correspond
     const fallbackResolve = () => {
       if (safeRestoId && cachedUrl === logoUrl && logoPath && fs.existsSync(logoPath)) {
         try {
           const buf = fs.readFileSync(logoPath);
-          safeResolve(`data:image/png;base64,${buf.toString('base64')}`);
+          safeResolve(`data:${cachedMime};base64,${buf.toString('base64')}`);
           return;
         } catch (e) {}
       }
@@ -93,13 +94,13 @@ async function getCachedLogoDataUrl(logoUrl, restaurantId) {
 
     const client = logoUrl.startsWith('https') ? https : http;
     req = client.get(logoUrl, (res) => {
-      res.on('error', (err) => {
-        console.warn("[PrinterManager] Erreur réseau logo (res):", err?.message);
-        fallbackResolve();
-      });
+      res.on('error', () => fallbackResolve());
 
       const contentType = String(res.headers['content-type'] || '').toLowerCase();
-      const isValidType = contentType.includes('image/png') || contentType.includes('image/jpeg') || contentType.includes('image/jpg');
+      const isValidType = contentType.includes('image/png') || 
+                          contentType.includes('image/jpeg') || 
+                          contentType.includes('image/jpg') || 
+                          contentType.includes('image/webp');
 
       if (res.statusCode !== 200 || !isValidType) {
         res.destroy();
@@ -109,7 +110,7 @@ async function getCachedLogoDataUrl(logoUrl, restaurantId) {
 
       const data = [];
       let totalBytes = 0;
-      const MAX_BYTES = 2 * 1024 * 1024;
+      const MAX_BYTES = 3 * 1024 * 1024; // 3 Mo max
 
       res.on('data', (chunk) => {
         totalBytes += chunk.length;
@@ -130,29 +131,36 @@ async function getCachedLogoDataUrl(logoUrl, restaurantId) {
 
         try {
           const buffer = Buffer.concat(data);
+
+          // Vérification des signatures binaires (PNG, JPEG, WEBP)
           const isPng = buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47;
           const isJpeg = buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
+          const isWebp = buffer.length >= 12 && 
+                         buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+                         buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50;
 
-          if (!isPng && !isJpeg) {
+          if (!isPng && !isJpeg && !isWebp) {
+            console.warn("[PrinterManager] Format image non pris en charge (ni PNG, JPEG ou WEBP)");
             fallbackResolve();
             return;
           }
 
+          let mimeType = 'image/png';
+          if (isJpeg) mimeType = 'image/jpeg';
+          if (isWebp) mimeType = 'image/webp';
+
           if (safeRestoId && logoPath && metaPath) {
             fs.writeFileSync(logoPath, buffer);
-            fs.writeFileSync(metaPath, JSON.stringify({ url: logoUrl, date: new Date().toISOString() }), 'utf8');
+            fs.writeFileSync(metaPath, JSON.stringify({ url: logoUrl, mimeType, date: new Date().toISOString() }), 'utf8');
           }
-          safeResolve(`data:image/png;base64,${buffer.toString('base64')}`);
+          safeResolve(`data:${mimeType};base64,${buffer.toString('base64')}`);
         } catch (e) {
           fallbackResolve();
         }
       });
     });
 
-    req.on('error', (err) => {
-      console.warn("[PrinterManager] Erreur réseau requète logo (req):", err?.message);
-      fallbackResolve();
-    });
+    req.on('error', () => fallbackResolve());
   });
 }
 
@@ -238,7 +246,7 @@ public class RawPrinterHelper {
   try {
     fs.writeFileSync(scriptPath, psScript, 'utf8');
   } catch (e) {
-    console.error("[PrinterManager] Erreur écriture fichier temporaire PS:", e);
+    console.error("[PrinterManager] Erreur écriture fichier PS:", e);
     return Promise.resolve(false);
   }
 
@@ -246,12 +254,107 @@ public class RawPrinterHelper {
     exec(`powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "${scriptPath}"`, (error, stdout) => {
       fs.unlink(scriptPath, () => {});
       const output = stdout.trim().toLowerCase();
-      const isSuccess = !error && output === 'true';
-      resolve(isSuccess);
+      resolve(!error && output === 'true');
     });
   });
 }
 
+// ----------------------------------------------------------------------------
+// 👨‍🍳 GÉNÉRATEUR EXCLUSIF TICKET CUISINE (DESIGN CONFORME MODÈLE A12)
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 👨‍🍳 GÉNÉRATEUR EXCLUSIF TICKET CUISINE (RACCOURCI SANS CATEGORIES NI "CMD #")
+// ----------------------------------------------------------------------------
+function buildKitchenHtml(orderData, widthMm = '72') {
+  const bodyWidth = `${widthMm}mm`;
+  
+  // N° de commande brut direct (nettoyage de tout préfixe "CMD #" ou "CMD")
+  let orderNumDisplay = String(orderData.orderNumber || orderData.number || '001')
+    .toUpperCase()
+    .replace(/^CMD\s*#?/i, '')
+    .trim();
+
+  // Heure de la commande
+  let orderTime = '';
+  if (orderData.orderDate) {
+    const parts = String(orderData.orderDate).split(' ');
+    orderTime = parts.length > 1 ? parts[1].substring(0, 5) : parts[0].substring(0, 5);
+  }
+  if (!orderTime) {
+    const d = new Date();
+    orderTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  // Mode de commande
+  let orderTypeLabel = 'SUR PLACE';
+  const rawType = String(orderData.orderType || '').toLowerCase();
+  if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'A EMPORTER';
+  if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
+
+  // Affichage linéaire direct des produits (sans nom de catégorie)
+  const items = Array.isArray(orderData.items) ? orderData.items : [];
+
+  const itemsHtml = items.map(item => {
+    const qty = Number(item.qty || item.quantity || 1);
+    const name = escapeHtml(item.name || item.product?.name || 'Article').toUpperCase();
+
+    let notesHtml = '';
+    const notes = Array.isArray(item.notes) ? item.notes : (Array.isArray(item.options) ? item.options : []);
+    if (notes.length > 0) {
+      notesHtml = notes.map(n => {
+        const noteName = typeof n === 'string' ? n : (n.name || '');
+        return `<div style="font-size: 14px; font-weight: bold; text-transform: uppercase; margin-top: 3px; padding-left: 4px; color: black;">- ${escapeHtml(noteName)}</div>`;
+      }).join('');
+    }
+
+    return `
+      <div style="margin-bottom: 12px;">
+        <div style="background-color: black; color: white; font-weight: 900; font-size: 16px; padding: 6px 8px; text-transform: uppercase; letter-spacing: 0.5px; -webkit-print-color-adjust: exact;">
+          ${qty}X ${name}
+        </div>
+        ${notesHtml}
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 4px; width: ${bodyWidth}; color: black; line-height: 1.2; }
+          .center { text-align: center; }
+        </style>
+      </head>
+      <body>
+        <!-- BANDEAU N° COMMANDE BRUT -->
+        <div style="background-color: black; color: white; text-align: center; font-size: 32px; font-weight: 900; padding: 8px 0; font-family: sans-serif; letter-spacing: 1px; -webkit-print-color-adjust: exact;">
+          ${orderNumDisplay}
+        </div>
+
+        <!-- BARRE HEURE / MODE -->
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 2px; font-weight: 800; font-size: 13px; border-bottom: 2px solid black; margin-bottom: 10px;">
+          <span>${orderTime}</span>
+          <span style="text-transform: uppercase;">${orderTypeLabel}</span>
+        </div>
+
+        <!-- LISTE DES PRODUITS SUCCESSIFS -->
+        <div>${itemsHtml}</div>
+      </body>
+    </html>
+  `;
+}
+
+// ----------------------------------------------------------------------------
+// 📜 GÉNÉRATEUR TICKET CAISSE (CLIENT)
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 📜 GÉNÉRATEUR TICKET CAISSE (CLIENT)
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 📜 GÉNÉRATEUR TICKET CAISSE (CLIENT) - LIGNES CONTINUES & MODE DE PAIEMENT
+// ----------------------------------------------------------------------------
 async function buildReceiptHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
 
@@ -274,23 +377,19 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const showFooterMessage = settings.show_footer_message !== 'false';
   const footerMessage = escapeHtml(settings.footer_custom_message || 'Merci de votre visite !\nA bientôt.');
   const showQrCode = settings.show_qr_code === 'true';
-  const isKitchenTicket = String(orderData.orderType || '').toUpperCase().includes('CUISINE');
-  const kitchenShowPrices = settings.kitchen_show_prices !== 'false';
 
-  // 🛡️ Récupération du restaurantId depuis orderData ou settings pos_restaurant_id
   const currentRestaurantId = orderData.restaurantId || orderData.restaurant_id || settings.pos_restaurant_id;
 
-  // 🛡️ Source exclusive : logoUrl HTTP(S) distant de restaurants.logo_url
-  const logoTargetUrl = (showLogo && !isKitchenTicket && (orderData.restaurantLogoUrl || orderData.logo_url)) 
+  const logoTargetUrl = (showLogo && (orderData.restaurantLogoUrl || orderData.logo_url)) 
     ? String(orderData.restaurantLogoUrl || orderData.logo_url) 
     : '';
 
   const logoDataUrl = logoTargetUrl ? await getCachedLogoDataUrl(logoTargetUrl, currentRestaurantId) : '';
+  
   const logoHtml = logoDataUrl 
-    ? `<div style="text-align: center; margin-bottom: 6px;"><img src="${logoDataUrl}" style="max-width: 60%; max-height: 80px; filter: grayscale(100%);" /></div>` 
+    ? `<div style="text-align: center; margin-bottom: 6px;"><img src="${logoDataUrl}" style="max-width: 30%; max-height: 40px; filter: grayscale(100%);" /></div>` 
     : '';
 
-  // 1B. Nom du Restaurant Unifié
   const restaurantName = escapeHtml(
     orderData.restaurantName || 
     orderData.restaurant_name || 
@@ -301,22 +400,34 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const restaurantAddress = escapeHtml(orderData.restaurantAddress || orderData.address || '');
   const restaurantPhone = escapeHtml(orderData.restaurantPhone || orderData.phone || '');
   
-  const orderNumber = escapeHtml(orderData.orderNumber || orderData.number || '001');
+  const cleanOrderNumber = escapeHtml(
+    String(orderData.orderNumber || orderData.number || orderData.id || '001')
+      .toUpperCase()
+      .replace(/^CMD\s*#?/i, '')
+      .trim()
+  );
   const orderDate = escapeHtml(orderData.orderDate || new Date().toLocaleString('fr-FR'));
   
   let orderTypeLabel = 'SUR PLACE';
   const rawType = String(orderData.orderType || '').toLowerCase();
   if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'A EMPORTER';
   if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
-  if (isKitchenTicket) orderTypeLabel = escapeHtml(orderData.orderType);
+
+  // 💳 ÉXTRACTION ET FORMATAGE DU MODE DE PAIEMENT
+  const rawPayment = orderData.paymentMethod || orderData.payment_method || orderData.payment_mode || '';
+  let paymentLabel = '';
+  if (rawPayment) {
+    const pLower = String(rawPayment).toLowerCase();
+    if (pLower.includes('cash') || pLower.includes('espece')) paymentLabel = 'ESPÈCES';
+    else if (pLower.includes('card') || pLower.includes('cb') || pLower.includes('carte')) paymentLabel = 'CARTE BANCAIRE';
+    else if (pLower.includes('ticket') || pLower.includes('resto')) paymentLabel = 'TICKET RESTAURANT';
+    else paymentLabel = escapeHtml(String(rawPayment).toUpperCase());
+  }
 
   const items = Array.isArray(orderData.items) ? orderData.items : [];
-  const totalNum = Number(orderData.total || 0);
+  const totalNum = Number(orderData.total || orderData.total_price || 0);
   const total = totalNum.toFixed(2);
 
-  const hidePriceOnKitchen = isKitchenTicket && !kitchenShowPrices;
-
-  // 1D. Inclusions des Prix d'Options dans le Total Ligne
   const itemsHtml = items.map(item => {
     const qty = Number(item.qty || item.quantity || 1);
     const name = escapeHtml(item.name || item.product?.name || 'Article');
@@ -349,20 +460,19 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
       <div style="margin-bottom: 4px;">
         <div style="display: flex; justify-content: space-between; font-weight: bold;">
           <span style="max-width: 75%; word-break: break-word;">${qty}x ${name}</span>
-          ${hidePriceOnKitchen ? '' : `<span>${itemTotal} €</span>`}
+          <span>${itemTotal} €</span>
         </div>
         ${notesHtml}
       </div>
     `;
   }).join('');
 
-  // 1C. Extraction Complète des Données de Livraison
   let deliveryBlockHtml = '';
   const d = orderData.delivery || {};
   const custName = escapeHtml(d.customerName || d.name || orderData.customer_name || '');
   const custAddress = escapeHtml(d.address || orderData.customer_address || '');
   const custPhone = escapeHtml(d.phone || orderData.customer_phone || '');
-  const custNotes = escapeHtml(d.deliveryNotes || d.notes || orderData.delivery_notes || '');
+  const custNotes = escapeHtml(d.deliveryNotes || d.notes || orderData.delivery_notes || orderData.comment || '');
 
   const isLivraison = orderTypeLabel.includes('LIVRAISON') || rawType.includes('livraison') || rawType.includes('delivery');
   const hasClientInfo = !!(custName || custAddress || custPhone);
@@ -378,12 +488,11 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
         ${custAddress ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">ADRESSE:</span> ${custAddress}</div>` : ''}
         ${custPhone ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">TÉL:</span> ${custPhone}</div>` : ''}
         ${custNotes ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">NOTE:</span> ${custNotes}</div>` : ''}
-        ${deliveryFeeNum > 0 ? `<div style="margin-top: 2px; border-top: 1px dashed rgba(255,255,255,0.4); padding-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">FRAIS DE LIVRAISON:</span> ${deliveryFeeNum.toFixed(2)} €</div>` : ''}
+        ${deliveryFeeNum > 0 ? `<div style="margin-top: 2px; border-top: 1px solid rgba(255,255,255,0.4); padding-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">FRAIS DE LIVRAISON:</span> ${deliveryFeeNum.toFixed(2)} €</div>` : ''}
       </div>
     `;
   }
 
-  // 3. TVA dynamique
   const rawTva = orderData.tva ?? orderData.restaurant_tva ?? settings.restaurant_tva ?? 10;
   const tvaRate = Number(rawTva) > 0 ? Number(rawTva) : 10;
   
@@ -403,7 +512,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   let qrCodeHtml = '';
   if (showQrCode) {
     let qrUrl = settings.qr_code_custom_url || 'https://google.com';
-    if (settings.qr_code_type === 'tracking') qrUrl = `https://caisseapp.vercel.app/#/track/${orderNumber}`;
+    if (settings.qr_code_type === 'tracking') qrUrl = `https://caisseapp.vercel.app/#/track/${cleanOrderNumber}`;
     try {
       const qrDataUrl = await QRCode.toDataURL(qrUrl, { margin: 1, width: 110 });
       qrCodeHtml = `
@@ -425,7 +534,8 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
           body { font-family: monospace; font-size: ${fontSize}; margin: 0; padding: ${bodyPadding}; width: ${bodyWidth}; color: black; line-height: 1.2; }
           .center { text-align: center; }
           .bold { font-weight: bold; }
-          hr { border: none; border-top: 1px dashed black; margin: 6px 0; }
+          /* ➖ Lignes de séparation continues solides */
+          hr { border: none; border-top: 1px solid black; margin: 6px 0; }
         </style>
       </head>
       <body>
@@ -435,14 +545,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
           <div style="font-size: ${headerFontSize}; font-weight: 900; text-transform: uppercase;">${restaurantName}</div>
           ${showHeaderInfo && restaurantAddress ? `<div style="font-size: 11px;">${restaurantAddress}</div>` : ''}
           ${showHeaderInfo && restaurantPhone ? `<div style="font-size: 11px;">Tél: ${restaurantPhone}</div>` : ''}
-        </div>
-
-        <hr />
-
-        <div class="center">
-          <div style="font-size: 16px; font-weight: 900;">CMD #${orderNumber}</div>
-          <div style="font-size: 11px;">${orderDate}</div>
-          <div style="font-size: 13px; font-weight: bold; margin-top: 2px;">*** ${orderTypeLabel} ***</div>
+          <div style="font-size: 11px; margin-top: 2px;">${orderDate}</div>
         </div>
 
         <hr />
@@ -451,14 +554,26 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 
         ${deliveryBlockHtml}
 
-        ${hidePriceOnKitchen ? '' : `
-          <hr />
-          ${taxDetailsHtml}
-          <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 900; margin: 4px 0;">
-            <span>TOTAL TTC</span>
-            <span>${total} €</span>
+        <hr />
+        ${taxDetailsHtml}
+        <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 900; margin: 4px 0;">
+          <span>TOTAL TTC</span>
+          <span>${total} €</span>
+        </div>
+
+        ${paymentLabel ? `
+          <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold; margin-bottom: 4px;">
+            <span>MODE DE RÈGLEMENT</span>
+            <span>${paymentLabel}</span>
           </div>
-        `}
+        ` : ''}
+
+        <hr />
+
+        <div class="center" style="margin: 6px 0;">
+          <div style="font-size: 15px; font-weight: 900;">Commande : ${cleanOrderNumber}</div>
+          <div style="font-size: 13px; font-weight: bold; margin-top: 2px;">*** ${orderTypeLabel} ***</div>
+        </div>
 
         ${(showFooterMessage || showQrCode) ? '<hr />' : ''}
 
@@ -550,7 +665,11 @@ const PrinterManager = {
   async _printSingleWindow(orderData, desiredPrinterName, mainWindow) {
     const settings = readSettingsFile();
     const widthMm = settings.receipt_width || '72';
-    const htmlContent = await buildReceiptHtml(orderData, widthMm);
+    const isKitchen = String(orderData.orderType || '').toUpperCase().includes('CUISINE');
+
+    const htmlContent = isKitchen 
+      ? buildKitchenHtml(orderData, widthMm) 
+      : await buildReceiptHtml(orderData, widthMm);
 
     return new Promise(async (resolve) => {
       try {
