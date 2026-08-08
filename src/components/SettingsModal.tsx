@@ -60,7 +60,6 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
   const [copiesClient, setCopiesClient] = useState(() => getSecureSetting('receipt_copies_client', '1'));
   const [copiesKitchen, setCopiesKitchen] = useState(() => getSecureSetting('receipt_copies_kitchen', '1'));
 
-  const [logoB64, setLogoB64] = useState(() => getSecureSetting('restaurant_logo_b64', ''));
   const [showLogo, setShowLogo] = useState(() => getSecureSetting('show_logo', 'true') === 'true');
   const [showHeaderInfo, setShowHeaderInfo] = useState(() => getSecureSetting('show_header_info', 'true') === 'true');
   const [showTaxDetails, setShowTaxDetails] = useState(() => getSecureSetting('show_tax_details', 'false') === 'true');
@@ -98,19 +97,6 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
   useEffect(() => {
     fetchPrinters();
   }, []);
-
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const b64 = event.target?.result as string;
-      setLogoB64(b64);
-      setSecureSetting('restaurant_logo_b64', b64);
-      toast.success("Logo du restaurant enregistré !");
-    };
-    reader.readAsDataURL(file);
-  };
 
   const handleTestPrint = async (targetPrinter?: string) => {
     if (!(window as any).electronAPI) {
@@ -526,22 +512,10 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
                     </div>
                   </div>
 
-                  {/* 3. LOGO & EN-TÊTE DU TICKET */}
+                  {/* 3. EN-TÊTE DU TICKET & LOGO SUPABASE */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Logo & Visuels</h3>
-
-                    <div className="flex items-center gap-6">
-                      {logoB64 && (
-                        <div className="w-24 h-24 bg-white border border-gray-300 rounded-xl p-2 flex items-center justify-center shadow-sm">
-                          <img src={logoB64} alt="Logo" className="max-h-full max-w-full object-contain grayscale" />
-                        </div>
-                      )}
-                      <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Charger le logo du restaurant</label>
-                        <input type="file" accept="image/*" onChange={handleLogoUpload} className="text-xs font-bold text-gray-500" />
-                        <p className="text-[11px] text-gray-400 mt-1">Converti automatiquement en niveaux de gris pour l'imprimante thermique.</p>
-                      </div>
-                    </div>
+                    <p className="text-xs font-bold text-gray-400">Le logo est géré automatiquement depuis l'interface d'administration Supabase du restaurant.</p>
 
                     <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
                       <label className="flex items-center gap-3 cursor-pointer">

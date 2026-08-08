@@ -31,26 +31,33 @@ function readSettingsFile() {
   return {};
 }
 
-async function getCachedLogoDataUrl(logoUrl) {
+// ----------------------------------------------------------------------------
+// 🛡️ GESTION RÉSILIENTE ET CLOISONNÉE DU LOGO PAR RESTAURANT
+// ----------------------------------------------------------------------------
+async function getCachedLogoDataUrl(logoUrl, restaurantId) {
   if (!logoUrl || typeof logoUrl !== 'string') return '';
+  if (!logoUrl.startsWith('http://') && !logoUrl.startsWith('https://')) return '';
 
   const cacheDir = app.getPath('userData');
-  const logoPath = path.join(cacheDir, 'logo-cache.png');
-  const metaPath = path.join(cacheDir, 'logo-cache-meta.json');
+  const safeRestoId = restaurantId ? String(restaurantId).replace(/[^a-zA-Z0-9_-]/g, '') : '';
+  const logoPath = safeRestoId ? path.join(cacheDir, `logo-cache-${safeRestoId}.png`) : null;
+  const metaPath = safeRestoId ? path.join(cacheDir, `logo-cache-meta-${safeRestoId}.json`) : null;
 
   let cachedUrl = '';
-  try {
-    if (fs.existsSync(metaPath)) {
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      cachedUrl = meta.url || '';
-    }
-  } catch (e) {}
-
-  if (cachedUrl === logoUrl && fs.existsSync(logoPath)) {
+  if (metaPath && logoPath) {
     try {
-      const buf = fs.readFileSync(logoPath);
-      return `data:image/png;base64,${buf.toString('base64')}`;
+      if (fs.existsSync(metaPath)) {
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        cachedUrl = meta.url || '';
+      }
     } catch (e) {}
+
+    if (cachedUrl === logoUrl && fs.existsSync(logoPath)) {
+      try {
+        const buf = fs.readFileSync(logoPath);
+        return `data:image/png;base64,${buf.toString('base64')}`;
+      } catch (e) {}
+    }
   }
 
   return new Promise((resolve) => {
@@ -67,8 +74,9 @@ async function getCachedLogoDataUrl(logoUrl) {
       resolve(val);
     };
 
+    // 🛡️ Pas de fallback B64 générique ni cross-tenant : sert le cache du restaurant courant uniquement s'il correspond
     const fallbackResolve = () => {
-      if (cachedUrl === logoUrl && fs.existsSync(logoPath)) {
+      if (safeRestoId && cachedUrl === logoUrl && logoPath && fs.existsSync(logoPath)) {
         try {
           const buf = fs.readFileSync(logoPath);
           safeResolve(`data:image/png;base64,${buf.toString('base64')}`);
@@ -130,8 +138,10 @@ async function getCachedLogoDataUrl(logoUrl) {
             return;
           }
 
-          fs.writeFileSync(logoPath, buffer);
-          fs.writeFileSync(metaPath, JSON.stringify({ url: logoUrl, date: new Date().toISOString() }), 'utf8');
+          if (safeRestoId && logoPath && metaPath) {
+            fs.writeFileSync(logoPath, buffer);
+            fs.writeFileSync(metaPath, JSON.stringify({ url: logoUrl, date: new Date().toISOString() }), 'utf8');
+          }
           safeResolve(`data:image/png;base64,${buffer.toString('base64')}`);
         } catch (e) {
           fallbackResolve();
@@ -266,18 +276,31 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const isKitchenTicket = String(orderData.orderType || '').toUpperCase().includes('CUISINE');
   const kitchenShowPrices = settings.kitchen_show_prices !== 'false';
 
-  const logoDataUrl = (!isKitchenTicket && orderData.restaurantLogoUrl) 
-    ? await getCachedLogoDataUrl(orderData.restaurantLogoUrl) 
+  // 🛡️ Récupération du restaurantId depuis orderData ou settings pos_restaurant_id
+  const currentRestaurantId = orderData.restaurantId || orderData.restaurant_id || settings.pos_restaurant_id;
+
+  // 🛡️ Source exclusive : logoUrl HTTP(S) distant de restaurants.logo_url (Pas de fallback B64)
+  const logoTargetUrl = (!isKitchenTicket && (orderData.restaurantLogoUrl || orderData.logo_url)) 
+    ? String(orderData.restaurantLogoUrl || orderData.logo_url) 
     : '';
+
+  const logoDataUrl = logoTargetUrl ? await getCachedLogoDataUrl(logoTargetUrl, currentRestaurantId) : '';
   const logoHtml = logoDataUrl 
     ? `<div style="text-align: center; margin-bottom: 6px;"><img src="${logoDataUrl}" style="max-width: 60%; max-height: 80px; filter: grayscale(100%);" /></div>` 
     : '';
 
-  const restaurantName = escapeHtml(orderData.restaurantName || 'VOTRE RESTAURANT');
-  const restaurantAddress = escapeHtml(orderData.restaurantAddress || '');
-  const restaurantPhone = escapeHtml(orderData.restaurantPhone || '');
+  // 1B. Nom du Restaurant Unifié
+  const restaurantName = escapeHtml(
+    orderData.restaurantName || 
+    orderData.restaurant_name || 
+    orderData.name || 
+    settings.restaurant_name || 
+    'VOTRE RESTAURANT'
+  );
+  const restaurantAddress = escapeHtml(orderData.restaurantAddress || orderData.address || '');
+  const restaurantPhone = escapeHtml(orderData.restaurantPhone || orderData.phone || '');
   
-  const orderNumber = escapeHtml(orderData.orderNumber || '001');
+  const orderNumber = escapeHtml(orderData.orderNumber || orderData.number || '001');
   const orderDate = escapeHtml(orderData.orderDate || new Date().toLocaleString('fr-FR'));
   
   let orderTypeLabel = 'SUR PLACE';
@@ -292,22 +315,34 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 
   const hidePriceOnKitchen = isKitchenTicket && !kitchenShowPrices;
 
+  // 1D. Inclusions des Prix d'Options dans le Total Ligne
   const itemsHtml = items.map(item => {
     const qty = Number(item.qty || item.quantity || 1);
     const name = escapeHtml(item.name || item.product?.name || 'Article');
-    const unitPrice = Number(item.unitPrice || item.price || 0);
-    const itemTotal = (qty * unitPrice).toFixed(2);
+    let baseUnitPrice = Number(item.unitPrice || item.price || 0);
     
+    let optionsTotalPrice = 0;
     let notesHtml = '';
     const notes = Array.isArray(item.notes) ? item.notes : (Array.isArray(item.options) ? item.options : []);
+    
     if (notes.length > 0) {
       notesHtml = notes.map(n => {
         const noteName = typeof n === 'string' ? n : (n.name || '');
         const isSans = typeof n === 'object' && n.isSans;
+        const optPrice = typeof n === 'object' ? Number(n.price || n.effective_price || 0) : 0;
+        
+        if (optPrice > 0) {
+          optionsTotalPrice += optPrice;
+        }
+
         const style = isSans ? 'color: red; font-weight: bold;' : 'color: #333;';
-        return `<div style="padding-left: 12px; font-size: 11px; ${style}">- ${escapeHtml(noteName)}</div>`;
+        const priceLabel = optPrice > 0 ? ` (+${optPrice.toFixed(2)} €)` : '';
+        return `<div style="padding-left: 12px; font-size: 11px; ${style}">- ${escapeHtml(noteName)}${priceLabel}</div>`;
       }).join('');
     }
+
+    const effectiveLineUnitPrice = baseUnitPrice + optionsTotalPrice;
+    const itemTotal = (qty * effectiveLineUnitPrice).toFixed(2);
 
     return `
       <div style="margin-bottom: 4px;">
@@ -320,35 +355,46 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     `;
   }).join('');
 
+  // 1C. Extraction Complète des Données de Livraison
   let deliveryBlockHtml = '';
-  if (orderTypeLabel.includes('LIVRAISON') && orderData.delivery) {
-    const d = orderData.delivery;
-    const name = escapeHtml(d.customerName || d.name || '');
-    const address = escapeHtml(d.address || '');
-    const phone = escapeHtml(d.phone || '');
-    const notes = escapeHtml(d.deliveryNotes || d.notes || '');
+  const d = orderData.delivery || {};
+  const custName = escapeHtml(d.customerName || d.name || orderData.customer_name || '');
+  const custAddress = escapeHtml(d.address || orderData.customer_address || '');
+  const custPhone = escapeHtml(d.phone || orderData.customer_phone || '');
+  const custNotes = escapeHtml(d.deliveryNotes || d.notes || orderData.delivery_notes || '');
 
+  const isLivraison = orderTypeLabel.includes('LIVRAISON') || rawType.includes('livraison') || rawType.includes('delivery');
+  const hasClientInfo = !!(custName || custAddress || custPhone);
+
+  if (isLivraison && hasClientInfo) {
+    const deliveryFeeNum = Number(d.fee || d.delivery_fee || orderData.delivery_fee || orderData.deliveryFee || 0);
     deliveryBlockHtml = `
       <div class="delivery-block" style="background-color: black; color: white; font-weight: bold; padding: 6px 8px; margin: 8px 0; border-radius: 2px; -webkit-print-color-adjust: exact;">
         <div style="text-align: center; border-bottom: 1px solid white; padding-bottom: 3px; margin-bottom: 4px; font-size: 12px; text-transform: uppercase;">
           *** FICHE LIVRAISON ***
         </div>
-        ${name ? `<div><span style="font-size: 9px; opacity: 0.8;">CLIENT:</span> ${name}</div>` : ''}
-        ${address ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">ADRESSE:</span> ${address}</div>` : ''}
-        ${phone ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">TÉL:</span> ${phone}</div>` : ''}
-        ${notes ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">NOTE:</span> ${notes}</div>` : ''}
+        ${custName ? `<div><span style="font-size: 9px; opacity: 0.8;">CLIENT:</span> ${custName}</div>` : ''}
+        ${custAddress ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">ADRESSE:</span> ${custAddress}</div>` : ''}
+        ${custPhone ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">TÉL:</span> ${custPhone}</div>` : ''}
+        ${custNotes ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">NOTE:</span> ${custNotes}</div>` : ''}
+        ${deliveryFeeNum > 0 ? `<div style="margin-top: 2px; border-top: 1px dashed rgba(255,255,255,0.4); padding-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">FRAIS DE LIVRAISON:</span> ${deliveryFeeNum.toFixed(2)} €</div>` : ''}
       </div>
     `;
   }
 
+  // 3. TVA dynamique
+  const rawTva = orderData.tva ?? orderData.restaurant_tva ?? settings.restaurant_tva ?? 10;
+  const tvaRate = Number(rawTva) > 0 ? Number(rawTva) : 10;
+  
   let taxDetailsHtml = '';
   if (showTaxDetails && totalNum > 0) {
-    const ht = (totalNum / 1.1).toFixed(2);
-    const tva = (totalNum - totalNum / 1.1).toFixed(2);
+    const divisor = 1 + (tvaRate / 100);
+    const ht = (totalNum / divisor).toFixed(2);
+    const tvaAmount = (totalNum - totalNum / divisor).toFixed(2);
     taxDetailsHtml = `
       <div style="font-size: 10px; margin-top: 4px;">
         <div style="display: flex; justify-content: space-between;"><span>Sous-total HT:</span><span>${ht} €</span></div>
-        <div style="display: flex; justify-content: space-between;"><span>TVA (10%):</span><span>${tva} €</span></div>
+        <div style="display: flex; justify-content: space-between;"><span>TVA (${tvaRate}%):</span><span>${tvaAmount} €</span></div>
       </div>
     `;
   }

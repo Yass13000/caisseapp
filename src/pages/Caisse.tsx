@@ -124,6 +124,7 @@ const generateAndPrintReceipt = async (restaurantInfo: { name: string; address: 
     const optionGroups = getFormattedOrderOptions(item, groupMapping);
     const notes = optionGroups.flatMap(grp => grp.items.map(opt => ({
       name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
+      price: opt.price || 0,
       isSans: opt.isSans
     })));
     return {
@@ -136,20 +137,23 @@ const generateAndPrintReceipt = async (restaurantInfo: { name: string; address: 
   });
 
   const orderPayloadData = {
+    restaurantId: getActiveRestaurantId(),
     orderType,
     orderNumber,
     orderDate: date,
-    restaurantName: restaurantInfo.name,
+    restaurantName: (restaurantInfo as any)?.restaurant_name || restaurantInfo?.name,
     restaurantAddress: restaurantInfo.address,
     restaurantPhone: restaurantInfo.phone,
     restaurantLogoUrl: restaurantInfo.logoUrl,
+    tva: tvaRate,
     items: formattedItems,
     total: finalTotal,
-    delivery: (orderType.toUpperCase().includes('LIVRAISON') || orderType === '3') && clientInfo ? {
-      customerName: clientInfo.name,
-      address: clientInfo.address,
-      phone: clientInfo.phone,
-      deliveryNotes: clientInfo.notes || clientInfo.additionalInfo
+    delivery: orderType.toUpperCase().includes('LIVRAISON') ? {
+      customerName: clientInfo?.name || (clientInfo as any)?.customer_name,
+      address: clientInfo?.address || (clientInfo as any)?.customer_address,
+      phone: clientInfo?.phone || (clientInfo as any)?.customer_phone,
+      deliveryNotes: clientInfo?.notes || clientInfo?.additionalInfo,
+      fee: deliveryFee
     } : undefined
   };
 
