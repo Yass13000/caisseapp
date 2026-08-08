@@ -14,7 +14,7 @@ export interface FormattedOptionGroup {
 }
 
 /**
- * 🟢 MAPPING ULTRA-ROBUSTE DEPUIS SUPABASE (OPTIONS STATIQUES ET DYNAMIQUES)
+ * 🟢 1. MAPPING DES OPTIONS (GROUPS & SANS)
  */
 export const fetchOptionGroupMapping = async (
   items: any[], 
@@ -130,7 +130,6 @@ export const fetchOptionGroupMapping = async (
         });
       }
     }
-
   } catch (e) {
     console.error("Erreur chargement mapping option groups :", e);
   }
@@ -139,7 +138,7 @@ export const fetchOptionGroupMapping = async (
 };
 
 /**
- * 🟢 FORMATEUR NETTOYÉ SANS AUCUN SYMBOLE DE DEUX-POINTS (:)
+ * 🟢 2. FORMATEUR DES OPTIONS POUR L'AFFICHAGE DU TICKET
  */
 export const getFormattedOrderOptions = (
   item: any, 
@@ -147,7 +146,6 @@ export const getFormattedOrderOptions = (
 ): FormattedOptionGroup[] => {
   let rawOptions: any[] = [];
 
-  // A. Boissons & Accompagnements
   if (item.boisson) {
     rawOptions.push({
       name: typeof item.boisson === 'string' ? item.boisson : (item.boisson.name || ''),
@@ -163,27 +161,18 @@ export const getFormattedOrderOptions = (
     });
   }
 
-  // B. Source unique d'options principale
   let primaryOpts: any[] = [];
-  if (Array.isArray(item.selectedSubOptions) && item.selectedSubOptions.length > 0) {
-    primaryOpts = item.selectedSubOptions;
-  } else if (Array.isArray(item.flatOptions) && item.flatOptions.length > 0) {
-    primaryOpts = item.flatOptions;
-  } else if (Array.isArray(item.options) && item.options.length > 0) {
-    primaryOpts = item.options;
-  } else if (Array.isArray(item.selections) && item.selections.length > 0) {
-    primaryOpts = item.selections;
-  } else if (Array.isArray(item.directSubOptions) && item.directSubOptions.length > 0) {
-    primaryOpts = item.directSubOptions;
-  }
+  if (Array.isArray(item.selectedSubOptions) && item.selectedSubOptions.length > 0) primaryOpts = item.selectedSubOptions;
+  else if (Array.isArray(item.flatOptions) && item.flatOptions.length > 0) primaryOpts = item.flatOptions;
+  else if (Array.isArray(item.options) && item.options.length > 0) primaryOpts = item.options;
+  else if (Array.isArray(item.selections) && item.selections.length > 0) primaryOpts = item.selections;
+  else if (Array.isArray(item.directSubOptions) && item.directSubOptions.length > 0) primaryOpts = item.directSubOptions;
 
   primaryOpts.forEach(sub => {
     if (!sub) return;
     if (sub.options && Array.isArray(sub.options)) {
       const grpName = sub.group_name || sub.name || sub.groupName;
-      sub.options.forEach(o => {
-        if (o) rawOptions.push({ ...o, group_name: o.group_name || grpName });
-      });
+      sub.options.forEach(o => { if (o) rawOptions.push({ ...o, group_name: o.group_name || grpName }); });
     } else if (typeof sub === 'object') {
       rawOptions.push(sub);
     } else if (typeof sub === 'string') {
@@ -194,7 +183,6 @@ export const getFormattedOrderOptions = (
   const optionsByCategory = new Map<string, FormattedOptionItem[]>();
   const processedSansNames = new Set<string>();
 
-  // C. Ingrédients retirés (SANS ...)
   const removedIngs = item.removedIngredients || item.product?.removedIngredients || [];
   if (Array.isArray(removedIngs) && removedIngs.length > 0) {
     const catKey = 'INGRÉDIENTS';
@@ -214,7 +202,6 @@ export const getFormattedOrderOptions = (
     });
   }
 
-  // D. Classement des options par groupe réel
   rawOptions.forEach(opt => {
     if (!opt) return;
     const rawName = typeof opt === 'string' ? opt : (opt.name || opt.option_name || opt.title || opt.value || '');
@@ -268,18 +255,145 @@ export const getFormattedOrderOptions = (
     }
   });
 
-  // 🟢 ASTUCE : Si la première option de chaque ligne est renvoyée sans nom de groupe, 
-  // on élimine la tentative du JSX d'écrire ":"
-  return Array.from(optionsByCategory.values()).map(items => {
-    return {
-      groupName: '', // Nom de groupe vide pour ne pas afficher d'étiquette ni de ':' parasite
-      items
-    };
-  });
+  return Array.from(optionsByCategory.values()).map(items => ({
+    groupName: '',
+    items
+  }));
 };
 
 /**
- * 🟢 FONCTION CENTRALISÉE DE MAPPING DES COMMANDES (TABLE 'orders') POUR L'IMPRESSION POS
+ * 🟢 3. FONCTION UNIQUE CENTRALISÉE — PAYLOAD TICKET CLIENT
+ */
+export const buildClientReceiptPayload = (params: {
+  restaurantId?: string | null;
+  restaurantInfo: { name?: string; restaurant_name?: string; address?: string | null; phone?: string | null; tva?: number; logoUrl?: string | null };
+  orderNumber: string;
+  orderType: string;
+  paymentMethod: string;
+  items: any[];
+  subtotal: number;
+  deliveryFee?: number;
+  finalTotal: number;
+  clientInfo?: any;
+  groupMapping?: Record<string, string>;
+  orderDate?: string;
+}) => {
+  const {
+    restaurantId,
+    restaurantInfo,
+    orderNumber,
+    orderType,
+    paymentMethod,
+    items,
+    deliveryFee = 0,
+    finalTotal,
+    clientInfo,
+    groupMapping = {},
+    orderDate
+  } = params;
+
+  // 💳 Normalisation basée sur les valeurs exactes Supabase
+  let rawPayment = String(paymentMethod || 'counter').trim();
+  const pLower = rawPayment.toLowerCase();
+
+  if (pLower === 'counter' || pLower.includes('espece') || pLower.includes('cash')) {
+    rawPayment = 'especes';
+  } else if (pLower.includes('carte') || pLower.includes('cb') || pLower.includes('card') || pLower.includes('sumup')) {
+    rawPayment = 'cb';
+  } else if (pLower.includes('ticket') || pLower.includes('resto')) {
+    rawPayment = 'ticket_resto';
+  } else if (pLower.includes('attente') || pLower.includes('pending')) {
+    rawPayment = 'en attente';
+  }
+  // Si c'est un paiement fractionné, rawPayment conserve sa chaîne complète ex: "Fractionné (Espèces: 20€ + CB: 4.7€)"
+
+  const formattedItems = items.map(item => {
+    const optionGroups = getFormattedOrderOptions(item, groupMapping);
+    const notes = optionGroups.flatMap(grp => grp.items.map(opt => ({
+      name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
+      price: opt.price || 0,
+      isSans: opt.isSans
+    })));
+    return {
+      qty: item.quantity || item.qty || 1,
+      name: item.product?.name || item.name || 'Produit',
+      unitPrice: item.price || item.product?.price || 0,
+      notes,
+      categoryName: item.product?.category_name || item.category || ''
+    };
+  });
+
+  const restoName = restaurantInfo?.restaurant_name || restaurantInfo?.name || 'VOTRE RESTAURANT';
+
+  return {
+    restaurant_id: restaurantId,
+    restaurantId: restaurantId,
+    orderType,
+    order_number: orderNumber,
+    orderNumber: orderNumber,
+    orderDate: orderDate || new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    restaurant_name: restoName,
+    restaurantName: restoName,
+    restaurantAddress: restaurantInfo?.address || null,
+    restaurantPhone: restaurantInfo?.phone || null,
+    restaurantLogoUrl: restaurantInfo?.logoUrl || null,
+    payment_method: rawPayment,
+    paymentMethod: rawPayment,
+    tva: restaurantInfo?.tva || 10,
+    items: formattedItems,
+    total_price: finalTotal,
+    total: finalTotal,
+    delivery: orderType.toUpperCase().includes('LIVRAISON') ? {
+      customerName: clientInfo?.name || clientInfo?.customer_name,
+      address: clientInfo?.address || clientInfo?.customer_address,
+      phone: clientInfo?.phone || clientInfo?.customer_phone,
+      deliveryNotes: clientInfo?.notes || clientInfo?.additionalInfo || clientInfo?.comment || '',
+      fee: deliveryFee
+    } : undefined
+  };
+};
+
+/**
+ * 🟢 4. FONCTION UNIQUE CENTRALISÉE — PAYLOAD BON CUISINE
+ */
+export const buildKitchenReceiptPayload = (params: {
+  orderNumber: string;
+  orderType: string;
+  items: any[];
+  groupMapping?: Record<string, string>;
+  orderDate?: string;
+}) => {
+  const { orderNumber, orderType, items, groupMapping = {}, orderDate } = params;
+
+  const formattedItems = items.map(item => {
+    const optionGroups = getFormattedOrderOptions(item, groupMapping);
+    const notes = optionGroups.flatMap(grp => grp.items.map(opt => ({
+      name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
+      isSans: opt.isSans
+    })));
+    return {
+      qty: item.quantity || item.qty || 1,
+      name: item.product?.name || item.name || 'Produit',
+      unitPrice: 0,
+      notes,
+      categoryName: item.product?.category_name || item.category || ''
+    };
+  });
+
+  return {
+    orderType: `CUISINE - ${orderType}`,
+    order_number: orderNumber,
+    orderNumber: orderNumber,
+    orderDate: orderDate || new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    restaurant_name: 'CUISINE',
+    restaurantName: 'CUISINE',
+    items: formattedItems,
+    total: 0
+  };
+};
+
+/**
+ * 🟢 5. MAPPING POUR UN OBJET DB 'ORDERS' DE SUPABASE
  */
 export const buildReceiptPayloadFromOrder = async (
   order: any,
@@ -288,7 +402,6 @@ export const buildReceiptPayloadFromOrder = async (
 ) => {
   if (!order) return null;
 
-  // 1. Parsing sécurisé des items (order_details)
   let rawItems: any[] = [];
   try {
     let details = typeof order.order_details === 'string' ? JSON.parse(order.order_details) : order.order_details;
@@ -300,40 +413,38 @@ export const buildReceiptPayloadFromOrder = async (
     rawItems = [];
   }
 
-  // 2. Résolution dynamique du restaurant depuis Supabase via restaurant_id
   let restoInfo = {
     name: 'VOTRE RESTAURANT',
+    restaurant_name: 'VOTRE RESTAURANT',
     address: null as string | null,
     phone: null as string | null,
     tva: 10,
     logoUrl: null as string | null
   };
 
-  const targetRestoId = order.restaurant_id || (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) || localStorage.getItem('pos_restaurant_id');
+  const targetRestoId = order.restaurant_id || localStorage.getItem('pos_restaurant_id');
 
   if (targetRestoId) {
     try {
       const { data: restoData } = await supabase
         .from('restaurants')
-        .select('name, address, phone, tva, logo_url')
+        .select('name, restaurant_name, address, phone, tva, logo_url')
         .eq('id', targetRestoId)
         .maybeSingle();
 
       if (restoData) {
         restoInfo = {
-          name: restoData.name || 'VOTRE RESTAURANT',
+          name: restoData.restaurant_name || restoData.name || 'VOTRE RESTAURANT',
+          restaurant_name: restoData.restaurant_name || restoData.name || 'VOTRE RESTAURANT',
           address: restoData.address || null,
           phone: restoData.phone || null,
           tva: (restoData.tva !== null && restoData.tva !== undefined) ? Number(restoData.tva) : 10,
           logoUrl: restoData.logo_url || null
         };
       }
-    } catch (e) {
-      console.error("[buildReceiptPayloadFromOrder] Erreur fetch restaurant:", e);
-    }
+    } catch (e) {}
   }
 
-  // 3. Résolution du type de commande (order_type_id) vers son libellé lisible
   const ORDER_TYPE_LABELS: Record<string, string> = {
     '633425b1-f86c-4c17-8cba-b258906ad317': 'SUR PLACE',
     '2cac3f10-73e2-40a5-a7e0-053bd861b4d9': 'EMPORTER',
@@ -347,56 +458,23 @@ export const buildReceiptPayloadFromOrder = async (
 
   const finalOrderType = prefixOrderType ? `${prefixOrderType} - ${rawTypeLabel}` : rawTypeLabel;
 
-  // 4. Formattage des articles et de leurs options
-  const formattedItems = rawItems.map((item: any) => {
-    const groups = getFormattedOrderOptions(item, optionGroupMapping);
-    const notes = groups.flatMap(grp => grp.items.map(opt => ({
-      name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
-      price: opt.price || 0,
-      isSans: opt.isSans
-    })));
-
-    const extractProductName = (it: any) => {
-      if (!it) return 'Produit';
-      if (it.product && it.product.name) return it.product.name;
-      if (it.name) return it.name;
-      if (it.title) return it.title;
-      return 'Produit';
-    };
-
-    return {
-      qty: Number(item.quantity || item.qty || 1),
-      name: extractProductName(item),
-      unitPrice: Number(item.price || item.product?.price || 0),
-      notes,
-      categoryName: item.product?.category_name || item.category || ''
-    };
-  });
-
-  const isLivraison = rawTypeLabel.includes('LIVRAISON');
-  const custName = order.customer_name || order.client_name || order.delivery?.customerName;
-  const custAddr = order.customer_address || order.delivery?.address;
-  const custPhone = order.customer_phone || order.delivery?.phone;
-  const deliveryFeeNum = Number(order.delivery_fee || order.deliveryFee || order.delivery?.fee || 0);
-
-  return {
+  return buildClientReceiptPayload({
     restaurantId: targetRestoId,
-    orderType: finalOrderType,
+    restaurantInfo: restoInfo,
     orderNumber: String(order.order_number || order.number || order.id || '001'),
-    orderDate: new Date(order.created_at || Date.now()).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-    restaurantName: restoInfo.name,
-    restaurantAddress: restoInfo.address,
-    restaurantPhone: restoInfo.phone,
-    restaurantLogoUrl: restoInfo.logoUrl,
-    tva: restoInfo.tva,
-    items: formattedItems,
-    total: Number(order.total_price || order.total || 0),
-    delivery: isLivraison && (custName || custAddr || custPhone) ? {
-      customerName: custName,
-      address: custAddr,
-      phone: custPhone,
-      deliveryNotes: order.delivery_notes || order.notes || order.delivery?.deliveryNotes || '',
-      fee: deliveryFeeNum
-    } : undefined
-  };
+    orderType: finalOrderType,
+    paymentMethod: order.payment_method || order.paymentMethod || 'especes',
+    items: rawItems,
+    subtotal: Number(order.total_price || order.total || 0),
+    deliveryFee: Number(order.delivery_fee || 0),
+    finalTotal: Number(order.total_price || order.total || 0),
+    clientInfo: {
+      name: order.customer_name,
+      phone: order.customer_phone,
+      address: order.customer_address,
+      notes: order.comment
+    },
+    groupMapping: optionGroupMapping,
+    orderDate: order.created_at ? new Date(order.created_at).toLocaleString('fr-FR') : undefined
+  });
 };

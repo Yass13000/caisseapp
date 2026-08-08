@@ -355,6 +355,9 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 // ----------------------------------------------------------------------------
 // 📜 GÉNÉRATEUR TICKET CAISSE (CLIENT) - LIGNES CONTINUES & MODE DE PAIEMENT
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// 📜 TICKET CLIENT — MAPPING STRICT SUR PUBLIC.ORDERS
+// ----------------------------------------------------------------------------
 async function buildReceiptHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
 
@@ -378,7 +381,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const footerMessage = escapeHtml(settings.footer_custom_message || 'Merci de votre visite !\nA bientôt.');
   const showQrCode = settings.show_qr_code === 'true';
 
-  const currentRestaurantId = orderData.restaurantId || orderData.restaurant_id || settings.pos_restaurant_id;
+  const currentRestaurantId = orderData.restaurant_id || orderData.restaurantId || settings.pos_restaurant_id;
 
   const logoTargetUrl = (showLogo && (orderData.restaurantLogoUrl || orderData.logo_url)) 
     ? String(orderData.restaurantLogoUrl || orderData.logo_url) 
@@ -387,12 +390,12 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const logoDataUrl = logoTargetUrl ? await getCachedLogoDataUrl(logoTargetUrl, currentRestaurantId) : '';
   
   const logoHtml = logoDataUrl 
-    ? `<div style="text-align: center; margin-bottom: 6px;"><img src="${logoDataUrl}" style="max-width: 30%; max-height: 40px; filter: grayscale(100%);" /></div>` 
+    ? `<div style="text-align: center; width: 100%; margin-bottom: 6px;"><img src="${logoDataUrl}" style="max-width: 30%; max-height: 40px; display: block; margin: 0 auto; filter: grayscale(100%);" /></div>` 
     : '';
 
   const restaurantName = escapeHtml(
-    orderData.restaurantName || 
     orderData.restaurant_name || 
+    orderData.restaurantName || 
     orderData.name || 
     settings.restaurant_name || 
     'VOTRE RESTAURANT'
@@ -401,31 +404,47 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const restaurantPhone = escapeHtml(orderData.restaurantPhone || orderData.phone || '');
   
   const cleanOrderNumber = escapeHtml(
-    String(orderData.orderNumber || orderData.number || orderData.id || '001')
+    String(orderData.order_number || orderData.orderNumber || orderData.id || '001')
       .toUpperCase()
       .replace(/^CMD\s*#?/i, '')
       .trim()
   );
-  const orderDate = escapeHtml(orderData.orderDate || new Date().toLocaleString('fr-FR'));
+  const orderDate = escapeHtml(orderData.orderDate || (orderData.created_at ? new Date(orderData.created_at).toLocaleString('fr-FR') : new Date().toLocaleString('fr-FR')));
   
   let orderTypeLabel = 'SUR PLACE';
   const rawType = String(orderData.orderType || '').toLowerCase();
   if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'A EMPORTER';
   if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
 
-  // 💳 ÉXTRACTION ET FORMATAGE DU MODE DE PAIEMENT
-  const rawPayment = orderData.paymentMethod || orderData.payment_method || orderData.payment_mode || '';
-  let paymentLabel = '';
-  if (rawPayment) {
-    const pLower = String(rawPayment).toLowerCase();
-    if (pLower.includes('cash') || pLower.includes('espece')) paymentLabel = 'ESPÈCES';
-    else if (pLower.includes('card') || pLower.includes('cb') || pLower.includes('carte')) paymentLabel = 'CARTE BANCAIRE';
-    else if (pLower.includes('ticket') || pLower.includes('resto')) paymentLabel = 'TICKET RESTAURANT';
-    else paymentLabel = escapeHtml(String(rawPayment).toUpperCase());
+  // 💳 DÉTECTION ET NORMALISATION STRICTE DU MODE DE RÈGLEMENT
+  const rawPayment = String(
+    orderData.payment_method ?? 
+    orderData.paymentMethod ?? 
+    orderData.payment_mode ?? 
+    'counter'
+  ).trim();
+
+  const normalizedStr = rawPayment
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  let paymentLabel = 'ESPÈCES';
+
+  if (normalizedStr === 'counter' || normalizedStr.includes('counter') || normalizedStr.includes('espece') || normalizedStr.includes('cash')) {
+    paymentLabel = 'ESPÈCES';
+  } else if (normalizedStr.includes('carte') || normalizedStr.includes('cb') || normalizedStr.includes('card') || normalizedStr.includes('sumup')) {
+    paymentLabel = 'CARTE BANCAIRE';
+  } else if (normalizedStr.includes('ticket') || normalizedStr.includes('resto')) {
+    paymentLabel = 'TICKET RESTAURANT';
+  } else if (normalizedStr.includes('attente') || normalizedStr.includes('pending')) {
+    paymentLabel = 'EN ATTENTE';
+  } else if (rawPayment !== '') {
+    paymentLabel = escapeHtml(rawPayment.toUpperCase());
   }
 
-  const items = Array.isArray(orderData.items) ? orderData.items : [];
-  const totalNum = Number(orderData.total || orderData.total_price || 0);
+  const items = Array.isArray(orderData.items) ? orderData.items : (Array.isArray(orderData.order_details) ? orderData.order_details : []);
+  const totalNum = Number(orderData.total_price ?? orderData.total ?? 0);
   const total = totalNum.toFixed(2);
 
   const itemsHtml = items.map(item => {
@@ -472,13 +491,13 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const custName = escapeHtml(d.customerName || d.name || orderData.customer_name || '');
   const custAddress = escapeHtml(d.address || orderData.customer_address || '');
   const custPhone = escapeHtml(d.phone || orderData.customer_phone || '');
-  const custNotes = escapeHtml(d.deliveryNotes || d.notes || orderData.delivery_notes || orderData.comment || '');
+  const custNotes = escapeHtml(d.deliveryNotes || d.notes || orderData.comment || '');
 
   const isLivraison = orderTypeLabel.includes('LIVRAISON') || rawType.includes('livraison') || rawType.includes('delivery');
   const hasClientInfo = !!(custName || custAddress || custPhone);
 
   if (isLivraison && hasClientInfo) {
-    const deliveryFeeNum = Number(d.fee || d.delivery_fee || orderData.delivery_fee || orderData.deliveryFee || 0);
+    const deliveryFeeNum = Number(d.fee || d.delivery_fee || orderData.delivery_fee || 0);
     deliveryBlockHtml = `
       <div class="delivery-block" style="background-color: black; color: white; font-weight: bold; padding: 6px 8px; margin: 8px 0; border-radius: 2px; -webkit-print-color-adjust: exact;">
         <div style="text-align: center; border-bottom: 1px solid white; padding-bottom: 3px; margin-bottom: 4px; font-size: 12px; text-transform: uppercase;">
@@ -502,7 +521,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     const ht = (totalNum / divisor).toFixed(2);
     const tvaAmount = (totalNum - totalNum / divisor).toFixed(2);
     taxDetailsHtml = `
-      <div style="font-size: 10px; margin-top: 4px;">
+      <div style="font-size: 10px; font-weight: normal; margin-top: 4px;">
         <div style="display: flex; justify-content: space-between;"><span>Sous-total HT:</span><span>${ht} €</span></div>
         <div style="display: flex; justify-content: space-between;"><span>TVA (${tvaRate}%):</span><span>${tvaAmount} €</span></div>
       </div>
@@ -516,8 +535,8 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     try {
       const qrDataUrl = await QRCode.toDataURL(qrUrl, { margin: 1, width: 110 });
       qrCodeHtml = `
-        <div style="text-align: center; margin-top: 10px;">
-          <img src="${qrDataUrl}" style="width: 100px; height: 100px;" />
+        <div style="text-align: center; width: 100%; margin: 10px auto 0 auto;">
+          <img src="${qrDataUrl}" style="width: 100px; height: 100px; display: block; margin: 0 auto;" />
         </div>
       `;
     } catch (e) {
@@ -531,10 +550,9 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
       <head>
         <meta charset="utf-8">
         <style>
-          body { font-family: monospace; font-size: ${fontSize}; margin: 0; padding: ${bodyPadding}; width: ${bodyWidth}; color: black; line-height: 1.2; }
-          .center { text-align: center; }
+          body { font-family: monospace; font-size: ${fontSize}; margin: 0; padding: ${bodyPadding}; width: ${bodyWidth}; color: black; line-height: 1.2; text-align: left; }
+          .center { text-align: center; width: 100%; }
           .bold { font-weight: bold; }
-          /* ➖ Lignes de séparation continues solides */
           hr { border: none; border-top: 1px solid black; margin: 6px 0; }
         </style>
       </head>
@@ -555,31 +573,35 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
         ${deliveryBlockHtml}
 
         <hr />
+
         ${taxDetailsHtml}
-        <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 900; margin: 4px 0;">
+
+        <!-- 💳 MODE DE RÈGLEMENT APPRÊTÉ SOUS LA TVA (NON GRAS & TAILLE 10PX) -->
+        <div style="display: flex; justify-content: space-between; font-size: 10px; font-weight: normal; margin-top: 2px;">
+          <span>Mode de règlement:</span>
+          <span>${paymentLabel}</span>
+        </div>
+
+        <!-- 💶 TOTAL TTC (GRAND & EN GRAS) -->
+        <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 900; margin-top: 6px;">
           <span>TOTAL TTC</span>
           <span>${total} €</span>
         </div>
 
-        ${paymentLabel ? `
-          <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: bold; margin-bottom: 4px;">
-            <span>MODE DE RÈGLEMENT</span>
-            <span>${paymentLabel}</span>
-          </div>
-        ` : ''}
-
         <hr />
 
-        <div class="center" style="margin: 6px 0;">
-          <div style="font-size: 15px; font-weight: 900;">Commande : ${cleanOrderNumber}</div>
-          <div style="font-size: 13px; font-weight: bold; margin-top: 2px;">*** ${orderTypeLabel} ***</div>
+        <!-- 📌 N° COMMANDE & SUR PLACE -->
+        <div style="text-align: center; width: 100%; margin: 8px auto 4px auto;">
+          <div style="font-size: 15px; font-weight: 900; text-align: center; width: 100%;">Commande : ${cleanOrderNumber}</div>
+          <div style="font-size: 13px; font-weight: bold; text-align: center; width: 100%; margin-top: 2px;">*** ${orderTypeLabel} ***</div>
         </div>
 
         ${(showFooterMessage || showQrCode) ? '<hr />' : ''}
 
+        <!-- 💬 PIED DE TICKET CENTRÉ PROPREMENT -->
         ${showFooterMessage ? `
-          <div class="center" style="font-size: 11px; margin-top: 6px; white-space: pre-wrap;">
-            ${footerMessage}
+          <div style="text-align: center; width: 100%; margin: 8px auto 4px auto;">
+            <div style="font-size: 11px; font-weight: normal; text-align: center; width: 100%; white-space: pre-wrap; word-break: break-word;">${footerMessage}</div>
           </div>
         ` : ''}
 

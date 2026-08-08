@@ -2,9 +2,9 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
-import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, Printer } from 'lucide-react';
+import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, Printer, ChefHat } from 'lucide-react';
 import { toast } from 'sonner';
-import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder } from '@/lib/orderFormatter';
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload } from '@/lib/orderFormatter';
 
 interface OrderHistoryModalProps {
   onClose: () => void;
@@ -176,6 +176,41 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     } catch (err) {
         console.error("Erreur impression historique :", err);
         toast.error("Erreur lors de la génération du ticket");
+    }
+  };
+
+  const handlePrintKitchenOrder = async (order: any) => {
+    if (!(window as any).electronAPI) return;
+
+    try {
+      const items = extractItemsSafely(order.order_details);
+      if (!items || items.length === 0) {
+        toast.error("Impossible d'imprimer : détails de commande vides.");
+        return;
+      }
+
+      const date = new Date(order.created_at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const orderNumber = order.order_number || order.id.toString().slice(0, 4);
+      
+      let orderType = 'SUR PLACE';
+      if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') orderType = 'EMPORTER';
+      if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') orderType = 'LIVRAISON';
+
+      const printerName = localStorage.getItem('imprimante_cuisine') || undefined;
+      const kitchenPayload = buildKitchenReceiptPayload({
+        orderNumber,
+        orderType,
+        items,
+        groupMapping: optionGroupMapping,
+        orderDate: date
+      });
+
+      const result = await (window as any).electronAPI.printReceipt(kitchenPayload, printerName);
+      if (!result.success) toast.error("Erreur avec l'imprimante cuisine !");
+      else toast.success("Bon cuisine imprimé");
+    } catch (err) {
+      console.error("Erreur impression cuisine historique :", err);
+      toast.error("Erreur lors de l'impression du bon cuisine");
     }
   };
 
@@ -359,6 +394,14 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
                               title="Imprimer un duplicata"
                             >
                               <Printer size={18} />
+                            </button>
+
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); handlePrintKitchenOrder(order); }}
+                              className="p-2 border-2 border-gray-200 text-gray-500 rounded-lg hover:border-orange-500 hover:text-orange-500 hover:bg-orange-50 transition-all active:scale-95"
+                              title="Imprimer le bon cuisine"
+                            >
+                              <ChefHat size={18} />
                             </button>
                             
                             <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all shadow-sm inline-flex ${

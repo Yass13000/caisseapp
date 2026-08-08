@@ -2,9 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
-import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, CreditCard, Trash2 } from 'lucide-react';
+import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, CreditCard, Trash2, Banknote } from 'lucide-react';
 import { toast } from 'sonner';
-import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder } from '@/lib/orderFormatter';
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload } from '@/lib/orderFormatter';
+import { PaymentModal } from '@/pages/Caisse';
 
 interface OrderTrackerModalProps {
   onClose: () => void;
@@ -47,7 +48,9 @@ const ORDER_TYPE_LABELS = {
 const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTAURANT" }: OrderTrackerModalProps) => {
   const [orders, setOrders] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [expandedOrderId, setExpandedOrderId] = useState<string | number | null>(null);
+  const [paymentOrder, setPaymentOrder] = useState<any | null>(null);
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [optionGroupMapping, setOptionGroupMapping] = useState<Record<string, string>>({});
   
   const getLocalToday = () => {
@@ -252,19 +255,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     if (!(window as any).electronAPI) return;
 
     try {
-      let items = typeof order.order_details === 'string' ? JSON.parse(order.order_details) : order.order_details;
-      if (!Array.isArray(items)) items = items.items || items.cart || [items];
-
       const printerName = localStorage.getItem('imprimante_caisse') || undefined;
-      const receiptWidth = localStorage.getItem('receipt_width') || '72';
-
-      const date = new Date(order.created_at || Date.now()).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const orderNumber = order.order_number || order.id.toString().slice(0, 4);
-      
-      let orderType = 'SUR PLACE';
-      if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') orderType = 'EMPORTER';
-      if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') orderType = 'LIVRAISON';
-
       const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping);
 
       await (window as any).electronAPI.printReceipt(orderPayloadData, printerName);
@@ -281,8 +272,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       if (!Array.isArray(items)) items = items.items || items.cart || [items];
 
       const printerName = localStorage.getItem('imprimante_cuisine') || undefined;
-      const receiptWidth = localStorage.getItem('receipt_width') || '72';
-
       const date = new Date(order.created_at || Date.now()).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const orderNumber = order.order_number || order.id.toString().slice(0, 4);
       
@@ -290,48 +279,15 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') orderType = 'EMPORTER';
       if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') orderType = 'LIVRAISON';
 
-      const itemsHtml = items.map((item: any) => {
-        const productName = extractProductName(item);
-        let html = `
-          <div style="margin-bottom: 4px; font-size: 16px; line-height: 1.2;">
-            <span style="font-weight: 900; font-size: 18px;">${item.quantity || 1}x</span> 
-            <span style="font-weight: bold;">${productName}</span>
-          </div>
-        `;
-        const groups = getFormattedOrderOptions(item, optionGroupMapping);
-        if (groups.length > 0) {
-          groups.forEach(grp => {
-            grp.items.forEach(opt => {
-              html += `
-                <div style="font-size: 13px; font-weight: bold; padding-left: 20px; line-height: 1.1; margin-bottom: 2px;">
-                  - ${grp.groupName}: ${opt.name}
-                </div>
-              `;
-            });
-          });
-        }
-        html += `<div style="height: 5px;"></div>`;
-        return html;
-      }).join('');
+      const kitchenPayload = buildKitchenReceiptPayload({
+        orderNumber,
+        orderType,
+        items,
+        groupMapping: optionGroupMapping,
+        orderDate: date
+      });
 
-      const receiptHtml = `
-        <div style="width: ${receiptWidth}mm; margin: 0 auto; padding: 0 2mm; box-sizing: border-box; font-family: monospace; color: black;">
-          <div style="text-align: center; margin-bottom: 15px;">
-            <h2 style="margin: 0; font-size: 24px; font-weight: 900; text-transform: uppercase;">CUISINE / SAC</h2>
-            <p style="margin: 2px 0; font-size: 12px;">${date}</p>
-            <p style="margin: 10px 0; font-size: 22px; font-weight: 900; padding: 5px; border: 3px solid black;">CMD : ${orderNumber}</p>
-            <p style="margin: 5px 0; font-size: 18px; font-weight: bold; text-transform: uppercase;">${orderType}</p>
-          </div>
-          <hr style="border-top: 2px dashed black; margin: 10px 0;" />
-          <div style="margin-bottom: 10px;">${itemsHtml}</div>
-          <hr style="border-top: 2px dashed black; margin: 10px 0;" />
-          <div style="text-align: center; margin-top: 15px; font-size: 14px; font-weight: bold;">
-            *** FIN DE COMMANDE ***
-          </div>
-        </div>
-      `;
-
-      await (window as any).electronAPI.printReceipt(receiptHtml, printerName);
+      await (window as any).electronAPI.printReceipt(kitchenPayload, printerName);
     } catch (err) {
       console.error("Erreur API impression cuisine :", err);
     }
@@ -368,6 +324,55 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       setOrders(prevOrders => prevOrders.filter(o => o.id !== order.id));
     } catch (err) {
       toast.error("Erreur lors de l'encaissement rapide");
+    }
+  };
+
+  const handleOpenCashPaymentModal = (e: React.MouseEvent, order: any) => {
+    e.stopPropagation();
+    setPaymentOrder(order);
+    setIsPaymentModalOpen(true);
+  };
+
+  const handleCashPaymentConfirm = async (method: string, cashAmount: number) => {
+    if (!paymentOrder) return;
+    setIsProcessing(true);
+    try {
+      const { error } = await supabase
+        .from('orders')
+        .update({
+          is_paid: true,
+          payment_status: 'paid',
+          payment_method: method,
+          cash_amount: cashAmount
+        })
+        .eq('id', paymentOrder.id);
+
+      if (error) throw error;
+
+      toast.success(`Commande #${paymentOrder.order_number || paymentOrder.id.toString().slice(0, 4)} encaissée`);
+
+      const updatedOrder = { ...paymentOrder, payment_method: method, cash_amount: cashAmount, is_paid: true, payment_status: 'paid' };
+
+      const isAutoPrintReceiptEnabled = localStorage.getItem('auto_print_receipt') !== 'false';
+      if (isAutoPrintReceiptEnabled) {
+        await printOrder(updatedOrder, false);
+      }
+
+      const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
+      if (isKitchenTicketEnabled) {
+        setTimeout(async () => {
+          await printKitchenTicket(updatedOrder);
+        }, 500);
+      }
+
+      setOrders(prevOrders => prevOrders.filter(o => o.id !== paymentOrder.id));
+      setIsPaymentModalOpen(false);
+      setPaymentOrder(null);
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur lors de l'enregistrement du paiement");
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -557,9 +562,12 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                             <button onClick={(e) => { e.stopPropagation(); handleSelectOrder(order); }} className="h-10 px-4 bg-secondary text-white rounded-lg font-black uppercase text-xs hover:bg-secondary/90 active:scale-95 transition-all shadow-sm flex items-center justify-center flex-shrink-0" title="Ouvrir en caisse">
                               Ouvrir
                             </button>
-                            <button onClick={(e) => handleQuickPay(e, order)} className="h-10 px-3 bg-[#04B855] text-white rounded-lg font-black uppercase text-xs hover:bg-[#039d48] active:scale-95 transition-all shadow-sm flex items-center gap-1 flex-shrink-0" title="Payer directement par CB">
-                              <CreditCard size={16} /> CB
-                            </button>
+                            <button onClick={(e) => handleOpenCashPaymentModal(e, order)} className="h-10 px-3 bg-amber-500 text-white rounded-lg font-black uppercase text-xs hover:bg-amber-600 active:scale-95 transition-all shadow-sm flex items-center gap-1 flex-shrink-0" title="Payer en espèces (avec rendu)">
+                               <Banknote size={16} /> Espèces
+                             </button>
+                             <button onClick={(e) => handleQuickPay(e, order)} className="h-10 px-3 bg-[#04B855] text-white rounded-lg font-black uppercase text-xs hover:bg-[#039d48] active:scale-95 transition-all shadow-sm flex items-center gap-1 flex-shrink-0" title="Payer directement par CB">
+                               <CreditCard size={16} /> CB
+                             </button>
                           </td>
                         </tr>
                         {expandedOrderId === order.id && (

@@ -6,7 +6,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
 import { useCart } from '@/context/CartContext';
 import { toast } from "sonner";
-import { getFormattedOrderOptions, fetchOptionGroupMapping } from '@/lib/orderFormatter';
+import { 
+  getFormattedOrderOptions, 
+  fetchOptionGroupMapping, 
+  buildClientReceiptPayload, 
+  buildKitchenReceiptPayload 
+} from '@/lib/orderFormatter';
+
 import { 
   Trash2, Delete, ShoppingBag, Settings, Lock, 
   ClipboardList, History, Package, Wifi, WifiOff,
@@ -26,7 +32,6 @@ import StockModal from '@/components/StockModal';
 import OrdersDashboardModal from '@/components/OrdersDashboardModal';
 import NewtonsCradleLoader from '@/components/NewtonsCradleLoader';
 import CashSessionModal from '@/components/CashSessionModal';
-
 import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse'; 
 
 export interface Product {
@@ -107,97 +112,71 @@ const openCashDrawer = async () => {
   }
 };
 
-const generateAndPrintReceipt = async (restaurantInfo: { name: string; address: string | null; phone: string | null; tva: number; logoUrl?: string | null }, orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, deliveryFee: number, finalTotal: number, cashAmount: number, clientInfo?: { name?: string; phone?: string; address?: string; notes?: string; additionalInfo?: string } | null, groupMapping: Record<string, string> = {}) => {
+// 🟢 IMPRESSION TICKET CLIENT CENTRALISÉE
+const generateAndPrintReceipt = async (
+  restaurantInfo: any, 
+  orderNumber: string, 
+  orderType: string, 
+  paymentMethod: string, 
+  items: any[], 
+  subtotal: number, 
+  deliveryFee: number, 
+  finalTotal: number, 
+  cashAmount: number, 
+  clientInfo?: any, 
+  groupMapping: Record<string, string> = {}
+) => {
   if (!(window as any).electronAPI) return;
   const printerName = getSecureSetting('imprimante_caisse', undefined) || undefined;
-  const receiptWidth = getSecureSetting('receipt_width', '72');
-  
-  const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const isCash = paymentMethod === 'counter' || paymentMethod.toLowerCase().includes('espèces') || paymentMethod.toLowerCase().includes('especes');
-  const isPending = paymentMethod === 'en attente' || paymentMethod.toLowerCase().includes('attente');
-  const changeDue = Math.max(0, cashAmount - finalTotal);
 
-  const tvaRate = restaurantInfo.tva || 10;
-  const totalHT = finalTotal / (1 + tvaRate / 100);
-
-  const formattedItems = items.map(item => {
-    const optionGroups = getFormattedOrderOptions(item, groupMapping);
-    const notes = optionGroups.flatMap(grp => grp.items.map(opt => ({
-      name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
-      price: opt.price || 0,
-      isSans: opt.isSans
-    })));
-    return {
-      qty: item.quantity || 1,
-      name: item.product?.name || item.name || 'Produit',
-      unitPrice: item.price || item.product?.price || 0,
-      notes,
-      categoryName: item.product?.category_name || item.category || ''
-    };
-  });
-
-  const orderPayloadData = {
+  const orderPayloadData = buildClientReceiptPayload({
     restaurantId: getActiveRestaurantId(),
-    orderType,
+    restaurantInfo,
     orderNumber,
-    orderDate: date,
-    restaurantName: (restaurantInfo as any)?.restaurant_name || restaurantInfo?.name,
-    restaurantAddress: restaurantInfo.address,
-    restaurantPhone: restaurantInfo.phone,
-    restaurantLogoUrl: restaurantInfo.logoUrl,
-    tva: tvaRate,
-    items: formattedItems,
-    total: finalTotal,
-    delivery: orderType.toUpperCase().includes('LIVRAISON') ? {
-      customerName: clientInfo?.name || (clientInfo as any)?.customer_name,
-      address: clientInfo?.address || (clientInfo as any)?.customer_address,
-      phone: clientInfo?.phone || (clientInfo as any)?.customer_phone,
-      deliveryNotes: clientInfo?.notes || clientInfo?.additionalInfo,
-      fee: deliveryFee
-    } : undefined
-  };
+    orderType,
+    paymentMethod,
+    items,
+    subtotal,
+    deliveryFee,
+    finalTotal,
+    clientInfo,
+    groupMapping
+  });
 
   try {
     const result = await (window as any).electronAPI.printReceipt(orderPayloadData, printerName);
-    if (!result.success) toast.error("Erreur avec l'imprimante caisse !");
-  } catch (error) { console.error("Erreur API impression :", error); }
+    if (!result?.success) toast.error("Erreur avec l'imprimante caisse !");
+  } catch (error) { 
+    console.error("Erreur API impression caisse :", error); 
+  }
 };
 
-const generateAndPrintKitchenTicket = async (orderNumber: string, orderType: string, items: any[], groupMapping: Record<string, string> = {}) => {
+// 👨‍🍳 IMPRESSION BON CUISINE CENTRALISÉE
+const generateAndPrintKitchenTicket = async (
+  orderNumber: string, 
+  orderType: string, 
+  items: any[], 
+  groupMapping: Record<string, string> = {}
+) => {
   if (!(window as any).electronAPI) return;
   const printerName = getSecureSetting('imprimante_cuisine', undefined) || undefined;
-  const date = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-  const formattedItems = items.map(item => {
-    const optionGroups = getFormattedOrderOptions(item, groupMapping);
-    const notes = optionGroups.flatMap(grp => grp.items.map(opt => ({
-      name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
-      isSans: opt.isSans
-    })));
-    return {
-      qty: item.quantity || 1,
-      name: item.product?.name || item.name || 'Produit',
-      unitPrice: 0,
-      notes
-    };
-  });
-
-  const kitchenPayloadData = {
-    orderType: `CUISINE - ${orderType}`,
+  const kitchenPayloadData = buildKitchenReceiptPayload({
     orderNumber,
-    orderDate: date,
-    restaurantName: 'CUISINE (SAC)',
-    items: formattedItems,
-    total: 0
-  };
+    orderType,
+    items,
+    groupMapping
+  });
 
   try {
     const result = await (window as any).electronAPI.printReceipt(kitchenPayloadData, printerName);
-    if (!result.success) toast.error("Erreur avec l'imprimante cuisine !");
-  } catch (error) { console.error("Erreur API impression cuisine :", error); }
+    if (!result?.success) toast.error("Erreur avec l'imprimante cuisine !");
+  } catch (error) { 
+    console.error("Erreur API impression cuisine :", error); 
+  }
 };
 
-const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing }: any) => {
+export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing }: any) => {
   const roundedSubtotal = parseFloat(subtotal.toFixed(2));
   const [remaining, setRemaining] = useState(roundedSubtotal);
   const [tenderedStr, setTenderedStr] = useState("");
@@ -232,9 +211,11 @@ const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing 
     setTenderedStr("");
 
     if (nextRemaining <= 0) {
-      const finalMethod = updatedLines.map(l => `${l.method}: ${l.amount}€`).join(' + ');
+      const finalMethod = updatedLines.length > 1 
+        ? `Fractionné (${updatedLines.map(l => `${l.method}: ${l.amount}€`).join(' + ')})` 
+        : (method === 'CB' ? 'cb' : 'especes');
       const totalCash = updatedLines.filter(l => l.method === 'Espèces').reduce((sum, l) => sum + l.amount, 0);
-      onConfirm(updatedLines.length > 1 ? `Fractionné (${finalMethod})` : (method === 'CB' ? 'carte bancaire' : 'counter'), totalCash);
+      onConfirm(finalMethod, totalCash);
     } else {
       setRemaining(nextRemaining);
     }
@@ -381,11 +362,12 @@ const Caisse = () => {
 
   const [restaurantLogo, setRestaurantLogo] = useState<string | null>(null);
   const [restaurantName, setRestaurantName] = useState<string>("VOTRE RESTAURANT");
-  const [restaurantInfo, setRestaurantInfo] = useState<{ name: string; address: string | null; phone: string | null; tva: number }>({
+  const [restaurantInfo, setRestaurantInfo] = useState<{ name: string; address: string | null; phone: string | null; tva: number; logoUrl?: string | null }>({
     name: 'VOTRE RESTAURANT',
     address: null,
     phone: null,
     tva: 10,
+    logoUrl: null
   });
   const [themeColors, setThemeColors] = useState({ primary: '#04B855', secondary: '#1f2937', accent: '#FBBF24' });
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -433,9 +415,8 @@ const Caisse = () => {
   const [optionGroupMapping, setOptionGroupMapping] = useState<Record<string, string>>({});
 
   const customToast = (msg: string, type: 'success' | 'error' = 'success', options = {}) => 
-  toast[type](msg, { duration: 800, ...options });
+    toast[type](msg, { duration: 800, ...options });
 
-  // 🟢 Chargement dynamique du mapping pour la caisse
   useEffect(() => {
     const loadMapping = async () => {
       if (cartState.items && cartState.items.length > 0) {
@@ -455,7 +436,7 @@ const Caisse = () => {
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOffline(false);
+    const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     return () => { clearInterval(timer); window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
@@ -527,7 +508,7 @@ const Caisse = () => {
     if (isAuthenticated && posRestoId) {
       const checkCashSession = async () => {
         try {
-          const { data, error } = await supabase
+          const { data } = await supabase
             .from('cash_sessions')
             .select('id')
             .eq('status', 'OPEN')
@@ -605,15 +586,14 @@ const Caisse = () => {
     const init = async () => {
       setIsLoading(true);
       try {
-        if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') throw new Error("ID manquant");
-        
-        const { data: restoData } = await supabase.from('restaurants').select('name, address, phone, tva, logo_url, theme_primary, theme_secondary, theme_accent, allow_dine_in, allow_takeaway, allow_delivery').eq('id', activeRestoId).single();
+        const { data: restoData } = await supabase.from('restaurants').select('name, restaurant_name, address, phone, tva, logo_url, theme_primary, theme_secondary, theme_accent, allow_dine_in, allow_takeaway, allow_delivery').eq('id', activeRestoId).single();
         if (restoData) {
-          if (restoData.name) setRestaurantName(restoData.name);
+          const finalRestoName = restoData.restaurant_name || restoData.name || 'VOTRE RESTAURANT';
+          setRestaurantName(finalRestoName);
           if (restoData.logo_url) setRestaurantLogo(restoData.logo_url);
           const tvaRate = (restoData.tva !== null && restoData.tva !== undefined) ? Number(restoData.tva) : 10;
           setRestaurantInfo({
-            name: restoData.name || 'VOTRE RESTAURANT',
+            name: finalRestoName,
             address: restoData.address || null,
             phone: restoData.phone || null,
             tva: tvaRate,
@@ -795,7 +775,8 @@ const Caisse = () => {
     setInitialSelections(null);
   };
 
-  const finalizePayment = async (method: 'carte bancaire' | 'counter' | string, cashAmount: number = 0) => {
+  // 🟢 ENCAISSEMENT & IMPRESSION AUTOMATIQUE AU PAIEMENT
+  const finalizePayment = async (method: string, cashAmount: number = 0) => {
     if (cartState.items.length === 0) return;
     
     if (!currentSessionId) {
@@ -839,6 +820,7 @@ const Caisse = () => {
       if ((window as any).electronAPI?.saveOfflineOrder) {
         await (window as any).electronAPI.saveOfflineOrder(orderPayload);
         customToast(`Encaissé (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
+        
         const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
         if (isAutoPrintReceiptEnabled) {
           await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
@@ -899,11 +881,13 @@ const Caisse = () => {
 
       customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
 
+      // 🖨️ Impression Ticket Client (si activée dans Réglages)
       const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
       if (isAutoPrintReceiptEnabled) {
         await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
       }
       
+      // 🖨️ Impression Bon Cuisine (si activée dans Réglages)
       const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
       if (isKitchenTicketEnabled && !loadedOrderId) {
         setTimeout(async () => {
@@ -949,6 +933,7 @@ const Caisse = () => {
     }
   };
 
+  // ⏳ BOUTON SABLIER : ENVOI CUISINE EXCLUSIF SANS TICKET CLIENT
   const processPendingOrder = async () => {
     if (cartState.items.length === 0) return;
     
@@ -1047,6 +1032,7 @@ const Caisse = () => {
 
       customToast(`Commande en attente de ${finalTotal.toFixed(2)}€`, "success");
       
+      // 🖨️ SEUL le Bon Cuisine doit sortir sur le bouton Sablier (pas de ticket client)
       const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
       if (isKitchenTicketEnabled && !loadedOrderId) {
         setTimeout(async () => {
@@ -1218,7 +1204,7 @@ const Caisse = () => {
           </div>
         </div>
 
-        {/* 🟢 PANNEAU DU TICKET DE CAISSE DE DROITE AVEC ORDER FORMATTER */}
+        {/* PANNEAU DU TICKET DE CAISSE DE DROITE */}
         <div className="w-[260px] bg-white border-l border-gray-200 flex flex-col h-full z-30 shadow-xl flex-shrink-0">
           
           <div className="p-3 border-b border-gray-100 bg-gray-50 flex-shrink-0 flex justify-between items-center">
@@ -1262,7 +1248,6 @@ const Caisse = () => {
                     <div className="flex-1 min-w-0 pr-1">
                       <h4 className="font-bold text-gray-800 text-[11px] leading-tight line-clamp-2">{item.product?.name || item.name}</h4>
                       
-                      {/* 🟢 AFFICHAGE UNIFIÉ DES OPTIONS PAR GROUPE */}
                       {optionGroups.length > 0 && (
                         <div className="mt-1 space-y-0.5 text-[9px]">
                           {optionGroups.map((grp, gIdx) => (
@@ -1331,7 +1316,7 @@ const Caisse = () => {
                 disabled={cartItemCount === 0 || isProcessing} 
                 onClick={processPendingOrder} 
                 className="w-16 bg-orange-50 text-orange-500 flex items-center justify-center rounded-xl hover:bg-orange-100 active:scale-95 disabled:opacity-50 transition-all border border-orange-100" 
-                title="Mettre en attente de paiement"
+                title="Mettre en attente de paiement (Impression Cuisine uniquement)"
               >
                 <Hourglass size={24} />
               </button>
@@ -1359,7 +1344,7 @@ const Caisse = () => {
         <div className="w-[74px] flex flex-col items-center py-3 z-40 shadow-[-5px_0_15px_rgba(0,0,0,0.2)] flex-shrink-0 justify-between" style={{ backgroundColor: themeColors.secondary }}>
           <div className="flex flex-col gap-1.5 w-full px-2 items-center">
             
-            <button disabled={cartItemCount === 0 || isProcessing} onClick={() => finalizePayment('carte bancaire', 0)} className={`w-[56px] h-[56px] mx-auto flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} title="Paiement Rapide CB">
+            <button disabled={cartItemCount === 0 || isProcessing} onClick={() => finalizePayment('cb', 0)} className={`w-[56px] h-[56px] mx-auto flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} title="Paiement Rapide CB">
               <CreditCard size={24} />
               <span className="text-[8px] font-black uppercase mt-0.5 tracking-wider">Rapide</span>
             </button>
