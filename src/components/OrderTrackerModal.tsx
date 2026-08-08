@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, CreditCard, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getFormattedOrderOptions, fetchOptionGroupMapping } from '@/lib/orderFormatter';
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder } from '@/lib/orderFormatter';
 
 interface OrderTrackerModalProps {
   onClose: () => void;
@@ -265,36 +265,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') orderType = 'EMPORTER';
       if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') orderType = 'LIVRAISON';
 
-      const subtotal = order.total_price || 0;
-      const cashAmount = order.cash_amount || subtotal;
-      const formattedItems = items.map((item: any) => {
-        const groups = getFormattedOrderOptions(item, optionGroupMapping);
-        const notes = groups.flatMap(grp => grp.items.map(opt => ({
-          name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
-          isSans: opt.isSans
-        })));
-        return {
-          qty: item.quantity || 1,
-          name: extractProductName(item),
-          unitPrice: item.price || item.product?.price || 0,
-          notes
-        };
-      });
-
-      const orderPayloadData = {
-        orderType,
-        orderNumber,
-        orderDate: date,
-        restaurantName,
-        items: formattedItems,
-        total: subtotal,
-        delivery: orderType === 'LIVRAISON' && (order.customer_name || order.customer_address || order.customer_phone) ? {
-          customerName: order.customer_name,
-          address: order.customer_address,
-          phone: order.customer_phone,
-          deliveryNotes: ''
-        } : undefined
-      };
+      const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping);
 
       await (window as any).electronAPI.printReceipt(orderPayloadData, printerName);
     } catch (err) {

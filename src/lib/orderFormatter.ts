@@ -277,3 +277,126 @@ export const getFormattedOrderOptions = (
     };
   });
 };
+
+/**
+ * 🟢 FONCTION CENTRALISÉE DE MAPPING DES COMMANDES (TABLE 'orders') POUR L'IMPRESSION POS
+ */
+export const buildReceiptPayloadFromOrder = async (
+  order: any,
+  optionGroupMapping: Record<string, string> = {},
+  prefixOrderType: string = ''
+) => {
+  if (!order) return null;
+
+  // 1. Parsing sécurisé des items (order_details)
+  let rawItems: any[] = [];
+  try {
+    let details = typeof order.order_details === 'string' ? JSON.parse(order.order_details) : order.order_details;
+    if (Array.isArray(details)) rawItems = details;
+    else if (details && Array.isArray(details.items)) rawItems = details.items;
+    else if (details && Array.isArray(details.cart)) rawItems = details.cart;
+    else if (details) rawItems = [details];
+  } catch (e) {
+    rawItems = [];
+  }
+
+  // 2. Résolution dynamique du restaurant depuis Supabase via restaurant_id
+  let restoInfo = {
+    name: 'VOTRE RESTAURANT',
+    address: null as string | null,
+    phone: null as string | null,
+    tva: 10,
+    logoUrl: null as string | null
+  };
+
+  const targetRestoId = order.restaurant_id || (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) || localStorage.getItem('pos_restaurant_id');
+
+  if (targetRestoId) {
+    try {
+      const { data: restoData } = await supabase
+        .from('restaurants')
+        .select('name, address, phone, tva, logo_url')
+        .eq('id', targetRestoId)
+        .maybeSingle();
+
+      if (restoData) {
+        restoInfo = {
+          name: restoData.name || 'VOTRE RESTAURANT',
+          address: restoData.address || null,
+          phone: restoData.phone || null,
+          tva: (restoData.tva !== null && restoData.tva !== undefined) ? Number(restoData.tva) : 10,
+          logoUrl: restoData.logo_url || null
+        };
+      }
+    } catch (e) {
+      console.error("[buildReceiptPayloadFromOrder] Erreur fetch restaurant:", e);
+    }
+  }
+
+  // 3. Résolution du type de commande (order_type_id) vers son libellé lisible
+  const ORDER_TYPE_LABELS: Record<string, string> = {
+    '633425b1-f86c-4c17-8cba-b258906ad317': 'SUR PLACE',
+    '2cac3f10-73e2-40a5-a7e0-053bd861b4d9': 'EMPORTER',
+    'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d': 'LIVRAISON'
+  };
+
+  let rawTypeLabel = String(order.order_type || '').toUpperCase();
+  if (!rawTypeLabel || rawTypeLabel === 'UNDEFINED') {
+    rawTypeLabel = ORDER_TYPE_LABELS[order.order_type_id] || 'SUR PLACE';
+  }
+
+  const finalOrderType = prefixOrderType ? `${prefixOrderType} - ${rawTypeLabel}` : rawTypeLabel;
+
+  // 4. Formattage des articles et de leurs options
+  const formattedItems = rawItems.map((item: any) => {
+    const groups = getFormattedOrderOptions(item, optionGroupMapping);
+    const notes = groups.flatMap(grp => grp.items.map(opt => ({
+      name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
+      price: opt.price || 0,
+      isSans: opt.isSans
+    })));
+
+    const extractProductName = (it: any) => {
+      if (!it) return 'Produit';
+      if (it.product && it.product.name) return it.product.name;
+      if (it.name) return it.name;
+      if (it.title) return it.title;
+      return 'Produit';
+    };
+
+    return {
+      qty: Number(item.quantity || item.qty || 1),
+      name: extractProductName(item),
+      unitPrice: Number(item.price || item.product?.price || 0),
+      notes,
+      categoryName: item.product?.category_name || item.category || ''
+    };
+  });
+
+  const isLivraison = rawTypeLabel.includes('LIVRAISON');
+  const custName = order.customer_name || order.client_name || order.delivery?.customerName;
+  const custAddr = order.customer_address || order.delivery?.address;
+  const custPhone = order.customer_phone || order.delivery?.phone;
+  const deliveryFeeNum = Number(order.delivery_fee || order.deliveryFee || order.delivery?.fee || 0);
+
+  return {
+    restaurantId: targetRestoId,
+    orderType: finalOrderType,
+    orderNumber: String(order.order_number || order.number || order.id || '001'),
+    orderDate: new Date(order.created_at || Date.now()).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    restaurantName: restoInfo.name,
+    restaurantAddress: restoInfo.address,
+    restaurantPhone: restoInfo.phone,
+    restaurantLogoUrl: restoInfo.logoUrl,
+    tva: restoInfo.tva,
+    items: formattedItems,
+    total: Number(order.total_price || order.total || 0),
+    delivery: isLivraison && (custName || custAddr || custPhone) ? {
+      customerName: custName,
+      address: custAddr,
+      phone: custPhone,
+      deliveryNotes: order.delivery_notes || order.notes || order.delivery?.deliveryNotes || '',
+      fee: deliveryFeeNum
+    } : undefined
+  };
+};

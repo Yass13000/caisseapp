@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, Printer } from 'lucide-react';
 import { toast } from 'sonner';
-import { getFormattedOrderOptions, fetchOptionGroupMapping } from '@/lib/orderFormatter'; // Ajuste le chemin si besoin
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder } from '@/lib/orderFormatter';
 
 interface OrderHistoryModalProps {
   onClose: () => void;
@@ -167,33 +167,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
       if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') orderType = 'EMPORTER';
       if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') orderType = 'LIVRAISON';
 
-      const isCash = order.payment_method?.toLowerCase() === 'counter' || order.payment_method?.toLowerCase() === 'espèces';
-      const subtotal = order.total_price || 0;
-      const cashAmount = order.cash_amount || subtotal;
-      const changeDue = Math.max(0, cashAmount - subtotal);
-
-      const formattedItems = items.map((item: any) => {
-        const groups = getFormattedOrderOptions(item, optionGroupMapping);
-        const notes = groups.flatMap(grp => grp.items.map(opt => ({
-          name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
-          isSans: opt.isSans
-        })));
-        return {
-          qty: item.quantity || 1,
-          name: item.product?.name || item.name || 'Produit',
-          unitPrice: item.price || item.product?.price || 0,
-          notes
-        };
-      });
-
-      const orderPayloadData = {
-        orderType: `DUPLICATA - ${orderType}`,
-        orderNumber,
-        orderDate: date,
-        restaurantName,
-        items: formattedItems,
-        total: subtotal
-      };
+      const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping, 'DUPLICATA');
 
       const result = await (window as any).electronAPI.printReceipt(orderPayloadData);
       if (!result.success) toast.error("Erreur avec l'imprimante !");
