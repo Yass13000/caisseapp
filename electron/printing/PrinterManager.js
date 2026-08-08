@@ -1,12 +1,13 @@
-// electron/printing/PrinterManager.js
-const { BrowserWindow, app } = require('electron');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
-const https = require('https');
-const http = require('http');
-const { exec } = require('child_process');
-const QRCode = require('qrcode');
+import electron from 'electron';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
+import https from 'https';
+import http from 'http';
+import { exec } from 'child_process';
+import QRCode from 'qrcode';
+
+const { BrowserWindow, app } = electron;
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return '';
@@ -30,9 +31,6 @@ function readSettingsFile() {
   return {};
 }
 
-// ----------------------------------------------------------------------------
-// 🛡️ GESTION RÉSILIENTE ET EN CACHE DE L'IMAGE LOGO RESTAURANT
-// ----------------------------------------------------------------------------
 async function getCachedLogoDataUrl(logoUrl) {
   if (!logoUrl || typeof logoUrl !== 'string') return '';
 
@@ -69,7 +67,6 @@ async function getCachedLogoDataUrl(logoUrl) {
       resolve(val);
     };
 
-    // 🛡️ 3. Le cache n'est servi en fallback QUE si l'URL correspond exactement
     const fallbackResolve = () => {
       if (cachedUrl === logoUrl && fs.existsSync(logoPath)) {
         try {
@@ -82,15 +79,14 @@ async function getCachedLogoDataUrl(logoUrl) {
     };
 
     const timeoutTimer = setTimeout(() => {
-      console.warn("[PrinterManager] Timeout (5s) téléchargement logo, annulation et utilisation du cache d'urgence");
+      console.warn("[PrinterManager] Timeout (5s) téléchargement logo");
       fallbackResolve();
     }, 5000);
 
     const client = logoUrl.startsWith('https') ? https : http;
     req = client.get(logoUrl, (res) => {
-      // 🛡️ 1. Handler d'erreur sur res pour éviter tout unhandled error crash process
       res.on('error', (err) => {
-        console.warn("[PrinterManager] Erreur réseau pendant le téléchargement du logo (res):", err?.message);
+        console.warn("[PrinterManager] Erreur réseau logo (res):", err?.message);
         fallbackResolve();
       });
 
@@ -105,15 +101,12 @@ async function getCachedLogoDataUrl(logoUrl) {
 
       const data = [];
       let totalBytes = 0;
-      const MAX_BYTES = 2 * 1024 * 1024; // 2 Mo max
+      const MAX_BYTES = 2 * 1024 * 1024;
 
       res.on('data', (chunk) => {
         totalBytes += chunk.length;
         if (totalBytes > MAX_BYTES) {
-          console.warn("[PrinterManager] Dépassement taille logo (>2Mo), annulation immédiate");
           res.destroy();
-          if (req) try { req.destroy(); } catch (e) {}
-          // 🛡️ 2. Résolution immédiate sans attendre l'évènement 'end'
           fallbackResolve();
         } else {
           data.push(chunk);
@@ -122,7 +115,6 @@ async function getCachedLogoDataUrl(logoUrl) {
 
       res.on('end', () => {
         if (resolved) return;
-
         if (totalBytes > MAX_BYTES) {
           fallbackResolve();
           return;
@@ -130,12 +122,10 @@ async function getCachedLogoDataUrl(logoUrl) {
 
         try {
           const buffer = Buffer.concat(data);
-
           const isPng = buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47;
           const isJpeg = buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
 
           if (!isPng && !isJpeg) {
-            console.warn("[PrinterManager] Signature binaire invalide (ni PNG ni JPEG)");
             fallbackResolve();
             return;
           }
@@ -276,7 +266,6 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const isKitchenTicket = String(orderData.orderType || '').toUpperCase().includes('CUISINE');
   const kitchenShowPrices = settings.kitchen_show_prices !== 'false';
 
-  // Le logo n'est chargé et injecté QUE sur les tickets clients (pas sur les bons de préparation cuisine)
   const logoDataUrl = (!isKitchenTicket && orderData.restaurantLogoUrl) 
     ? await getCachedLogoDataUrl(orderData.restaurantLogoUrl) 
     : '';
@@ -446,10 +435,6 @@ const PrinterManager = {
     }
 
     const settings = readSettingsFile();
-    const widthMm = settings.receipt_width || '72';
-    const htmlContent = await buildReceiptHtml(orderData, widthMm);
-
-    // 🟡 POINT 7 : ROUTAGE AUTOMATIQUE PAR CATÉGORIE D'ARTICLE (POUR BON CUISINE)
     const isKitchen = String(orderData.orderType || '').toUpperCase().includes('CUISINE');
     let routingConfig = {};
     try {
@@ -460,7 +445,6 @@ const PrinterManager = {
       }
     } catch (e) {}
 
-    // Si nous sommes sur un bon cuisine et qu'un routage est configuré
     if (isKitchen && routingConfig && Object.keys(routingConfig).length > 0 && Array.isArray(orderData.items)) {
       const itemsByPrinterName = {};
 
@@ -491,7 +475,6 @@ const PrinterManager = {
       const printedPrinters = [];
       const failedPrinters = [];
 
-      // Un seul ticket imprimé par imprimante physique réelles regroupée
       for (const [physName, groupInfo] of Object.entries(itemsByPrinterName)) {
         const groupOrderData = {
           ...orderData,
@@ -629,4 +612,5 @@ const PrinterManager = {
   getTargetPrinter
 };
 
-module.exports = PrinterManager;
+export default PrinterManager;
+export { PrinterManager };

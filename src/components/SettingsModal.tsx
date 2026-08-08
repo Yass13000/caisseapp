@@ -30,7 +30,7 @@ const setSecureSetting = (key: string, value: any) => {
   }
 };
 
-const SettingsModal = ({ onClose }: SettingsModalProps) => {
+const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: SettingsModalProps) => {
   const [activeTab, setActiveTab] = useState('printing');
   const [showPowerMenu, setShowPowerMenu] = useState(false);
   const [gearClicks, setGearClicks] = useState(0);
@@ -60,6 +60,7 @@ const SettingsModal = ({ onClose }: SettingsModalProps) => {
   const [copiesClient, setCopiesClient] = useState(() => getSecureSetting('receipt_copies_client', '1'));
   const [copiesKitchen, setCopiesKitchen] = useState(() => getSecureSetting('receipt_copies_kitchen', '1'));
 
+  const [logoB64, setLogoB64] = useState(() => getSecureSetting('restaurant_logo_b64', ''));
   const [showLogo, setShowLogo] = useState(() => getSecureSetting('show_logo', 'true') === 'true');
   const [showHeaderInfo, setShowHeaderInfo] = useState(() => getSecureSetting('show_header_info', 'true') === 'true');
   const [showTaxDetails, setShowTaxDetails] = useState(() => getSecureSetting('show_tax_details', 'false') === 'true');
