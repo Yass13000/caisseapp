@@ -3,7 +3,10 @@ const { BrowserWindow, app } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const https = require('https');
+const http = require('http');
 const { exec } = require('child_process');
+const QRCode = require('qrcode');
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return '';
@@ -25,6 +28,132 @@ function readSettingsFile() {
     console.error("[PrinterManager] Erreur lecture configuration:", e);
   }
   return {};
+}
+
+// ----------------------------------------------------------------------------
+// 🛡️ GESTION RÉSILIENTE ET EN CACHE DE L'IMAGE LOGO RESTAURANT
+// ----------------------------------------------------------------------------
+async function getCachedLogoDataUrl(logoUrl) {
+  if (!logoUrl || typeof logoUrl !== 'string') return '';
+
+  const cacheDir = app.getPath('userData');
+  const logoPath = path.join(cacheDir, 'logo-cache.png');
+  const metaPath = path.join(cacheDir, 'logo-cache-meta.json');
+
+  let cachedUrl = '';
+  try {
+    if (fs.existsSync(metaPath)) {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      cachedUrl = meta.url || '';
+    }
+  } catch (e) {}
+
+  if (cachedUrl === logoUrl && fs.existsSync(logoPath)) {
+    try {
+      const buf = fs.readFileSync(logoPath);
+      return `data:image/png;base64,${buf.toString('base64')}`;
+    } catch (e) {}
+  }
+
+  return new Promise((resolve) => {
+    let resolved = false;
+    let req = null;
+
+    const safeResolve = (val) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeoutTimer);
+      if (req) {
+        try { req.destroy(); } catch (e) {}
+      }
+      resolve(val);
+    };
+
+    // 🛡️ 3. Le cache n'est servi en fallback QUE si l'URL correspond exactement
+    const fallbackResolve = () => {
+      if (cachedUrl === logoUrl && fs.existsSync(logoPath)) {
+        try {
+          const buf = fs.readFileSync(logoPath);
+          safeResolve(`data:image/png;base64,${buf.toString('base64')}`);
+          return;
+        } catch (e) {}
+      }
+      safeResolve('');
+    };
+
+    const timeoutTimer = setTimeout(() => {
+      console.warn("[PrinterManager] Timeout (5s) téléchargement logo, annulation et utilisation du cache d'urgence");
+      fallbackResolve();
+    }, 5000);
+
+    const client = logoUrl.startsWith('https') ? https : http;
+    req = client.get(logoUrl, (res) => {
+      // 🛡️ 1. Handler d'erreur sur res pour éviter tout unhandled error crash process
+      res.on('error', (err) => {
+        console.warn("[PrinterManager] Erreur réseau pendant le téléchargement du logo (res):", err?.message);
+        fallbackResolve();
+      });
+
+      const contentType = String(res.headers['content-type'] || '').toLowerCase();
+      const isValidType = contentType.includes('image/png') || contentType.includes('image/jpeg') || contentType.includes('image/jpg');
+
+      if (res.statusCode !== 200 || !isValidType) {
+        res.destroy();
+        fallbackResolve();
+        return;
+      }
+
+      const data = [];
+      let totalBytes = 0;
+      const MAX_BYTES = 2 * 1024 * 1024; // 2 Mo max
+
+      res.on('data', (chunk) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_BYTES) {
+          console.warn("[PrinterManager] Dépassement taille logo (>2Mo), annulation immédiate");
+          res.destroy();
+          if (req) try { req.destroy(); } catch (e) {}
+          // 🛡️ 2. Résolution immédiate sans attendre l'évènement 'end'
+          fallbackResolve();
+        } else {
+          data.push(chunk);
+        }
+      });
+
+      res.on('end', () => {
+        if (resolved) return;
+
+        if (totalBytes > MAX_BYTES) {
+          fallbackResolve();
+          return;
+        }
+
+        try {
+          const buffer = Buffer.concat(data);
+
+          const isPng = buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47;
+          const isJpeg = buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
+
+          if (!isPng && !isJpeg) {
+            console.warn("[PrinterManager] Signature binaire invalide (ni PNG ni JPEG)");
+            fallbackResolve();
+            return;
+          }
+
+          fs.writeFileSync(logoPath, buffer);
+          fs.writeFileSync(metaPath, JSON.stringify({ url: logoUrl, date: new Date().toISOString() }), 'utf8');
+          safeResolve(`data:image/png;base64,${buffer.toString('base64')}`);
+        } catch (e) {
+          fallbackResolve();
+        }
+      });
+    });
+
+    req.on('error', (err) => {
+      console.warn("[PrinterManager] Erreur réseau requète logo (req):", err?.message);
+      fallbackResolve();
+    });
+  });
 }
 
 async function getTargetPrinter(desiredPrinterName, mainWindow) {
@@ -115,7 +244,6 @@ public class RawPrinterHelper {
 
   return new Promise((resolve) => {
     exec(`powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "${scriptPath}"`, (error, stdout) => {
-      // Nettoyage immédiat du fichier temporaire pour éviter toute race condition
       fs.unlink(scriptPath, () => {});
       const output = stdout.trim().toLowerCase();
       const isSuccess = !error && output === 'true';
@@ -124,11 +252,37 @@ public class RawPrinterHelper {
   });
 }
 
-function buildReceiptHtml(orderData, widthMm = '72') {
+async function buildReceiptHtml(orderData, widthMm = '72') {
+  const settings = readSettingsFile();
+
   const is58mm = Number(widthMm) <= 60;
   const bodyWidth = `${widthMm}mm`;
-  const fontSize = is58mm ? '11px' : '13px';
-  const headerFontSize = is58mm ? '16px' : '18px';
+  
+  let fontSize = is58mm ? '11px' : '13px';
+  let headerFontSize = is58mm ? '16px' : '18px';
+  if (settings.receipt_font_size === 'small') {
+    fontSize = '10px'; headerFontSize = '14px';
+  } else if (settings.receipt_font_size === 'large') {
+    fontSize = '14px'; headerFontSize = '20px';
+  }
+
+  const bodyPadding = settings.receipt_margin_type === 'standard' ? '12px 8px' : '4px 2px';
+
+  const showHeaderInfo = settings.show_header_info !== 'false';
+  const showTaxDetails = settings.show_tax_details === 'true';
+  const showFooterMessage = settings.show_footer_message !== 'false';
+  const footerMessage = escapeHtml(settings.footer_custom_message || 'Merci de votre visite !\nA bientôt.');
+  const showQrCode = settings.show_qr_code === 'true';
+  const isKitchenTicket = String(orderData.orderType || '').toUpperCase().includes('CUISINE');
+  const kitchenShowPrices = settings.kitchen_show_prices !== 'false';
+
+  // Le logo n'est chargé et injecté QUE sur les tickets clients (pas sur les bons de préparation cuisine)
+  const logoDataUrl = (!isKitchenTicket && orderData.restaurantLogoUrl) 
+    ? await getCachedLogoDataUrl(orderData.restaurantLogoUrl) 
+    : '';
+  const logoHtml = logoDataUrl 
+    ? `<div style="text-align: center; margin-bottom: 6px;"><img src="${logoDataUrl}" style="max-width: 60%; max-height: 80px; filter: grayscale(100%);" /></div>` 
+    : '';
 
   const restaurantName = escapeHtml(orderData.restaurantName || 'VOTRE RESTAURANT');
   const restaurantAddress = escapeHtml(orderData.restaurantAddress || '');
@@ -141,9 +295,13 @@ function buildReceiptHtml(orderData, widthMm = '72') {
   const rawType = String(orderData.orderType || '').toLowerCase();
   if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'A EMPORTER';
   if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
+  if (isKitchenTicket) orderTypeLabel = escapeHtml(orderData.orderType);
 
   const items = Array.isArray(orderData.items) ? orderData.items : [];
-  const total = Number(orderData.total || 0).toFixed(2);
+  const totalNum = Number(orderData.total || 0);
+  const total = totalNum.toFixed(2);
+
+  const hidePriceOnKitchen = isKitchenTicket && !kitchenShowPrices;
 
   const itemsHtml = items.map(item => {
     const qty = Number(item.qty || item.quantity || 1);
@@ -166,7 +324,7 @@ function buildReceiptHtml(orderData, widthMm = '72') {
       <div style="margin-bottom: 4px;">
         <div style="display: flex; justify-content: space-between; font-weight: bold;">
           <span style="max-width: 75%; word-break: break-word;">${qty}x ${name}</span>
-          <span>${itemTotal} €</span>
+          ${hidePriceOnKitchen ? '' : `<span>${itemTotal} €</span>`}
         </div>
         ${notesHtml}
       </div>
@@ -174,7 +332,7 @@ function buildReceiptHtml(orderData, widthMm = '72') {
   }).join('');
 
   let deliveryBlockHtml = '';
-  if (orderTypeLabel === 'LIVRAISON' && orderData.delivery) {
+  if (orderTypeLabel.includes('LIVRAISON') && orderData.delivery) {
     const d = orderData.delivery;
     const name = escapeHtml(d.customerName || d.name || '');
     const address = escapeHtml(d.address || '');
@@ -194,28 +352,58 @@ function buildReceiptHtml(orderData, widthMm = '72') {
     `;
   }
 
+  let taxDetailsHtml = '';
+  if (showTaxDetails && totalNum > 0) {
+    const ht = (totalNum / 1.1).toFixed(2);
+    const tva = (totalNum - totalNum / 1.1).toFixed(2);
+    taxDetailsHtml = `
+      <div style="font-size: 10px; margin-top: 4px;">
+        <div style="display: flex; justify-content: space-between;"><span>Sous-total HT:</span><span>${ht} €</span></div>
+        <div style="display: flex; justify-content: space-between;"><span>TVA (10%):</span><span>${tva} €</span></div>
+      </div>
+    `;
+  }
+
+  let qrCodeHtml = '';
+  if (showQrCode) {
+    let qrUrl = settings.qr_code_custom_url || 'https://google.com';
+    if (settings.qr_code_type === 'tracking') qrUrl = `https://caisseapp.vercel.app/#/track/${orderNumber}`;
+    try {
+      const qrDataUrl = await QRCode.toDataURL(qrUrl, { margin: 1, width: 110 });
+      qrCodeHtml = `
+        <div style="text-align: center; margin-top: 10px;">
+          <img src="${qrDataUrl}" style="width: 100px; height: 100px;" />
+        </div>
+      `;
+    } catch (e) {
+      console.error("[PrinterManager] Erreur génération QR local:", e);
+    }
+  }
+
   return `
     <!DOCTYPE html>
     <html>
       <head>
         <meta charset="utf-8">
         <style>
-          body { font-family: monospace; font-size: ${fontSize}; margin: 0; padding: 6px; width: ${bodyWidth}; color: black; line-height: 1.2; }
+          body { font-family: monospace; font-size: ${fontSize}; margin: 0; padding: ${bodyPadding}; width: ${bodyWidth}; color: black; line-height: 1.2; }
           .center { text-align: center; }
           .bold { font-weight: bold; }
           hr { border: none; border-top: 1px dashed black; margin: 6px 0; }
         </style>
       </head>
       <body>
-        <div className="center">
+        ${logoHtml}
+
+        <div class="center">
           <div style="font-size: ${headerFontSize}; font-weight: 900; text-transform: uppercase;">${restaurantName}</div>
-          ${restaurantAddress ? `<div style="font-size: 11px;">${restaurantAddress}</div>` : ''}
-          ${restaurantPhone ? `<div style="font-size: 11px;">Tél: ${restaurantPhone}</div>` : ''}
+          ${showHeaderInfo && restaurantAddress ? `<div style="font-size: 11px;">${restaurantAddress}</div>` : ''}
+          ${showHeaderInfo && restaurantPhone ? `<div style="font-size: 11px;">Tél: ${restaurantPhone}</div>` : ''}
         </div>
 
         <hr />
 
-        <div className="center">
+        <div class="center">
           <div style="font-size: 16px; font-weight: 900;">CMD #${orderNumber}</div>
           <div style="font-size: 11px;">${orderDate}</div>
           <div style="font-size: 13px; font-weight: bold; margin-top: 2px;">*** ${orderTypeLabel} ***</div>
@@ -227,18 +415,24 @@ function buildReceiptHtml(orderData, widthMm = '72') {
 
         ${deliveryBlockHtml}
 
-        <hr />
+        ${hidePriceOnKitchen ? '' : `
+          <hr />
+          ${taxDetailsHtml}
+          <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 900; margin: 4px 0;">
+            <span>TOTAL TTC</span>
+            <span>${total} €</span>
+          </div>
+        `}
 
-        <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 900; margin: 4px 0;">
-          <span>TOTAL TTC</span>
-          <span>${total} €</span>
-        </div>
+        ${(showFooterMessage || showQrCode) ? '<hr />' : ''}
 
-        <hr />
+        ${showFooterMessage ? `
+          <div class="center" style="font-size: 11px; margin-top: 6px; white-space: pre-wrap;">
+            ${footerMessage}
+          </div>
+        ` : ''}
 
-        <div className="center" style="font-size: 11px; margin-top: 8px;">
-          Merci de votre visite !<br>A bientôt.
-        </div>
+        ${qrCodeHtml}
       </body>
     </html>
   `;
@@ -253,7 +447,80 @@ const PrinterManager = {
 
     const settings = readSettingsFile();
     const widthMm = settings.receipt_width || '72';
-    const htmlContent = buildReceiptHtml(orderData, widthMm);
+    const htmlContent = await buildReceiptHtml(orderData, widthMm);
+
+    // 🟡 POINT 7 : ROUTAGE AUTOMATIQUE PAR CATÉGORIE D'ARTICLE (POUR BON CUISINE)
+    const isKitchen = String(orderData.orderType || '').toUpperCase().includes('CUISINE');
+    let routingConfig = {};
+    try {
+      if (settings.category_printer_routing) {
+        routingConfig = typeof settings.category_printer_routing === 'string'
+          ? JSON.parse(settings.category_printer_routing)
+          : settings.category_printer_routing;
+      }
+    } catch (e) {}
+
+    // Si nous sommes sur un bon cuisine et qu'un routage est configuré
+    if (isKitchen && routingConfig && Object.keys(routingConfig).length > 0 && Array.isArray(orderData.items)) {
+      const itemsByPrinterName = {};
+
+      for (const item of orderData.items) {
+        const cat = String(item.categoryName || item.category || '').trim();
+        const assignedRole = cat && routingConfig[cat] ? routingConfig[cat] : null;
+        
+        let targetPrinterRoleName = undefined;
+        if (assignedRole) {
+          targetPrinterRoleName = settings[`imprimante_${assignedRole}`] || settings.imprimante_cuisine;
+        } else {
+          targetPrinterRoleName = desiredPrinterName || settings.imprimante_cuisine;
+        }
+
+        const resolvedPrinter = await getTargetPrinter(targetPrinterRoleName, mainWindow);
+        const physicalPrinterName = resolvedPrinter ? resolvedPrinter.name : 'DEFAULT_PRINTER';
+
+        if (!itemsByPrinterName[physicalPrinterName]) {
+          itemsByPrinterName[physicalPrinterName] = {
+            printerObj: resolvedPrinter,
+            printerName: targetPrinterRoleName,
+            items: []
+          };
+        }
+        itemsByPrinterName[physicalPrinterName].items.push(item);
+      }
+
+      const printedPrinters = [];
+      const failedPrinters = [];
+
+      // Un seul ticket imprimé par imprimante physique réelles regroupée
+      for (const [physName, groupInfo] of Object.entries(itemsByPrinterName)) {
+        const groupOrderData = {
+          ...orderData,
+          items: groupInfo.items
+        };
+
+        try {
+          const res = await PrinterManager._printSingleWindow(groupOrderData, groupInfo.printerName, mainWindow);
+          if (res.success) printedPrinters.push(physName);
+          else failedPrinters.push(physName);
+        } catch (e) {
+          failedPrinters.push(physName);
+        }
+      }
+
+      return {
+        success: failedPrinters.length === 0,
+        printedGroups: printedPrinters,
+        failedGroups: failedPrinters
+      };
+    }
+
+    return await PrinterManager._printSingleWindow(orderData, desiredPrinterName, mainWindow);
+  },
+
+  async _printSingleWindow(orderData, desiredPrinterName, mainWindow) {
+    const settings = readSettingsFile();
+    const widthMm = settings.receipt_width || '72';
+    const htmlContent = await buildReceiptHtml(orderData, widthMm);
 
     return new Promise(async (resolve) => {
       try {
@@ -307,7 +574,13 @@ const PrinterManager = {
       if (!targetPrinter) return { success: false, error: "Aucune imprimante détectée." };
 
       if (process.platform === 'win32') {
-        const kickCode = "27, 112, 0, 25, 250, 27, 112, 1, 25, 250";
+        const settings = readSettingsFile();
+        const pinMode = settings.drawer_pin_mode || 'both';
+
+        let kickCode = "27, 112, 0, 25, 250, 27, 112, 1, 25, 250";
+        if (pinMode === '0') kickCode = "27, 112, 0, 25, 250";
+        else if (pinMode === '1') kickCode = "27, 112, 1, 25, 250";
+
         const isSuccess = await sendRawCommandToPrinter(targetPrinter.name, kickCode);
         return { success: isSuccess };
       } else {

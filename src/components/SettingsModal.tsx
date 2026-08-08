@@ -44,37 +44,100 @@ const SettingsModal = ({ onClose }: SettingsModalProps) => {
   const [newRestoId, setNewRestoId] = useState('');
   const [isCheckingResto, setIsCheckingResto] = useState(false);
 
-  // --- ÉTATS IMPRESSION ---
-  const [autoPrintReceipt, setAutoPrintReceipt] = useState(() => {
-    return getSecureSetting('auto_print_receipt', 'false') === 'true';
-  });
-  
-  const [printKitchenTicket, setPrintKitchenTicket] = useState(() => {
-    return getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
-  });
-
-  const [receiptWidth, setReceiptWidth] = useState(() => {
-    return getSecureSetting('receipt_width', '72');
-  });
+  // --- ÉTATS IMPRESSION AVANCÉS ---
+  const [autoPrintReceipt, setAutoPrintReceipt] = useState(() => getSecureSetting('auto_print_receipt', 'false') === 'true');
+  const [printKitchenTicket, setPrintKitchenTicket] = useState(() => getSecureSetting('print_kitchen_ticket', 'true') !== 'false');
+  const [receiptWidth, setReceiptWidth] = useState(() => getSecureSetting('receipt_width', '72'));
 
   const [availablePrinters, setAvailablePrinters] = useState<any[]>([]);
   const [caissePrinter, setCaissePrinter] = useState(getSecureSetting('imprimante_caisse', ''));
   const [kitchenPrinter, setKitchenPrinter] = useState(getSecureSetting('imprimante_cuisine', ''));
+  const [deliveryPrinter, setDeliveryPrinter] = useState(getSecureSetting('imprimante_livraison', ''));
+  const [reportsPrinter, setReportsPrinter] = useState(getSecureSetting('imprimante_rapports', ''));
 
-  // Chargement des imprimantes si Electron est disponible
-  useEffect(() => {
-    const fetchPrinters = async () => {
-      if ((window as any).electronAPI) {
-        try {
-          const printers = await (window as any).electronAPI.getPrinters();
-          setAvailablePrinters(printers || []);
-        } catch (e) {
-          console.error("Erreur lors du chargement des imprimantes:", e);
-        }
+  const [fontSize, setFontSize] = useState(() => getSecureSetting('receipt_font_size', 'normal'));
+  const [marginType, setMarginType] = useState(() => getSecureSetting('receipt_margin_type', 'none'));
+  const [copiesClient, setCopiesClient] = useState(() => getSecureSetting('receipt_copies_client', '1'));
+  const [copiesKitchen, setCopiesKitchen] = useState(() => getSecureSetting('receipt_copies_kitchen', '1'));
+
+  const [showLogo, setShowLogo] = useState(() => getSecureSetting('show_logo', 'true') === 'true');
+  const [showHeaderInfo, setShowHeaderInfo] = useState(() => getSecureSetting('show_header_info', 'true') === 'true');
+  const [showTaxDetails, setShowTaxDetails] = useState(() => getSecureSetting('show_tax_details', 'false') === 'true');
+  const [showFooterMessage, setShowFooterMessage] = useState(() => getSecureSetting('show_footer_message', 'true') === 'true');
+  const [footerMessage, setFooterMessage] = useState(() => getSecureSetting('footer_custom_message', 'Merci de votre visite !\nA bientôt.'));
+  const [showQrCode, setShowQrCode] = useState(() => getSecureSetting('show_qr_code', 'false') === 'true');
+  const [qrCodeType, setQrCodeType] = useState(() => getSecureSetting('qr_code_type', 'google'));
+  const [qrCodeUrl, setQrCodeUrl] = useState(() => getSecureSetting('qr_code_custom_url', 'https://google.com'));
+  const [kitchenShowPrices, setKitchenShowPrices] = useState(() => getSecureSetting('kitchen_show_prices', 'false') === 'true');
+
+  const [drawerPinMode, setDrawerPinMode] = useState(() => getSecureSetting('drawer_pin_mode', 'both'));
+  const [autoOpenDrawerCash, setAutoOpenDrawerCash] = useState(() => getSecureSetting('auto_open_drawer_cash', 'true') === 'true');
+
+  const [categoryRouting, setCategoryRouting] = useState<Record<string, string>>(() => {
+    try {
+      const raw = getSecureSetting('category_printer_routing', '{}');
+      return typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
+    } catch (e) {
+      return {};
+    }
+  });
+
+  const fetchPrinters = async () => {
+    if ((window as any).electronAPI) {
+      try {
+        const printers = await (window as any).electronAPI.getPrinters();
+        setAvailablePrinters(printers || []);
+        toast.success("Liste des imprimantes actualisée !");
+      } catch (e) {
+        console.error("Erreur lors du chargement des imprimantes:", e);
       }
-    };
+    }
+  };
+
+  useEffect(() => {
     fetchPrinters();
   }, []);
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const b64 = event.target?.result as string;
+      setLogoB64(b64);
+      setSecureSetting('restaurant_logo_b64', b64);
+      toast.success("Logo du restaurant enregistré !");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleTestPrint = async (targetPrinter?: string) => {
+    if (!(window as any).electronAPI) {
+      return toast.error("Impression de test non disponible sur navigateur web");
+    }
+
+    toast.info("Envoi du ticket de test...");
+    const testData = {
+      orderType: 'SUR PLACE',
+      orderNumber: 'TEST-01',
+      orderDate: new Date().toLocaleString('fr-FR'),
+      restaurantName: 'TEST CALIBRATION POS',
+      restaurantAddress: '123 Rue de la Caisse, Paris',
+      restaurantPhone: '01 02 03 04 05',
+      items: [
+        { qty: 1, name: 'TICKET DE CALIBRATION', unitPrice: 10.00, notes: ['Vérification largeur', 'Vérification coupe'] }
+      ],
+      total: 10.00
+    };
+
+    try {
+      const res = await (window as any).electronAPI.printReceipt(testData, targetPrinter);
+      if (res?.success) toast.success("Ticket de test envoyé avec succès !");
+      else toast.error(`Échec impression test: ${res?.error || 'Erreur inconnue'}`);
+    } catch (e: any) {
+      toast.error(`Erreur: ${e.message}`);
+    }
+  };
 
   // --- HANDLERS SÉCURITÉ ---
   const handleSavePin = () => {
@@ -321,101 +384,268 @@ const SettingsModal = ({ onClose }: SettingsModalProps) => {
               <div className="bg-white rounded-[2rem] shadow-sm border border-gray-200 overflow-hidden space-y-2">
                 <div className="p-8 space-y-4">
                   
-                  {/* Option Ticket Client Auto */}
-                  <div className="flex items-center justify-between p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm">
-                    <div className="pr-6">
-                      <p className="text-xl font-black text-secondary uppercase tracking-wide mb-1 flex items-center gap-3">
-                        <Receipt className="text-gray-400" size={24} />
-                        Ticket Client Automatique
-                      </p>
-                      <p className="text-sm font-bold text-gray-500 leading-relaxed">
-                        Imprimer le ticket de caisse automatiquement lors du paiement.
-                      </p>
+                  {/* 1. CONFIGURATION MULTI-IMPRIMANTES ET RÔLES */}
+                  <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Affectation des Imprimantes</h3>
+                      <button 
+                        onClick={fetchPrinters}
+                        className="px-4 py-2 bg-white border border-gray-300 rounded-xl text-xs font-bold text-secondary flex items-center gap-2 hover:bg-gray-100 active:scale-95 transition-all shadow-sm"
+                      >
+                        <RefreshCw size={14} /> Actualiser la liste
+                      </button>
                     </div>
-                    <button 
-                      onClick={toggleAutoPrintReceipt}
-                      className={`relative inline-flex h-10 w-20 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none shadow-inner ${autoPrintReceipt ? 'bg-[#04B855]' : 'bg-gray-300'}`}
-                    >
-                      <span className={`pointer-events-none inline-block h-9 w-9 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${autoPrintReceipt ? 'translate-x-10' : 'translate-x-0'}`} />
-                    </button>
+
+                    <div className="grid grid-cols-2 gap-6">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Imprimante Ticket Client</label>
+                        <select 
+                          value={caissePrinter}
+                          onChange={(e) => { setCaissePrinter(e.target.value); setSecureSetting('imprimante_caisse', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        >
+                          <option value="">-- Imprimante par défaut --</option>
+                          {availablePrinters.map((p, idx) => (
+                            <option key={idx} value={p.name}>{p.name} {p.isDefault ? '(Système)' : ''}</option>
+                          ))}
+                        </select>
+                        <button onClick={() => handleTestPrint(caissePrinter)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1">
+                          <Printer size={12} /> Test impression Client
+                        </button>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Imprimante Bon Cuisine</label>
+                        <select 
+                          value={kitchenPrinter}
+                          onChange={(e) => { setKitchenPrinter(e.target.value); setSecureSetting('imprimante_cuisine', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        >
+                          <option value="">-- Imprimante par défaut --</option>
+                          {availablePrinters.map((p, idx) => (
+                            <option key={idx} value={p.name}>{p.name}</option>
+                          ))}
+                        </select>
+                        <button onClick={() => handleTestPrint(kitchenPrinter)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1">
+                          <Printer size={12} /> Test impression Cuisine
+                        </button>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Imprimante Étiquette Livraison</label>
+                        <select 
+                          value={deliveryPrinter}
+                          onChange={(e) => { setDeliveryPrinter(e.target.value); setSecureSetting('imprimante_livraison', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        >
+                          <option value="">-- Même que Ticket Client --</option>
+                          {availablePrinters.map((p, idx) => (
+                            <option key={idx} value={p.name}>{p.name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Imprimante Rapports Z/X</label>
+                        <select 
+                          value={reportsPrinter}
+                          onChange={(e) => { setReportsPrinter(e.target.value); setSecureSetting('imprimante_rapports', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        >
+                          <option value="">-- Même que Ticket Client --</option>
+                          {availablePrinters.map((p, idx) => (
+                            <option key={idx} value={p.name}>{p.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                   </div>
 
-                  {/* Option Ticket Cuisine */}
-                  <div className="flex items-center justify-between p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm">
-                    <div className="pr-6">
-                      <p className="text-xl font-black text-secondary uppercase tracking-wide mb-1 flex items-center gap-3">
-                        <Printer className="text-gray-400" size={24} />
-                        Ticket Cuisine
-                      </p>
-                      <p className="text-sm font-bold text-gray-500 leading-relaxed">
-                        Imprimer le récapitulatif de la commande pour la préparation.
-                      </p>
-                    </div>
-                    <button 
-                      onClick={toggleKitchenTicket}
-                      className={`relative inline-flex h-10 w-20 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none shadow-inner ${printKitchenTicket ? 'bg-[#04B855]' : 'bg-gray-300'}`}
-                    >
-                      <span className={`pointer-events-none inline-block h-9 w-9 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${printKitchenTicket ? 'translate-x-10' : 'translate-x-0'}`} />
-                    </button>
-                  </div>
+                  {/* 2. RÉGLAGES DE MISE EN PAGE */}
+                  <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
+                    <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Mise en page & Format</h3>
 
-                  {/* Format et Largeur */}
-                  <div className="mt-6 p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm">
-                    <h3 className="text-lg font-black text-secondary uppercase tracking-wide mb-4">Format du ticket</h3>
-                    <div>
-                      <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Largeur d'impression (mm)</label>
-                      <div className="flex items-center gap-4">
-                        <input
-                          type="number"
+                    <div className="grid grid-cols-3 gap-6">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Largeur Papier</label>
+                        <select 
                           value={receiptWidth}
-                          onChange={handleReceiptWidthChange}
-                          className="w-32 bg-white border-2 border-gray-200 rounded-xl px-4 py-3 text-lg font-black text-secondary focus:outline-none focus:border-primary shadow-sm text-center"
+                          onChange={(e) => { setReceiptWidth(e.target.value); setSecureSetting('receipt_width', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        >
+                          <option value="58">58 mm (Compact)</option>
+                          <option value="72">72 mm (Standard 80mm)</option>
+                          <option value="80">80 mm (Plein)</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Taille Police</label>
+                        <select 
+                          value={fontSize}
+                          onChange={(e) => { setFontSize(e.target.value); setSecureSetting('receipt_font_size', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        >
+                          <option value="small">Petite</option>
+                          <option value="normal">Normale (Auto)</option>
+                          <option value="large">Grande (Lisibilité Cuisine)</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Marges</label>
+                        <select 
+                          value={marginType}
+                          onChange={(e) => { setMarginType(e.target.value); setSecureSetting('receipt_margin_type', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        >
+                          <option value="none">Sans marge (0mm)</option>
+                          <option value="standard">Marge standard</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-6 pt-4 border-t border-gray-200">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Copies Ticket Client</label>
+                        <input 
+                          type="number" min={1} max={5} value={copiesClient}
+                          onChange={(e) => { setCopiesClient(e.target.value); setSecureSetting('receipt_copies_client', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
                         />
-                        <span className="text-sm font-bold text-gray-400 leading-tight">
-                          mm <br/>
-                          <span className="font-normal">(Ex: <b>72</b> pour rouleaux 80mm, <b>48</b> pour rouleaux 58mm)</span>
-                        </span>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Copies Bon Cuisine</label>
+                        <input 
+                          type="number" min={1} max={5} value={copiesKitchen}
+                          onChange={(e) => { setCopiesKitchen(e.target.value); setSecureSetting('receipt_copies_kitchen', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        />
                       </div>
                     </div>
                   </div>
 
-                  {/* Configuration des Imprimantes Spécifiques */}
-                  {(window as any).electronAPI && (
-                    <div className="mt-6 p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
-                      <h3 className="text-lg font-black text-secondary uppercase tracking-wide mb-4">Configuration Matériel</h3>
-                      
-                      <div className="grid grid-cols-2 gap-6">
-                        <div>
-                          <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Imprimante Caisse</label>
-                          <select 
-                            value={caissePrinter}
-                            onChange={handleCaissePrinterChange}
-                            className="w-full bg-white border-2 border-gray-200 rounded-xl px-4 py-3 text-sm font-bold text-secondary focus:outline-none focus:border-primary shadow-sm"
-                          >
-                            <option value="">-- Imprimante par défaut --</option>
-                            {availablePrinters.map((p, idx) => (
-                              <option key={idx} value={p.name}>{p.name}</option>
-                            ))}
-                          </select>
-                        </div>
+                  {/* 3. LOGO & EN-TÊTE DU TICKET */}
+                  <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
+                    <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Logo & Visuels</h3>
 
-                        <div>
-                          <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Imprimante Cuisine</label>
-                          <select 
-                            value={kitchenPrinter}
-                            onChange={handleKitchenPrinterChange}
-                            disabled={!printKitchenTicket}
-                            className="w-full bg-white border-2 border-gray-200 rounded-xl px-4 py-3 text-sm font-bold text-secondary focus:outline-none focus:border-primary shadow-sm disabled:opacity-50"
-                          >
-                            <option value="">-- Imprimante par défaut --</option>
-                            {availablePrinters.map((p, idx) => (
-                              <option key={idx} value={p.name}>{p.name}</option>
-                            ))}
-                          </select>
+                    <div className="flex items-center gap-6">
+                      {logoB64 && (
+                        <div className="w-24 h-24 bg-white border border-gray-300 rounded-xl p-2 flex items-center justify-center shadow-sm">
+                          <img src={logoB64} alt="Logo" className="max-h-full max-w-full object-contain grayscale" />
                         </div>
+                      )}
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Charger le logo du restaurant</label>
+                        <input type="file" accept="image/*" onChange={handleLogoUpload} className="text-xs font-bold text-gray-500" />
+                        <p className="text-[11px] text-gray-400 mt-1">Converti automatiquement en niveaux de gris pour l'imprimante thermique.</p>
                       </div>
                     </div>
-                  )}
+
+                    <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={showLogo} onChange={(e) => { setShowLogo(e.target.checked); setSecureSetting('show_logo', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <span className="text-sm font-bold text-secondary">Afficher le Logo</span>
+                      </label>
+
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={showHeaderInfo} onChange={(e) => { setShowHeaderInfo(e.target.checked); setSecureSetting('show_header_info', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <span className="text-sm font-bold text-secondary">Afficher Adresse/Tél</span>
+                      </label>
+
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={showTaxDetails} onChange={(e) => { setShowTaxDetails(e.target.checked); setSecureSetting('show_tax_details', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <span className="text-sm font-bold text-secondary">Détail des Taxes HT/TVA</span>
+                      </label>
+
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={kitchenShowPrices} onChange={(e) => { setKitchenShowPrices(e.target.checked); setSecureSetting('kitchen_show_prices', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <span className="text-sm font-bold text-secondary">Prix sur Bon Cuisine</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* 4. PIED DE PAGE & QR CODE */}
+                  <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
+                    <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Pied de page & QR Code</h3>
+
+                    <div>
+                      <label className="flex items-center gap-3 cursor-pointer mb-3">
+                        <input type="checkbox" checked={showFooterMessage} onChange={(e) => { setShowFooterMessage(e.target.checked); setSecureSetting('show_footer_message', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <span className="text-sm font-bold text-secondary">Message de fin de ticket</span>
+                      </label>
+                      {showFooterMessage && (
+                        <textarea 
+                          rows={2} value={footerMessage}
+                          onChange={(e) => { setFooterMessage(e.target.value); setSecureSetting('footer_custom_message', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl p-3 text-xs font-bold text-secondary shadow-sm"
+                        />
+                      )}
+                    </div>
+
+                    <div className="pt-4 border-t border-gray-200 space-y-4">
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" checked={showQrCode} onChange={(e) => { setShowQrCode(e.target.checked); setSecureSetting('show_qr_code', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <span className="text-sm font-bold text-secondary">Imprimer un QR Code</span>
+                      </label>
+
+                      {showQrCode && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Type de QR Code</label>
+                            <select 
+                              value={qrCodeType}
+                              onChange={(e) => { setQrCodeType(e.target.value); setSecureSetting('qr_code_type', e.target.value); }}
+                              className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2 text-sm font-bold text-secondary"
+                            >
+                              <option value="google">Avis Google / URL Custom</option>
+                              <option value="tracking">Suivi de commande</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">URL Cible</label>
+                            <input 
+                              type="text" value={qrCodeUrl}
+                              onChange={(e) => { setQrCodeUrl(e.target.value); setSecureSetting('qr_code_custom_url', e.target.value); }}
+                              className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2 text-sm font-bold text-secondary"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 6. ROUTAGE DES ARTICLES PAR CATÉGORIE (CUISINE / COMPTOIR / LIVRAISON) */}
+                  <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
+                    <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Routage par Catégorie</h3>
+                    <p className="text-xs font-bold text-gray-400">Dirigez automatiquement les bons de préparation des articles de certaines catégories vers des imprimantes spécifiques.</p>
+
+                    {currentCategories && currentCategories.length > 0 ? (
+                      <div className="space-y-3 max-h-60 overflow-y-auto custom-scrollbar pr-2">
+                        {currentCategories.map((cat, idx) => (
+                          <div key={idx} className="flex items-center justify-between bg-white p-3 rounded-xl border border-gray-200 shadow-sm">
+                            <span className="text-xs font-black text-secondary uppercase tracking-wider">{cat}</span>
+                            <select 
+                              value={categoryRouting[cat] || 'cuisine'}
+                              onChange={(e) => {
+                                const newRouting = { ...categoryRouting, [cat]: e.target.value };
+                                setCategoryRouting(newRouting);
+                                setSecureSetting('category_printer_routing', JSON.stringify(newRouting));
+                              }}
+                              className="bg-gray-50 border border-gray-300 rounded-lg px-3 py-1.5 text-xs font-bold text-secondary focus:outline-none focus:border-primary"
+                            >
+                              <option value="cuisine">Imprimante Cuisine (Par défaut)</option>
+                              <option value="caisse">Imprimante Caisse / Comptoir</option>
+                              <option value="livraison">Imprimante Livraison</option>
+                              <option value="rapports">Imprimante Rapports</option>
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs font-bold text-gray-400 italic">Aucune catégorie détectée sur ce menu.</p>
+                    )}
+                  </div>
 
                 </div>
               </div>

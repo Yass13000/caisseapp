@@ -123,7 +123,24 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'print_kitchen_ticket',
   'receipt_width',
   'imprimante_caisse',
-  'imprimante_cuisine'
+  'imprimante_cuisine',
+  'imprimante_livraison',
+  'imprimante_rapports',
+  'receipt_font_size',
+  'receipt_margin_type',
+  'receipt_copies_client',
+  'receipt_copies_kitchen',
+  'show_header_info',
+  'show_tax_details',
+  'show_footer_message',
+  'footer_custom_message',
+  'show_qr_code',
+  'qr_code_type',
+  'qr_code_custom_url',
+  'kitchen_show_prices',
+  'drawer_pin_mode',
+  'auto_open_drawer_cash',
+  'category_printer_routing'
 ]);
 
 ipcMain.on('get-setting-sync', (event, key, defaultValue) => {
@@ -143,6 +160,45 @@ ipcMain.on('set-setting-sync', (event, key, value) => {
     const num = Number(value);
     if (isNaN(num) || num < 40 || num > 120) {
       console.warn(`⚠️ Largeur de reçu invalide: ${value}`);
+      event.returnValue = false;
+      return;
+    }
+  }
+
+  if (key === 'qr_code_custom_url' && value) {
+    try {
+      new URL(String(value));
+    } catch (e) {
+      console.warn(`⚠️ URL de QR code invalide: ${value}`);
+      event.returnValue = false;
+      return;
+    }
+  }
+
+  if (key === 'category_printer_routing' && value) {
+    try {
+      const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+      if (typeof parsed !== 'object' || parsed === null) {
+        event.returnValue = false;
+        return;
+      }
+    } catch (e) {
+      console.warn(`⚠️ Routage par catégorie invalide: ${value}`);
+      event.returnValue = false;
+      return;
+    }
+  }
+
+  if (key === 'receipt_copies_client' || key === 'receipt_copies_kitchen') {
+    const num = Number(value);
+    if (isNaN(num) || num < 1 || num > 5) {
+      event.returnValue = false;
+      return;
+    }
+  }
+
+  if (key === 'drawer_pin_mode') {
+    if (!['0', '1', 'both'].includes(String(value))) {
       event.returnValue = false;
       return;
     }

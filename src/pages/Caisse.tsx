@@ -107,7 +107,7 @@ const openCashDrawer = async () => {
   }
 };
 
-const generateAndPrintReceipt = async (restaurantInfo: { name: string; address: string | null; phone: string | null; tva: number }, orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, deliveryFee: number, finalTotal: number, cashAmount: number, clientInfo?: { name?: string; phone?: string; address?: string; notes?: string; additionalInfo?: string } | null, groupMapping: Record<string, string> = {}) => {
+const generateAndPrintReceipt = async (restaurantInfo: { name: string; address: string | null; phone: string | null; tva: number; logoUrl?: string | null }, orderNumber: string, orderType: string, paymentMethod: string, items: any[], subtotal: number, deliveryFee: number, finalTotal: number, cashAmount: number, clientInfo?: { name?: string; phone?: string; address?: string; notes?: string; additionalInfo?: string } | null, groupMapping: Record<string, string> = {}) => {
   if (!(window as any).electronAPI) return;
   const printerName = getSecureSetting('imprimante_caisse', undefined) || undefined;
   const receiptWidth = getSecureSetting('receipt_width', '72');
@@ -130,7 +130,8 @@ const generateAndPrintReceipt = async (restaurantInfo: { name: string; address: 
       qty: item.quantity || 1,
       name: item.product?.name || item.name || 'Produit',
       unitPrice: item.price || item.product?.price || 0,
-      notes
+      notes,
+      categoryName: item.product?.category_name || item.category || ''
     };
   });
 
@@ -141,6 +142,7 @@ const generateAndPrintReceipt = async (restaurantInfo: { name: string; address: 
     restaurantName: restaurantInfo.name,
     restaurantAddress: restaurantInfo.address,
     restaurantPhone: restaurantInfo.phone,
+    restaurantLogoUrl: restaurantInfo.logoUrl,
     items: formattedItems,
     total: finalTotal,
     delivery: (orderType.toUpperCase().includes('LIVRAISON') || orderType === '3') && clientInfo ? {
@@ -611,6 +613,7 @@ const Caisse = () => {
             address: restoData.address || null,
             phone: restoData.phone || null,
             tva: tvaRate,
+            logoUrl: restoData.logo_url || null
           });
           setThemeColors({
             primary: restoData.theme_primary || '#04B855',
