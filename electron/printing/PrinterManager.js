@@ -269,7 +269,8 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const bodyPadding = settings.receipt_margin_type === 'standard' ? '12px 8px' : '4px 2px';
 
   const showHeaderInfo = settings.show_header_info !== 'false';
-  const showTaxDetails = settings.show_tax_details === 'true';
+  const showLogo = settings.show_logo !== 'false';
+  const showTaxDetails = settings.show_tax_details !== 'false';
   const showFooterMessage = settings.show_footer_message !== 'false';
   const footerMessage = escapeHtml(settings.footer_custom_message || 'Merci de votre visite !\nA bientôt.');
   const showQrCode = settings.show_qr_code === 'true';
@@ -279,8 +280,8 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   // 🛡️ Récupération du restaurantId depuis orderData ou settings pos_restaurant_id
   const currentRestaurantId = orderData.restaurantId || orderData.restaurant_id || settings.pos_restaurant_id;
 
-  // 🛡️ Source exclusive : logoUrl HTTP(S) distant de restaurants.logo_url (Pas de fallback B64)
-  const logoTargetUrl = (!isKitchenTicket && (orderData.restaurantLogoUrl || orderData.logo_url)) 
+  // 🛡️ Source exclusive : logoUrl HTTP(S) distant de restaurants.logo_url
+  const logoTargetUrl = (showLogo && !isKitchenTicket && (orderData.restaurantLogoUrl || orderData.logo_url)) 
     ? String(orderData.restaurantLogoUrl || orderData.logo_url) 
     : '';
 
