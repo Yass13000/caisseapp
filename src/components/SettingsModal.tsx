@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { 
-  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Receipt, Store, Power, RefreshCw
+  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Store, Power, RefreshCw, ShoppingBag
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase } from '@/lib/supabaseClient';
@@ -30,7 +30,7 @@ const setSecureSetting = (key: string, value: any) => {
   }
 };
 
-const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: SettingsModalProps) => {
+const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
   const [activeTab, setActiveTab] = useState('printing');
   const [showPowerMenu, setShowPowerMenu] = useState(false);
   const [gearClicks, setGearClicks] = useState(0);
@@ -43,6 +43,9 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
   // --- ÉTATS SYSTÈME ---
   const [newRestoId, setNewRestoId] = useState('');
   const [isCheckingResto, setIsCheckingResto] = useState(false);
+
+  // --- ÉTATS COMMANDE PAR DÉFAUT ---
+  const [defaultOrderType, setDefaultOrderType] = useState(() => getSecureSetting('default_order_type', 'EMPORTER'));
 
   // --- ÉTATS IMPRESSION AVANCÉS ---
   const [autoPrintReceipt, setAutoPrintReceipt] = useState(() => getSecureSetting('auto_print_receipt', 'true') !== 'false');
@@ -59,18 +62,16 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
   const [copiesClient, setCopiesClient] = useState(() => getSecureSetting('receipt_copies_client', '1'));
   const [copiesKitchen, setCopiesKitchen] = useState(() => getSecureSetting('receipt_copies_kitchen', '1'));
 
-  const [showLogo, setShowLogo] = useState(() => getSecureSetting('show_logo', 'true') === 'true');
-  const [showHeaderInfo, setShowHeaderInfo] = useState(() => getSecureSetting('show_header_info', 'true') === 'true');
+  // 🟢 CORRECTION DU LOGO : Stockage strict sous forme de chaîne 'true' / 'false'
+  const [showLogo, setShowLogo] = useState(() => getSecureSetting('show_logo', 'true') !== 'false');
+  const [showHeaderInfo, setShowHeaderInfo] = useState(() => getSecureSetting('show_header_info', 'true') !== 'false');
   const [showTaxDetails, setShowTaxDetails] = useState(() => getSecureSetting('show_tax_details', 'false') === 'true');
-  const [showFooterMessage, setShowFooterMessage] = useState(() => getSecureSetting('show_footer_message', 'true') === 'true');
+  const [showFooterMessage, setShowFooterMessage] = useState(() => getSecureSetting('show_footer_message', 'true') !== 'false');
   const [footerMessage, setFooterMessage] = useState(() => getSecureSetting('footer_custom_message', 'Merci de votre visite !\nA bientôt.'));
   const [showQrCode, setShowQrCode] = useState(() => getSecureSetting('show_qr_code', 'false') === 'true');
   const [qrCodeType, setQrCodeType] = useState(() => getSecureSetting('qr_code_type', 'google'));
   const [qrCodeUrl, setQrCodeUrl] = useState(() => getSecureSetting('qr_code_custom_url', 'https://google.com'));
   const [kitchenShowPrices, setKitchenShowPrices] = useState(() => getSecureSetting('kitchen_show_prices', 'false') === 'true');
-
-  const [drawerPinMode, setDrawerPinMode] = useState(() => getSecureSetting('drawer_pin_mode', 'both'));
-  const [autoOpenDrawerCash, setAutoOpenDrawerCash] = useState(() => getSecureSetting('auto_open_drawer_cash', 'true') === 'true');
 
   const [categoryRouting, setCategoryRouting] = useState<Record<string, string>>(() => {
     try {
@@ -123,6 +124,14 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
     } catch (e: any) {
       toast.error(`Erreur: ${e.message}`);
     }
+  };
+
+  // --- HANDLER MODE PAR DÉFAUT ---
+  const handleDefaultOrderTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    setDefaultOrderType(val);
+    setSecureSetting('default_order_type', val);
+    toast.success(`Mode de commande par défaut : ${val}`);
   };
 
   // --- HANDLERS SÉCURITÉ ---
@@ -190,7 +199,6 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
     }
   };
 
-  // --- HANDLER TRIPLE CLIC SÉCURISÉ ---
   const handleGearClick = () => {
     setGearClicks(prev => {
       const nextCount = prev + 1;
@@ -204,47 +212,11 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
     });
   };
 
-  // Réinitialise les clics si aucune action n'est faite après 1.5 seconde
   useEffect(() => {
     if (gearClicks === 0) return;
     const timeout = setTimeout(() => setGearClicks(0), 1500);
     return () => clearTimeout(timeout);
   }, [gearClicks]);
-
-  // --- HANDLERS IMPRESSION ---
-  const toggleAutoPrintReceipt = () => {
-    const newValue = !autoPrintReceipt;
-    setAutoPrintReceipt(newValue);
-    setSecureSetting('auto_print_receipt', String(newValue));
-    toast.success(newValue ? "Impression Auto ACTIVÉE" : "Impression Auto DÉSACTIVÉE");
-  };
-
-  const toggleKitchenTicket = () => {
-    const newValue = !printKitchenTicket;
-    setPrintKitchenTicket(newValue);
-    setSecureSetting('print_kitchen_ticket', String(newValue));
-    toast.success(newValue ? "Ticket Cuisine ACTIVÉ" : "Ticket Cuisine DÉSACTIVÉ");
-  };
-
-  const handleReceiptWidthChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
-    setReceiptWidth(val);
-    setSecureSetting('receipt_width', val);
-  };
-
-  const handleCaissePrinterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value;
-    setCaissePrinter(val);
-    setSecureSetting('imprimante_caisse', val);
-    toast.success("Imprimante Caisse mise à jour !");
-  };
-
-  const handleKitchenPrinterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value;
-    setKitchenPrinter(val);
-    setSecureSetting('imprimante_cuisine', val);
-    toast.success("Imprimante Cuisine mise à jour !");
-  };
 
   const menuItems = [
     { id: 'printing', icon: Printer, label: 'Impression', description: 'Tickets et matériels' },
@@ -265,7 +237,7 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
           </div>
           <div>
             <h1 className="text-3xl font-black text-secondary uppercase tracking-tight leading-none">Réglages</h1>
-            <p className="text-sm font-bold text-gray-400 uppercase tracking-widest mt-1"></p>
+            <p className="text-sm font-bold text-gray-400 uppercase tracking-widest mt-1">Configuration générale de la caisse</p>
           </div>
         </div>
         <button 
@@ -314,7 +286,7 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
             })}
           </div>
 
-          {/* PETIT BOUTON FLOTTANT D'ALIMENTATION */}
+          {/* BOUTON FLOTTANT D'ALIMENTATION */}
           <div className="px-6 mt-auto pt-4 border-t border-gray-100 flex justify-end relative">
             {showPowerMenu && (
               <div className="absolute bottom-16 right-6 w-56 bg-white rounded-2xl shadow-[0_10px_40px_-10px_rgba(0,0,0,0.25)] border border-gray-200 p-1.5 flex flex-col gap-0.5 animate-in fade-in slide-in-from-bottom-2 duration-150 z-50">
@@ -359,18 +331,37 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
         {/* ZONE DE CONTENU */}
         <div className="flex-1 overflow-y-auto p-10 bg-[#F3F4F6]">
           
-          {/* ONGLET IMPRESSION */}
+          {/* ONGLET IMPRESSION & MODE DE COMMANDE */}
           {activeTab === 'printing' && (
             <div className="max-w-3xl animate-in fade-in duration-300">
               <div className="mb-8">
-                <h2 className="text-3xl font-black text-secondary uppercase">Impression</h2>
-                <p className="text-gray-500 font-bold mt-2">Gérez les comportements d'impression des tickets.</p>
+                <h2 className="text-3xl font-black text-secondary uppercase">Impression & Préférences</h2>
+                <p className="text-gray-500 font-bold mt-2">Gérez le comportement des tickets et les modes de commande.</p>
               </div>
 
               <div className="bg-white rounded-[2rem] shadow-sm border border-gray-200 overflow-hidden space-y-2">
-                <div className="p-8 space-y-4">
+                <div className="p-8 space-y-6">
                   
-                  {/* 0. INTERRUPTEURS AUTOMATIQUES D'IMPRESSION */}
+                  {/* 🟢 SELECTION DU MODE DE COMMANDE PAR DÉFAUT */}
+                  <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-3">
+                    <div className="flex items-center gap-3">
+                      <ShoppingBag className="text-primary" size={24} />
+                      <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Mode de Commande par Défaut</h3>
+                    </div>
+                    <p className="text-xs font-bold text-gray-400">Ce mode sera réinitialisé automatiquement à chaque nouvelle commande.</p>
+                    
+                    <select
+                      value={defaultOrderType}
+                      onChange={handleDefaultOrderTypeChange}
+                      className="w-full bg-white border border-gray-300 rounded-xl px-4 py-3 text-sm font-black text-secondary shadow-sm focus:outline-none focus:border-primary"
+                    >
+                      <option value="EMPORTER">À EMPORTER (Défaut recommandé)</option>
+                      <option value="SUR PLACE">SUR PLACE</option>
+                      <option value="LIVRAISON">LIVRAISON</option>
+                    </select>
+                  </div>
+
+                  {/* INTERRUPTEURS AUTOMATIQUES D'IMPRESSION */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-4">
                     <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Déclenchement Automatique</h3>
                     <div className="grid grid-cols-2 gap-4">
@@ -402,7 +393,7 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
                     </div>
                   </div>
 
-                  {/* 1. CONFIGURATION MULTI-IMPRIMANTES ET RÔLES */}
+                  {/* CONFIGURATION MULTI-IMPRIMANTES ET RÔLES */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <div className="flex items-center justify-between">
                       <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Affectation des Imprimantes</h3>
@@ -465,7 +456,7 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
                     </div>
                   </div>
 
-                  {/* 2. RÉGLAGES DE MISE EN PAGE */}
+                  {/* RÉGLAGES DE MISE EN PAGE */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Mise en page & Format</h3>
 
@@ -529,41 +520,85 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
                     </div>
                   </div>
 
-                  {/* 3. EN-TÊTE DU TICKET & LOGO SUPABASE */}
+                  {/* 🟢 EN-TÊTE DU TICKET & LOGO (Stockage strict 'true' / 'false') */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Logo & Visuels</h3>
-                    <p className="text-xs font-bold text-gray-400">Le logo est géré automatiquement depuis l'interface d'administration Supabase du restaurant.</p>
 
                     <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
                       <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={showLogo} onChange={(e) => { setShowLogo(e.target.checked); setSecureSetting('show_logo', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <input 
+                          type="checkbox" 
+                          checked={showLogo} 
+                          onChange={(e) => { 
+                            const val = e.target.checked;
+                            setShowLogo(val); 
+                            setSecureSetting('show_logo', val ? 'true' : 'false'); 
+                          }} 
+                          className="w-5 h-5 accent-primary" 
+                        />
                         <span className="text-sm font-bold text-secondary">Afficher le Logo</span>
                       </label>
 
                       <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={showHeaderInfo} onChange={(e) => { setShowHeaderInfo(e.target.checked); setSecureSetting('show_header_info', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <input 
+                          type="checkbox" 
+                          checked={showHeaderInfo} 
+                          onChange={(e) => { 
+                            const val = e.target.checked;
+                            setShowHeaderInfo(val); 
+                            setSecureSetting('show_header_info', val ? 'true' : 'false'); 
+                          }} 
+                          className="w-5 h-5 accent-primary" 
+                        />
                         <span className="text-sm font-bold text-secondary">Afficher Adresse/Tél</span>
                       </label>
 
                       <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={showTaxDetails} onChange={(e) => { setShowTaxDetails(e.target.checked); setSecureSetting('show_tax_details', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <input 
+                          type="checkbox" 
+                          checked={showTaxDetails} 
+                          onChange={(e) => { 
+                            const val = e.target.checked;
+                            setShowTaxDetails(val); 
+                            setSecureSetting('show_tax_details', val ? 'true' : 'false'); 
+                          }} 
+                          className="w-5 h-5 accent-primary" 
+                        />
                         <span className="text-sm font-bold text-secondary">Détail des Taxes HT/TVA</span>
                       </label>
 
                       <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={kitchenShowPrices} onChange={(e) => { setKitchenShowPrices(e.target.checked); setSecureSetting('kitchen_show_prices', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <input 
+                          type="checkbox" 
+                          checked={kitchenShowPrices} 
+                          onChange={(e) => { 
+                            const val = e.target.checked;
+                            setKitchenShowPrices(val); 
+                            setSecureSetting('kitchen_show_prices', val ? 'true' : 'false'); 
+                          }} 
+                          className="w-5 h-5 accent-primary" 
+                        />
                         <span className="text-sm font-bold text-secondary">Prix sur Bon Cuisine</span>
                       </label>
                     </div>
                   </div>
 
-                  {/* 4. PIED DE PAGE & QR CODE */}
+                  {/* PIED DE PAGE & QR CODE */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Pied de page & QR Code</h3>
 
                     <div>
                       <label className="flex items-center gap-3 cursor-pointer mb-3">
-                        <input type="checkbox" checked={showFooterMessage} onChange={(e) => { setShowFooterMessage(e.target.checked); setSecureSetting('show_footer_message', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <input 
+                          type="checkbox" 
+                          checked={showFooterMessage} 
+                          onChange={(e) => { 
+                            const val = e.target.checked;
+                            setShowFooterMessage(val); 
+                            setSecureSetting('show_footer_message', val ? 'true' : 'false'); 
+                          }} 
+                          className="w-5 h-5 accent-primary" 
+                        />
                         <span className="text-sm font-bold text-secondary">Message de fin de ticket</span>
                       </label>
                       {showFooterMessage && (
@@ -577,7 +612,16 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
 
                     <div className="pt-4 border-t border-gray-200 space-y-4">
                       <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={showQrCode} onChange={(e) => { setShowQrCode(e.target.checked); setSecureSetting('show_qr_code', String(e.target.checked)); }} className="w-5 h-5 accent-primary" />
+                        <input 
+                          type="checkbox" 
+                          checked={showQrCode} 
+                          onChange={(e) => { 
+                            const val = e.target.checked;
+                            setShowQrCode(val); 
+                            setSecureSetting('show_qr_code', val ? 'true' : 'false'); 
+                          }} 
+                          className="w-5 h-5 accent-primary" 
+                        />
                         <span className="text-sm font-bold text-secondary">Imprimer un QR Code</span>
                       </label>
 
@@ -607,7 +651,7 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
                     </div>
                   </div>
 
-                  {/* 6. ROUTAGE DES ARTICLES PAR CATÉGORIE (CUISINE / COMPTOIR / LIVRAISON) */}
+                  {/* ROUTAGE DES ARTICLES PAR CATÉGORIE */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Routage par Catégorie</h3>
                     <p className="text-xs font-bold text-gray-400">Dirigez automatiquement les bons de préparation des articles de certaines catégories vers des imprimantes spécifiques.</p>
@@ -699,7 +743,7 @@ const SettingsModal = ({ onClose, currentCategories, onCategoriesReorder }: Sett
             </div>
           )}
 
-          {/* ZONE CACHÉE SYSTÈME : ACCESSIBLE UNIQUEMENT VIA LE TRIPLE CLIC SUR LA ROUE DENTÉE */}
+          {/* ZONE CACHÉE SYSTÈME : TRIPLE CLIC SUR LA ROUE DENTÉE */}
           {activeTab === 'secret-system' && (
             <div className="max-w-3xl animate-in fade-in duration-300">
               <div className="mb-8">

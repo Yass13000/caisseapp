@@ -62,6 +62,11 @@ const getSecureSetting = (key: string, defaultValue: any) => {
   return local;
 };
 
+const getDefaultOrderType = (): 'SUR PLACE' | 'EMPORTER' | 'LIVRAISON' => {
+  const val = getSecureSetting('default_order_type', 'EMPORTER');
+  return (val === 'SUR PLACE' || val === 'LIVRAISON' || val === 'EMPORTER') ? val : 'EMPORTER';
+};
+
 const setSecureSetting = (key: string, value: any) => {
   localStorage.setItem(key, String(value));
   if ((window as any).electronAPI?.setSetting) {
@@ -112,7 +117,6 @@ const openCashDrawer = async () => {
   }
 };
 
-// 🟢 IMPRESSION TICKET CLIENT CENTRALISÉE
 const generateAndPrintReceipt = async (
   restaurantInfo: any, 
   orderNumber: string, 
@@ -139,6 +143,7 @@ const generateAndPrintReceipt = async (
     subtotal,
     deliveryFee,
     finalTotal,
+    cashAmount,
     clientInfo,
     groupMapping
   });
@@ -151,7 +156,6 @@ const generateAndPrintReceipt = async (
   }
 };
 
-// 👨‍🍳 IMPRESSION BON CUISINE CENTRALISÉE
 const generateAndPrintKitchenTicket = async (
   orderNumber: string, 
   orderType: string, 
@@ -251,7 +255,6 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
         style={{ willChange: 'transform, opacity', transform: 'translateZ(0)' }}
         onClick={(e) => e.stopPropagation()}
       >
-        
         <div className="w-[35%] bg-white border-r border-gray-200 flex flex-col p-6 justify-between">
           <div className="space-y-6">
             <div className="flex justify-between items-start">
@@ -292,7 +295,6 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
         </div>
 
         <div className="flex-1 flex flex-col p-6 gap-4">
-          
           <div className="grid grid-cols-2 gap-4 flex-shrink-0">
             <button onClick={() => addPaymentLine('CB')} disabled={isProcessing} className="h-20 bg-blue-600 text-white rounded-2xl flex flex-col items-center justify-center gap-1 hover:bg-blue-700 active:scale-95 transition-all shadow-md">
               <CreditCard size={28} />
@@ -343,7 +345,6 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
             </div>
           </div>
         </div>
-
       </motion.div>
     </motion.div>,
     document.body
@@ -403,11 +404,13 @@ const Caisse = () => {
   
   const [initialSelections, setInitialSelections] = useState<any>(null);
 
-  const [orderType, setOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>('SUR PLACE');
+  const [orderType, setOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>(getDefaultOrderType());
+  const [previousOrderType, setPreviousOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>(getDefaultOrderType());
   const [activeOrderTypes, setActiveOrderTypes] = useState<string[]>(['SUR PLACE', 'EMPORTER', 'LIVRAISON']);
   
   const [isDeliveryModalOpen, setIsDeliveryModalOpen] = useState(false);
   const [clientInfo, setClientInfo] = useState<{name: string, phone: string, address: string, additionalInfo: string, fee: number} | null>(null);
+  const clientInfoRef = useRef<any>(null);
   const [deliveryFee, setDeliveryFee] = useState<number>(0);
 
   const [editingItemKey, setEditingItemKey] = useState<string | null>(null);
@@ -494,6 +497,8 @@ const Caisse = () => {
           setLoadedOrderId(null);
           setDeliveryFee(0);
           setClientInfo(null);
+          clientInfoRef.current = null;
+          setOrderType(getDefaultOrderType());
         }
 
         customToast("Caisse déverrouillée", "success", { duration: 800 });
@@ -586,7 +591,7 @@ const Caisse = () => {
     const init = async () => {
       setIsLoading(true);
       try {
-        const { data: restoData } = await supabase.from('restaurants').select('name, restaurant_name, address, phone, tva, logo_url, theme_primary, theme_secondary, theme_accent, allow_dine_in, allow_takeaway, allow_delivery').eq('id', activeRestoId).single();
+        const { data: restoData } = await supabase.from('restaurants').select('name, restaurant_name, address, phone, tva, logo_url, theme_primary, theme_secondary, theme_accent, allow_dine_in, allow_takeaway, allow_delivery, default_order_type').eq('id', activeRestoId).single();
         if (restoData) {
           const finalRestoName = restoData.restaurant_name || restoData.name || 'VOTRE RESTAURANT';
           setRestaurantName(finalRestoName);
@@ -614,10 +619,17 @@ const Caisse = () => {
           if (restoData.allow_takeaway !== false) types.push('EMPORTER');
           if (restoData.allow_delivery !== false) types.push('LIVRAISON');
           
-          if (types.length === 0) types.push('SUR PLACE');
+          if (types.length === 0) types.push('EMPORTER');
           
           setActiveOrderTypes(types);
-          setOrderType(types[0] as any);
+
+          const defaultFromDb = restoData.default_order_type;
+          const initialDefault = (defaultFromDb && types.includes(defaultFromDb)) 
+            ? defaultFromDb 
+            : getDefaultOrderType();
+
+          setOrderType(initialDefault as any);
+          setPreviousOrderType(initialDefault as any);
         }
 
         await loadMenuData(activeRestoId);
@@ -633,15 +645,15 @@ const Caisse = () => {
     return () => { document.body.style.overflow = 'auto'; };
   }, [posRestoId]);
 
-  const [previousOrderType, setPreviousOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>('SUR PLACE');
-
   const handleOrderTypeChange = (type: any) => {
     if (type === 'LIVRAISON') {
-      if (orderType !== 'LIVRAISON') {
-        setPreviousOrderType(orderType);
-      }
+      const currentInfo = clientInfoRef.current || clientInfo;
+      const hasValidClientInfo = currentInfo && currentInfo.name?.trim() && currentInfo.phone?.trim() && currentInfo.address?.trim();
+      setPreviousOrderType(orderType);
       setOrderType('LIVRAISON');
-      setIsDeliveryModalOpen(true);
+      if (!hasValidClientInfo) {
+        setIsDeliveryModalOpen(true);
+      }
     } else {
       setOrderType(type);
       setDeliveryFee(0);
@@ -649,14 +661,30 @@ const Caisse = () => {
   };
 
   const handleClientConfirm = (data: any) => {
+    if (!data || !data.name?.trim() || !data.phone?.trim() || !data.address?.trim()) {
+      toast.error("Nom, Téléphone et Adresse obligatoires pour la livraison !");
+      clientInfoRef.current = null;
+      setClientInfo(null);
+      setOrderType(previousOrderType || getDefaultOrderType());
+      setIsDeliveryModalOpen(false);
+      return;
+    }
+
+    clientInfoRef.current = data;
     setClientInfo(data);
     const fee = parseFloat(data?.fee ?? data?.delivery_fee ?? data?.deliveryFee ?? data?.frais_livraison ?? 0);
     setDeliveryFee(isNaN(fee) ? 0 : fee);
+    setOrderType('LIVRAISON');
     setIsDeliveryModalOpen(false);
-    toast.success(`Client ${data?.name || ''} enregistré !`);
+    toast.success(`Client ${data.name} enregistré !`);
   };
 
   const handleDeliveryModalClose = () => {
+    const currentInfo = clientInfoRef.current || clientInfo;
+    const hasValidClientInfo = currentInfo && currentInfo.name?.trim() && currentInfo.phone?.trim() && currentInfo.address?.trim();
+    if (!hasValidClientInfo) {
+      setOrderType(previousOrderType || getDefaultOrderType());
+    }
     setIsDeliveryModalOpen(false);
   };
 
@@ -665,12 +693,14 @@ const Caisse = () => {
     clearCart();
     setDeliveryFee(0);
     setClientInfo(null);
+    clientInfoRef.current = null;
     
     if (loadedOrderType && activeOrderTypes.includes(loadedOrderType)) {
       setOrderType(loadedOrderType as any);
     }
 
     if (loadedClientInfo && Object.keys(loadedClientInfo).length > 0) {
+      clientInfoRef.current = loadedClientInfo;
       setClientInfo(loadedClientInfo);
       if (loadedClientInfo.fee || loadedClientInfo.delivery_fee) {
         setDeliveryFee(parseFloat(loadedClientInfo.fee || loadedClientInfo.delivery_fee) || 0);
@@ -775,7 +805,6 @@ const Caisse = () => {
     setInitialSelections(null);
   };
 
-  // 🟢 ENCAISSEMENT & IMPRESSION AUTOMATIQUE AU PAIEMENT
   const finalizePayment = async (method: string, cashAmount: number = 0) => {
     if (cartState.items.length === 0) return;
     
@@ -837,6 +866,8 @@ const Caisse = () => {
         setLoadedOrderId(null);
         setDeliveryFee(0);
         setClientInfo(null);
+        clientInfoRef.current = null;
+        setOrderType(getDefaultOrderType());
         setIsPaymentModalOpen(false);
       } else {
         customToast("Erreur : Mode hors-ligne impossible sur le Web", "error");
@@ -881,13 +912,11 @@ const Caisse = () => {
 
       customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
 
-      // 🖨️ Impression Ticket Client (si activée dans Réglages)
       const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
       if (isAutoPrintReceiptEnabled) {
         await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
       }
       
-      // 🖨️ Impression Bon Cuisine (si activée dans Réglages)
       const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
       if (isKitchenTicketEnabled && !loadedOrderId) {
         setTimeout(async () => {
@@ -899,6 +928,8 @@ const Caisse = () => {
       setLoadedOrderId(null);
       setDeliveryFee(0);
       setClientInfo(null);
+      clientInfoRef.current = null;
+      setOrderType(getDefaultOrderType());
       setIsPaymentModalOpen(false);
 
     } catch (e) {
@@ -924,6 +955,8 @@ const Caisse = () => {
         setLoadedOrderId(null);
         setDeliveryFee(0);
         setClientInfo(null);
+        clientInfoRef.current = null;
+        setOrderType(getDefaultOrderType());
         setIsPaymentModalOpen(false);
       } else {
         customToast("Erreur d'enregistrement BDD", "error");
@@ -933,7 +966,6 @@ const Caisse = () => {
     }
   };
 
-  // ⏳ BOUTON SABLIER : ENVOI CUISINE EXCLUSIF SANS TICKET CLIENT
   const processPendingOrder = async () => {
     if (cartState.items.length === 0) return;
     
@@ -989,6 +1021,8 @@ const Caisse = () => {
         setLoadedOrderId(null);
         setDeliveryFee(0);
         setClientInfo(null);
+        clientInfoRef.current = null;
+        setOrderType(getDefaultOrderType());
       } else {
         customToast("Erreur : Mode hors-ligne impossible sur le Web", "error");
       }
@@ -1032,7 +1066,6 @@ const Caisse = () => {
 
       customToast(`Commande en attente de ${finalTotal.toFixed(2)}€`, "success");
       
-      // 🖨️ SEUL le Bon Cuisine doit sortir sur le bouton Sablier (pas de ticket client)
       const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
       if (isKitchenTicketEnabled && !loadedOrderId) {
         setTimeout(async () => {
@@ -1044,6 +1077,8 @@ const Caisse = () => {
       setLoadedOrderId(null);
       setDeliveryFee(0);
       setClientInfo(null);
+      clientInfoRef.current = null;
+      setOrderType(getDefaultOrderType());
 
     } catch (e) {
       console.error("Crash réseau inattendu, bascule de secours locale :", e);
@@ -1056,6 +1091,8 @@ const Caisse = () => {
         setLoadedOrderId(null);
         setDeliveryFee(0);
         setClientInfo(null);
+        clientInfoRef.current = null;
+        setOrderType(getDefaultOrderType());
       } else {
         customToast("Erreur d'enregistrement BDD", "error");
       }
@@ -1406,7 +1443,7 @@ const Caisse = () => {
             <p className="text-gray-500 font-bold mb-8">Tous les articles en cours seront supprimés.</p>
             <div className="flex gap-4 w-full">
               <button onClick={() => setShowClearConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all">Retour</button>
-              <button onClick={() => { clearCart(); setLoadedOrderId(null); setDeliveryFee(0); setClientInfo(null); setShowClearConfirm(false); setIsAuthenticated(false); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all">Oui, Annuler</button>
+              <button onClick={() => { clearCart(); setLoadedOrderId(null); setDeliveryFee(0); setClientInfo(null); clientInfoRef.current = null; setOrderType(getDefaultOrderType()); setShowClearConfirm(false); setIsAuthenticated(false); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all">Oui, Annuler</button>
             </div>
           </div>
         </div>
@@ -1420,7 +1457,7 @@ const Caisse = () => {
             <p className="text-gray-500 font-bold mb-8">Attention, une commande est en cours. Voulez-vous l'annuler et quitter ?</p>
             <div className="flex gap-4 w-full">
               <button onClick={() => setShowLogoutConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all">Rester</button>
-              <button onClick={() => { clearCart(); setIsAuthenticated(false); setDeliveryFee(0); setClientInfo(null); setShowLogoutConfirm(false); navigate('/'); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all leading-tight">Quitter et annuler</button>
+              <button onClick={() => { clearCart(); setIsAuthenticated(false); setDeliveryFee(0); setClientInfo(null); clientInfoRef.current = null; setOrderType(getDefaultOrderType()); setShowLogoutConfirm(false); navigate('/'); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all leading-tight">Quitter et annuler</button>
             </div>
           </div>
         </div>

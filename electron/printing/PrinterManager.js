@@ -32,7 +32,7 @@ function readSettingsFile() {
 }
 
 // ----------------------------------------------------------------------------
-// 🛡️ GESTION DU LOGO (SUPPORT PNG, JPEG ET WEBP)
+// 🛡️ GESTION DU LOGO (CACHE BINAIRE LOCAL)
 // ----------------------------------------------------------------------------
 async function getCachedLogoDataUrl(logoUrl, restaurantId) {
   if (!logoUrl || typeof logoUrl !== 'string') return '';
@@ -110,7 +110,7 @@ async function getCachedLogoDataUrl(logoUrl, restaurantId) {
 
       const data = [];
       let totalBytes = 0;
-      const MAX_BYTES = 3 * 1024 * 1024; // 3 Mo max
+      const MAX_BYTES = 3 * 1024 * 1024;
 
       res.on('data', (chunk) => {
         totalBytes += chunk.length;
@@ -132,7 +132,6 @@ async function getCachedLogoDataUrl(logoUrl, restaurantId) {
         try {
           const buffer = Buffer.concat(data);
 
-          // Vérification des signatures binaires (PNG, JPEG, WEBP)
           const isPng = buffer.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47;
           const isJpeg = buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
           const isWebp = buffer.length >= 12 && 
@@ -140,7 +139,6 @@ async function getCachedLogoDataUrl(logoUrl, restaurantId) {
                          buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50;
 
           if (!isPng && !isJpeg && !isWebp) {
-            console.warn("[PrinterManager] Format image non pris en charge (ni PNG, JPEG ou WEBP)");
             fallbackResolve();
             return;
           }
@@ -260,21 +258,16 @@ public class RawPrinterHelper {
 }
 
 // ----------------------------------------------------------------------------
-// 👨‍🍳 GÉNÉRATEUR EXCLUSIF TICKET CUISINE (DESIGN CONFORME MODÈLE A12)
-// ----------------------------------------------------------------------------
-// ----------------------------------------------------------------------------
-// 👨‍🍳 GÉNÉRATEUR EXCLUSIF TICKET CUISINE (RACCOURCI SANS CATEGORIES NI "CMD #")
+// 👨‍🍳 TICKET CUISINE
 // ----------------------------------------------------------------------------
 function buildKitchenHtml(orderData, widthMm = '72') {
   const bodyWidth = `${widthMm}mm`;
   
-  // N° de commande brut direct (nettoyage de tout préfixe "CMD #" ou "CMD")
   let orderNumDisplay = String(orderData.orderNumber || orderData.number || '001')
     .toUpperCase()
     .replace(/^CMD\s*#?/i, '')
     .trim();
 
-  // Heure de la commande
   let orderTime = '';
   if (orderData.orderDate) {
     const parts = String(orderData.orderDate).split(' ');
@@ -285,13 +278,11 @@ function buildKitchenHtml(orderData, widthMm = '72') {
     orderTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   }
 
-  // Mode de commande
   let orderTypeLabel = 'SUR PLACE';
   const rawType = String(orderData.orderType || '').toLowerCase();
   if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'A EMPORTER';
   if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
 
-  // Affichage linéaire direct des produits (sans nom de catégorie)
   const items = Array.isArray(orderData.items) ? orderData.items : [];
 
   const itemsHtml = items.map(item => {
@@ -328,18 +319,15 @@ function buildKitchenHtml(orderData, widthMm = '72') {
         </style>
       </head>
       <body>
-        <!-- BANDEAU N° COMMANDE BRUT -->
         <div style="background-color: black; color: white; text-align: center; font-size: 32px; font-weight: 900; padding: 8px 0; font-family: sans-serif; letter-spacing: 1px; -webkit-print-color-adjust: exact;">
           ${orderNumDisplay}
         </div>
 
-        <!-- BARRE HEURE / MODE -->
         <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 2px; font-weight: 800; font-size: 13px; border-bottom: 2px solid black; margin-bottom: 10px;">
           <span>${orderTime}</span>
           <span style="text-transform: uppercase;">${orderTypeLabel}</span>
         </div>
 
-        <!-- LISTE DES PRODUITS SUCCESSIFS -->
         <div>${itemsHtml}</div>
       </body>
     </html>
@@ -347,16 +335,168 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 }
 
 // ----------------------------------------------------------------------------
-// 📜 GÉNÉRATEUR TICKET CAISSE (CLIENT)
+// 📊 TICKET X / TICKET Z (COMPTABILITÉ CAISSE)
 // ----------------------------------------------------------------------------
+function buildZReportHtml(reportData, widthMm = '72') {
+  const isZ = reportData.type === 'Z' || String(reportData.orderType || '').toUpperCase().includes('Z');
+  const title = isZ ? 'RAPPORT Z - CLÔTURE' : 'RAPPORT X - PROVISOIRE';
+  const is58mm = Number(widthMm) <= 60;
+  const fontSize = is58mm ? '10px' : '12px';
+
+  // Extraction stricte : 'name' en priorité absolue
+  const restoName = escapeHtml(reportData.name || reportData.restaurantName || reportData.restaurant_name || 'VOTRE RESTAURANT');
+  const restoAddress = reportData.restaurantAddress || reportData.address ? escapeHtml(reportData.restaurantAddress || reportData.address) : null;
+  const restoPhone = reportData.restaurantPhone || reportData.phone ? escapeHtml(reportData.restaurantPhone || reportData.phone) : null;
+
+  const totalTtc = Number(reportData.totalSales ?? reportData.total ?? 0);
+  const rawTva = Number(reportData.tvaRate ?? reportData.tva ?? 10);
+  const tvaRate = rawTva > 0 ? rawTva : 10;
+  
+  const totalHt = totalTtc / (1 + tvaRate / 100);
+  const totalTva = totalTtc - totalHt;
+
+  const cashSales = Number(reportData.totalCash || 0);
+  const cardSales = Number(reportData.totalCard || 0);
+  const ticketRestoSales = Number(reportData.totalTicketResto || 0);
+
+  const openingFloat = Number(reportData.openingFloat || 0);
+  const expectedCashTotal = openingFloat + cashSales;
+  const actualCashCounted = Number(reportData.closingFloatActual || expectedCashTotal);
+  const discrepancy = actualCashCounted - expectedCashTotal;
+
+  const totalOrders = Number(reportData.totalOrders || 0);
+  const avgBasket = totalOrders > 0 ? (totalTtc / totalOrders).toFixed(2) : '0.00';
+
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { 
+            font-family: monospace; 
+            font-size: ${fontSize}; 
+            margin: 0; 
+            padding: 4px; 
+            width: ${widthMm}mm; 
+            color: black; 
+            line-height: 1.2; 
+          }
+          .center { text-align: center; width: 100%; }
+          .bold { font-weight: bold; }
+          .row { display: flex; justify-content: space-between; margin: 2px 0; }
+          hr { border: none; border-top: 1px dashed black; margin: 6px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="center">
+          <div style="font-size: 15px; font-weight: 900; text-transform: uppercase;">${restoName}</div>
+          ${restoAddress ? `<div style="font-size: 10px;">${restoAddress}</div>` : ''}
+          ${restoPhone ? `<div style="font-size: 10px;">Tél: ${restoPhone}</div>` : ''}
+          
+          <div style="font-size: 13px; font-weight: 900; margin-top: 6px; border: 1px solid black; padding: 4px;">
+            *** ${title} ***
+          </div>
+          <div style="margin-top: 4px; font-size: 10px;">Session N° : ${reportData.sessionId || 'N/A'}</div>
+          <div style="font-size: 10px;">Imprimé le : ${new Date().toLocaleString('fr-FR')}</div>
+        </div>
+
+        <hr />
+
+        <div class="bold">DATES DE SESSION</div>
+        <div class="row">
+          <span>Ouverture :</span>
+          <span>${reportData.openedAt ? new Date(reportData.openedAt).toLocaleString('fr-FR') : '-'}</span>
+        </div>
+        <div class="row">
+          <span>Fermeture :</span>
+          <span>${reportData.closedAt ? new Date(reportData.closedAt).toLocaleString('fr-FR') : 'EN COURS'}</span>
+        </div>
+
+        <hr />
+
+        <div class="bold">CHIFFRE D'AFFAIRES</div>
+        <div class="row" style="font-size: 13px; font-weight: 900;">
+          <span>TOTAL TTC :</span>
+          <span>${totalTtc.toFixed(2)} €</span>
+        </div>
+        <div class="row">
+          <span>Total HT :</span>
+          <span>${totalHt.toFixed(2)} €</span>
+        </div>
+        <div class="row">
+          <span>Total TVA (${tvaRate}%) :</span>
+          <span>${totalTva.toFixed(2)} €</span>
+        </div>
+
+        <hr />
+
+        <div class="bold">VENTILATION PAIEMENTS</div>
+        <div class="row">
+          <span>ESPÈCES :</span>
+          <span>${cashSales.toFixed(2)} €</span>
+        </div>
+        <div class="row">
+          <span>CARTE BANCAIRE :</span>
+          <span>${cardSales.toFixed(2)} €</span>
+        </div>
+        ${ticketRestoSales > 0 ? `
+        <div class="row">
+          <span>TICKETS RESTO :</span>
+          <span>${ticketRestoSales.toFixed(2)} €</span>
+        </div>
+        ` : ''}
+
+        <hr />
+
+        <div class="bold">STATISTIQUES DE VENTE</div>
+        <div class="row">
+          <span>Nb Commandes :</span>
+          <span>${totalOrders}</span>
+        </div>
+        <div class="row">
+          <span>Panier Moyen :</span>
+          <span>${avgBasket} €</span>
+        </div>
+
+        <hr />
+
+        <div class="bold">TIROIR ESPÈCES</div>
+        <div class="row">
+          <span>Fond initial :</span>
+          <span>${openingFloat.toFixed(2)} €</span>
+        </div>
+        <div class="row">
+          <span>+ Ventes Espèces :</span>
+          <span>${cashSales.toFixed(2)} €</span>
+        </div>
+        <div class="row bold">
+          <span>= Théorique :</span>
+          <span>${expectedCashTotal.toFixed(2)} €</span>
+        </div>
+        ${isZ ? `
+        <div class="row">
+          <span>Compté réel :</span>
+          <span>${actualCashCounted.toFixed(2)} €</span>
+        </div>
+        <div class="row bold">
+          <span>Écart de caisse :</span>
+          <span>${discrepancy >= 0 ? '+' : ''}${discrepancy.toFixed(2)} €</span>
+        </div>
+        ` : ''}
+
+        <hr />
+
+        <div class="center bold" style="margin-top: 6px;">
+          --- FIN DU TICKET ${reportData.type || (isZ ? 'Z' : 'X')} ---
+        </div>
+      </body>
+    </html>
+  `;
+}
+
 // ----------------------------------------------------------------------------
-// 📜 GÉNÉRATEUR TICKET CAISSE (CLIENT)
-// ----------------------------------------------------------------------------
-// ----------------------------------------------------------------------------
-// 📜 GÉNÉRATEUR TICKET CAISSE (CLIENT) - LIGNES CONTINUES & MODE DE PAIEMENT
-// ----------------------------------------------------------------------------
-// ----------------------------------------------------------------------------
-// 📜 TICKET CLIENT — MAPPING STRICT SUR PUBLIC.ORDERS
+// 📜 TICKET CLIENT
 // ----------------------------------------------------------------------------
 async function buildReceiptHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
@@ -394,9 +534,9 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     : '';
 
   const restaurantName = escapeHtml(
+    orderData.name || 
     orderData.restaurant_name || 
     orderData.restaurantName || 
-    orderData.name || 
     settings.restaurant_name || 
     'VOTRE RESTAURANT'
   );
@@ -416,7 +556,6 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'A EMPORTER';
   if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
 
-  // 💳 DÉTECTION ET NORMALISATION STRICTE DU MODE DE RÈGLEMENT
   const rawPayment = String(
     orderData.payment_method ?? 
     orderData.paymentMethod ?? 
@@ -576,13 +715,11 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 
         ${taxDetailsHtml}
 
-        <!-- 💳 MODE DE RÈGLEMENT APPRÊTÉ SOUS LA TVA (NON GRAS & TAILLE 10PX) -->
         <div style="display: flex; justify-content: space-between; font-size: 10px; font-weight: normal; margin-top: 2px;">
           <span>Mode de règlement:</span>
           <span>${paymentLabel}</span>
         </div>
 
-        <!-- 💶 TOTAL TTC (GRAND & EN GRAS) -->
         <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 900; margin-top: 6px;">
           <span>TOTAL TTC</span>
           <span>${total} €</span>
@@ -590,7 +727,6 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 
         <hr />
 
-        <!-- 📌 N° COMMANDE & SUR PLACE -->
         <div style="text-align: center; width: 100%; margin: 8px auto 4px auto;">
           <div style="font-size: 15px; font-weight: 900; text-align: center; width: 100%;">Commande : ${cleanOrderNumber}</div>
           <div style="font-size: 13px; font-weight: bold; text-align: center; width: 100%; margin-top: 2px;">*** ${orderTypeLabel} ***</div>
@@ -598,7 +734,6 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 
         ${(showFooterMessage || showQrCode) ? '<hr />' : ''}
 
-        <!-- 💬 PIED DE TICKET CENTRÉ PROPREMENT -->
         ${showFooterMessage ? `
           <div style="text-align: center; width: 100%; margin: 8px auto 4px auto;">
             <div style="font-size: 11px; font-weight: normal; text-align: center; width: 100%; white-space: pre-wrap; word-break: break-word;">${footerMessage}</div>
@@ -687,11 +822,24 @@ const PrinterManager = {
   async _printSingleWindow(orderData, desiredPrinterName, mainWindow) {
     const settings = readSettingsFile();
     const widthMm = settings.receipt_width || '72';
-    const isKitchen = String(orderData.orderType || '').toUpperCase().includes('CUISINE');
+    const rawType = String(orderData.orderType || orderData.type || '').toUpperCase();
+    const isKitchen = rawType.includes('CUISINE');
+    
+    // 🟢 DÉTECTION SÉCURISÉE DES RAPPORTS X/Z
+    const isReport = rawType.includes('RAPPORT') || 
+                     rawType === 'Z' || 
+                     rawType === 'X' || 
+                     orderData.totalSales !== undefined || 
+                     orderData.sessionId !== undefined;
 
-    const htmlContent = isKitchen 
-      ? buildKitchenHtml(orderData, widthMm) 
-      : await buildReceiptHtml(orderData, widthMm);
+    let htmlContent = '';
+    if (isReport) {
+      htmlContent = buildZReportHtml(orderData, widthMm);
+    } else if (isKitchen) {
+      htmlContent = buildKitchenHtml(orderData, widthMm);
+    } else {
+      htmlContent = await buildReceiptHtml(orderData, widthMm);
+    }
 
     return new Promise(async (resolve) => {
       try {
