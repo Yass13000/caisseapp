@@ -15,7 +15,7 @@ import {
   EyeOff 
 } from 'lucide-react';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
-import { getFormattedOrderOptions, fetchOptionGroupMapping } from '@/lib/orderFormatter'; // Ajuste le chemin si besoin
+import { getFormattedOrderOptions, fetchOptionGroupMapping } from '@/lib/orderFormatter';
 import { toast } from 'sonner';
 
 interface Order {
@@ -88,7 +88,12 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const [activeMenuOrderId, setActiveMenuOrderId] = useState<string | number | null>(null);
   const [expandedDeliveryOrderId, setExpandedDeliveryOrderId] = useState<string | number | null>(null);
   const [preparedItems, setPreparedItems] = useState<Record<string, boolean>>({});
+  
   const [optionGroupMapping, setOptionGroupMapping] = useState<Record<string, string>>({});
+  
+  // 🟢 SETS D'IDENTIFIANTS ET NOMS DE GROUPES HORS CUISINE (show_on_kds = false)
+  const [kdsHiddenGroupIds, setKdsHiddenGroupIds] = useState<Set<string>>(new Set());
+  const [kdsHiddenGroupNames, setKdsHiddenGroupNames] = useState<Set<string>>(new Set());
 
   // FILTRAGE DES COMMANDES
   const activeOrders = orders.filter(o => !isOrderClosed(o.status));
@@ -132,6 +137,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
   };
 
+  // 🟢 CHARGEMENT DES COMMANDES DE LA SESSION ACTIVE
   const loadOrders = async () => {
     try {
       const activeRestoId = (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) 
@@ -142,16 +148,35 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
         setIsLoading(false);
         return;
       }
-      
-      const today = new Date();
-      const startOfLocalDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-      const startOfDayISO = startOfLocalDay.toISOString(); 
+
+      const { data: activeSession } = await supabase
+        .from('cash_sessions')
+        .select('opened_at')
+        .eq('restaurant_id', activeRestoId)
+        .eq('status', 'OPEN')
+        .order('opened_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      let startTime = activeSession?.opened_at;
+
+      if (!startTime) {
+        const { data: lastSession } = await supabase
+          .from('cash_sessions')
+          .select('opened_at')
+          .eq('restaurant_id', activeRestoId)
+          .order('opened_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        startTime = lastSession?.opened_at || new Date(new Date().setHours(0, 0, 0, 0)).toISOString();
+      }
 
       const { data, error } = await supabase
         .from('orders')
         .select('*')
         .eq('restaurant_id', activeRestoId)
-        .gte('created_at', startOfDayISO)
+        .gte('created_at', startTime)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -163,7 +188,37 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
     }
   };
 
-  // 🟢 CHARGEMENT DU MAPPING DE NOMS D'OPTIONS DEPUIS ORDER FORMATTER
+  // 🟢 CHARGEMENT MULTI-NIVEAUX DES GROUPES HORS CUISINE (show_on_kds = false)
+  useEffect(() => {
+    const loadKdsStatus = async () => {
+      try {
+        const { data: ogData } = await supabase
+          .from('option_groups')
+          .select('id, name, target_category_name, show_on_kds')
+          .eq('show_on_kds', false);
+
+        const ids = new Set<string>();
+        const names = new Set<string>();
+
+        if (ogData) {
+          ogData.forEach(g => {
+            if (g.id != null) ids.add(String(g.id));
+            if (g.name) names.add(String(g.name).trim().toLowerCase());
+            if (g.target_category_name) names.add(String(g.target_category_name).trim().toLowerCase());
+          });
+        }
+
+        setKdsHiddenGroupIds(ids);
+        setKdsHiddenGroupNames(names);
+      } catch (err) {
+        console.error("Erreur chargement KDS status:", err);
+      }
+    };
+
+    loadKdsStatus();
+  }, []);
+
+  // 🟢 CHARGEMENT DU MAPPING DE NOMS D'OPTIONS
   useEffect(() => {
     const loadMapping = async () => {
       if (orders.length === 0) return;
@@ -192,6 +247,47 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
       supabase.removeChannel(channel); 
     };
   }, []);
+
+  // 🟢 VÉRIFICATION ULTRA-SÉCURISÉE DES OPTIONS HORS CUISINE (BDD + MOTS-CLÉS DYNAMIQUES)
+  const checkIsKdsHidden = (grp: any, opt: any) => {
+    if (!grp && !opt) return false;
+
+    // 1. Détection via propriétés directes de l'objet
+    if (opt?.show_on_kds === false || opt?.is_kds_hidden === true || grp?.show_on_kds === false) {
+      return true;
+    }
+
+    // 2. Détection via ID de groupe (option_group_id)
+    const grpId = String(opt?.option_group_id || opt?.group_id || grp?.id || '').trim();
+    if (grpId && kdsHiddenGroupIds.has(grpId)) {
+      return true;
+    }
+
+    // 3. Détection via Nom de groupe (originalGroupName / groupName)
+    const rawGroupName = String(grp?.originalGroupName || grp?.groupName || grp?.name || opt?.group_name || opt?.option_group_name || '').trim().toLowerCase();
+    if (rawGroupName && kdsHiddenGroupNames.has(rawGroupName)) {
+      return true;
+    }
+
+    // 4. Détection par mot-clé sur le nom du groupe (ex: boisson / drinks)
+    if (rawGroupName.includes('boisson') || rawGroupName.includes('drink')) {
+      return true;
+    }
+
+    // 5. Détection automatique par mot-clé produit (boissons dynamiques)
+    const optName = String(opt?.name || '').trim().toLowerCase();
+    const drinkKeywords = [
+      'pepsi', 'fanta', 'coca', 'oasis', 'ice tea', 'eau', '7up', 'sprite',
+      'perrier', 'tropico', 'red bull', 'schweppes', 'capri', 'dr pepper',
+      'ayran', 'cristaline', 'san pellegrino', 'fuze tea', 'orangina', 'hawaii', 'poms'
+    ];
+
+    if (drinkKeywords.some(kw => optName.includes(kw))) {
+      return true;
+    }
+
+    return false;
+  };
 
   const handleUpdateStatus = async (orderId: string | number, newStatus: string) => {
     try {
@@ -352,7 +448,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                         </a>
                       </div>
 
-                      {/* CONTENU PANIER AVEC ORDER FORMATTER */}
+                      {/* CONTENU PANIER */}
                       <div className="pt-1">
                         <button 
                           onClick={() => setExpandedDeliveryOrderId(isExpanded ? null : order.id)}
@@ -381,17 +477,26 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                                   
                                   {optionGroups.length > 0 && (
                                     <div className="pl-3 mt-0.5 space-y-0.5">
-                                      {optionGroups.map((grp, gIdx) => (
-                                        <div key={gIdx} className="flex flex-wrap items-baseline gap-1 text-[9px]">
-                                          {grp.items.map((opt, oIdx) => (
-                                            <span key={oIdx} className={opt.isSans ? "text-red-500 font-bold" : "text-blue-600 font-bold"}>
-                                              {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
-                                              {opt.price > 0 && <span className="text-gray-400 font-normal"> (+{opt.price.toFixed(2)}€)</span>}
-                                              {oIdx < grp.items.length - 1 ? ', ' : ''}
-                                            </span>
-                                          ))}
-                                        </div>
-                                      ))}
+                                      {optionGroups.map((grp, gIdx) => {
+                                        return (
+                                          <div key={gIdx} className="flex flex-wrap items-baseline gap-1 text-[9px]">
+                                            {grp.items.map((opt, oIdx) => {
+                                              const isKdsHidden = checkIsKdsHidden(grp, opt);
+
+                                              let textColor = opt.isSans ? "text-red-500 font-bold" : "text-blue-600 font-bold";
+                                              if (isKdsHidden && !opt.isSans) textColor = "text-purple-600 font-black uppercase";
+
+                                              return (
+                                                <span key={oIdx} className={textColor}>
+                                                  {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
+                                                  {opt.price > 0 && <span className="text-gray-400 font-normal"> (+{opt.price.toFixed(2)}€)</span>}
+                                                  {oIdx < grp.items.length - 1 ? ', ' : ''}
+                                                </span>
+                                              );
+                                            })}
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   )}
                                 </div>
@@ -467,7 +572,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                     </div>
                   </div>
 
-                  {/* CORPS DU TICKET STRUCTURÉ PAR ORDER FORMATTER (VIANDE, SAUCE, BOISSONS...) */}
+                  {/* CORPS DU TICKET AVEC COULEUR SPÉCIFIQUE (VIOLET) POUR LES OPTIONS HORS CUISINE */}
                   <div className="bg-white rounded-none p-3 w-full space-y-2">
                     {items.map((item: any, itemIdx: number) => {
                       const itemKey = `${order.id}-item-${itemIdx}`;
@@ -477,7 +582,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
                       return (
                         <div key={itemIdx} className="border-b border-gray-100 pb-1.5 last:border-0">
-                          {/* Nom du produit avec clic pour surbrillance de préparation */}
+                          {/* Nom du produit */}
                           <div 
                             onClick={() => togglePrepared(itemKey)}
                             aria-hidden="true"
@@ -489,7 +594,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                             </span>
                           </div>
 
-                          {/* Groupes d'options unifiés et formatés */}
+                          {/* Groupes d'options */}
                           {optionGroups.length > 0 && (
                             <div className="pl-4 mt-0.5 space-y-0.5">
                               {optionGroups.map((grp, gIdx) => {
@@ -500,6 +605,14 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                                     {grp.items.map((opt, oIdx) => {
                                       const optKey = `${grpKey}-opt-${oIdx}`;
                                       const isHighlighted = preparedItems[optKey];
+                                      
+                                      // 🟣 DÉTECTION ET VIOLET DE SECOURS POUR LES OPTIONS HORS CUISINE
+                                      const isKdsHidden = checkIsKdsHidden(grp, opt);
+
+                                      let textColorClass = opt.isSans ? 'text-red-600 font-black uppercase' : 'text-blue-600 font-bold uppercase';
+                                      if (isKdsHidden && !opt.isSans) {
+                                        textColorClass = 'text-purple-600 font-black uppercase';
+                                      }
 
                                       return (
                                         <span 
@@ -508,9 +621,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                                           className={`cursor-pointer transition-all ${
                                             isHighlighted 
                                               ? 'bg-lime-400 text-black font-black px-0.5' 
-                                              : opt.isSans 
-                                                ? 'text-red-600 font-black uppercase' 
-                                                : 'text-blue-600 font-bold uppercase'
+                                              : textColorClass
                                           }`}
                                         >
                                           {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}

@@ -10,11 +10,29 @@ export interface FormattedOptionItem {
 
 export interface FormattedOptionGroup {
   groupName: string;
+  originalGroupName?: string;
   items: FormattedOptionItem[];
 }
 
+const safeParseJSON = (data: unknown): Record<string, unknown> => {
+  if (typeof data === 'object' && data !== null) return data as Record<string, unknown>;
+  if (typeof data === 'string') {
+    try {
+      return JSON.parse(data);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+};
+
+const safeParseFloat = (val: unknown): number => {
+  const num = parseFloat(String(val ?? 0));
+  return isNaN(num) ? 0 : num;
+};
+
 /**
- * 🟢 1. MAPPING DES OPTIONS (GROUPS & SANS)
+ * 🟢 1. MAPPING ROBUSTE DES OPTIONS DEPUIS SUPABASE (GROUPS & DYNAMIQUES)
  */
 export const fetchOptionGroupMapping = async (
   items: any[], 
@@ -51,6 +69,7 @@ export const fetchOptionGroupMapping = async (
   };
 
   items.forEach(item => {
+    if (!item) return;
     collectIds(item.selectedSubOptions);
     collectIds(item.options);
     collectIds(item.flatOptions);
@@ -66,6 +85,7 @@ export const fetchOptionGroupMapping = async (
   const mapping: Record<string, string> = {};
 
   try {
+    // A. Récupération par ID de groupe explicite
     if (explicitGroupIds.size > 0) {
       const { data: groupData } = await supabase
         .from('option_groups')
@@ -79,37 +99,68 @@ export const fetchOptionGroupMapping = async (
       }
     }
 
+    // B. Récupération en 2 étapes pour éviter les erreurs de jointure FK PostgREST
     const cleanOptionIds = Array.from(optionIds).filter(id => id && !isNaN(Number(id)));
     if (cleanOptionIds.length > 0) {
-      let query = supabase
+      const { data: linksData } = await supabase
         .from('option_group_links')
-        .select('option_id, option_groups(id, name, restaurant_id)')
+        .select('option_id, group_id')
         .in('option_id', cleanOptionIds);
 
-      if (activeRestoId) {
-        query = query.eq('option_groups.restaurant_id', activeRestoId);
-      }
+      if (linksData && linksData.length > 0) {
+        const groupIds = Array.from(new Set(linksData.map(l => l.group_id).filter(Boolean)));
+        
+        if (groupIds.length > 0) {
+          const { data: groupsData } = await supabase
+            .from('option_groups')
+            .select('id, name')
+            .in('id', groupIds);
 
-      const { data: linksData } = await query;
+          if (groupsData) {
+            const groupNameMap: Record<string | number, string> = {};
+            groupsData.forEach(g => {
+              if (g.id && g.name) groupNameMap[g.id] = g.name;
+            });
 
-      if (linksData) {
-        linksData.forEach((link: any) => {
-          const grpObj = Array.isArray(link.option_groups) ? link.option_groups[0] : link.option_groups;
-          if (link.option_id && grpObj?.name) {
-            const strId = String(link.option_id);
-            mapping[strId] = grpObj.name;
+            linksData.forEach(link => {
+              if (link.option_id && link.group_id && groupNameMap[link.group_id]) {
+                const strOptId = String(link.option_id);
+                mapping[strOptId] = groupNameMap[link.group_id];
+              }
+            });
           }
-        });
+        }
       }
     }
 
+    // C. Récupération des options dynamiques (Boissons, Accompagnements...)
     if (dynamicProductIds.size > 0) {
+      const dynProductArray = Array.from(dynamicProductIds);
+
+      // Récupération des catégories des produits dynamiques
+      const { data: dynProductsData } = await supabase
+        .from('product')
+        .select('id, category, subcategory_id')
+        .in('id', dynProductArray);
+
+      const dynProdCategoryMap: Record<string, { category?: string; subcategory_id?: number }> = {};
+      if (dynProductsData) {
+        dynProductsData.forEach(p => {
+          if (p.id) {
+            dynProdCategoryMap[String(p.id)] = {
+              category: p.category ? String(p.category).trim().toLowerCase() : undefined,
+              subcategory_id: p.subcategory_id
+            };
+          }
+        });
+      }
+
       let dynQuery = supabase
         .from('option_groups')
         .select('id, name, product_overrides, target_category_name, target_subcategory_id');
 
       if (activeRestoId) {
-        dynQuery = dynQuery.eq('restaurant_id', activeRestoId);
+        dynQuery = dynQuery.or(`restaurant_id.eq.${activeRestoId},restaurant_id.is.null`);
       }
 
       const { data: dynGroups } = await dynQuery;
@@ -117,12 +168,20 @@ export const fetchOptionGroupMapping = async (
       if (dynGroups) {
         dynGroups.forEach((grp: any) => {
           mapping[`grp_${grp.id}`] = grp.name;
-          const overrides = typeof grp.product_overrides === 'string' 
-            ? JSON.parse(grp.product_overrides || '{}') 
-            : (grp.product_overrides || {});
+          const overrides = safeParseJSON(grp.product_overrides);
+          const targetCat = grp.target_category_name ? String(grp.target_category_name).trim().toLowerCase() : null;
 
-          dynamicProductIds.forEach(prodId => {
-            if (overrides[prodId] || grp.target_category_name || grp.target_subcategory_id) {
+          dynProductArray.forEach(prodId => {
+            const prodInfo = dynProdCategoryMap[prodId];
+            
+            // Match 1: Dans product_overrides
+            const hasOverride = overrides[prodId] || overrides[String(prodId)];
+            // Match 2: Dans target_category_name
+            const hasCategoryMatch = targetCat && prodInfo?.category && prodInfo.category === targetCat;
+            // Match 3: Dans target_subcategory_id
+            const hasSubcatMatch = grp.target_subcategory_id && prodInfo?.subcategory_id && grp.target_subcategory_id === prodInfo.subcategory_id;
+
+            if (hasOverride || hasCategoryMatch || hasSubcatMatch) {
               mapping[`dyn_${prodId}`] = grp.name;
               mapping[prodId] = grp.name;
             }
@@ -138,7 +197,7 @@ export const fetchOptionGroupMapping = async (
 };
 
 /**
- * 🟢 2. FORMATEUR DES OPTIONS POUR L'AFFICHAGE DU TICKET
+ * 🟢 2. FORMATEUR ET REGROUPEUR DES OPTIONS POUR L'AFFICHAGE DU TICKET & DASHBOARD
  */
 export const getFormattedOrderOptions = (
   item: any, 
@@ -149,14 +208,14 @@ export const getFormattedOrderOptions = (
   if (item.boisson) {
     rawOptions.push({
       name: typeof item.boisson === 'string' ? item.boisson : (item.boisson.name || ''),
-      price: parseFloat(item.boisson.price || 0),
+      price: safeParseFloat(item.boisson.price),
       group_name: 'BOISSONS'
     });
   }
   if (item.accompagnement) {
     rawOptions.push({
       name: typeof item.accompagnement === 'string' ? item.accompagnement : (item.accompagnement.name || ''),
-      price: parseFloat(item.accompagnement.price || 0),
+      price: safeParseFloat(item.accompagnement.price),
       group_name: 'ACCOMPAGNEMENTS'
     });
   }
@@ -222,23 +281,24 @@ export const getFormattedOrderOptions = (
       return;
     }
 
+    // 🟢 DÉTERMINATION DU NOM DU GROUPE POUR REGROUPER DANS LA MÊME LIGNE
+    const strOptId = opt.id ? String(opt.id) : '';
+    const cleanOptId = strOptId.replace('dyn_', '');
+    const mappedByOptId = groupMapping[strOptId] || groupMapping[cleanOptId] || groupMapping[`dyn_${cleanOptId}`];
+
+    const explicitGrpId = opt.option_group_id || opt.group_id;
+    const mappedByGrpId = explicitGrpId ? groupMapping[`grp_${explicitGrpId}`] : null;
+
     let candidateGroup = opt.group_name || opt.option_group_name || opt.groupName || opt.group || opt.step_name;
     if (candidateGroup && (candidateGroup.toLowerCase() === 'option' || candidateGroup.toLowerCase() === 'options')) {
       candidateGroup = null;
     }
 
-    const explicitGrpId = opt.option_group_id || opt.group_id;
-    const mappedByGrpId = explicitGrpId ? groupMapping[`grp_${explicitGrpId}`] : null;
-
-    const strOptId = opt.id ? String(opt.id) : '';
-    const cleanOptId = strOptId.replace('dyn_', '');
-    const mappedByOptId = groupMapping[strOptId] || groupMapping[cleanOptId] || groupMapping[`dyn_${cleanOptId}`];
-
     const fallbackType = opt.type && opt.type.toLowerCase() !== 'option' && opt.type.toLowerCase() !== 'options' ? opt.type : null;
 
-    const finalGroupName = candidateGroup || mappedByGrpId || mappedByOptId || fallbackType || `GRP_${optionsByCategory.size + 1}`;
+    const finalGroupName = mappedByGrpId || mappedByOptId || candidateGroup || fallbackType || 'OPTIONS';
     const cleanCategoryKey = String(finalGroupName).trim().toUpperCase();
-    const price = typeof opt === 'string' ? 0 : parseFloat(opt.price || 0);
+    const price = typeof opt === 'string' ? 0 : safeParseFloat(opt.price);
 
     if (!optionsByCategory.has(cleanCategoryKey)) {
       optionsByCategory.set(cleanCategoryKey, []);
@@ -255,14 +315,17 @@ export const getFormattedOrderOptions = (
     }
   });
 
-  return Array.from(optionsByCategory.values()).map(items => ({
+  // 🟢 groupName est réinitialisé à '' pour NE PAS affichier le titre de groupe devant les options
+  // originalGroupName conserve la valeur BDD pour les filtres KDS
+  return Array.from(optionsByCategory.entries()).map(([groupKey, items]) => ({
     groupName: '',
+    originalGroupName: groupKey,
     items
   }));
 };
 
 /**
- * 🟢 3. FONCTION UNIQUE CENTRALISÉE — PAYLOAD TICKET CLIENT
+ * 🟢 3. PAYLOAD TICKET CLIENT
  */
 export const buildClientReceiptPayload = (params: {
   restaurantId?: string | null;
@@ -292,7 +355,6 @@ export const buildClientReceiptPayload = (params: {
     orderDate
   } = params;
 
-  // 💳 Normalisation basée sur les valeurs exactes Supabase
   let rawPayment = String(paymentMethod || 'counter').trim();
   const pLower = rawPayment.toLowerCase();
 
@@ -305,7 +367,6 @@ export const buildClientReceiptPayload = (params: {
   } else if (pLower.includes('attente') || pLower.includes('pending')) {
     rawPayment = 'en attente';
   }
-  // Si c'est un paiement fractionné, rawPayment conserve sa chaîne complète ex: "Fractionné (Espèces: 20€ + CB: 4.7€)"
 
   const formattedItems = items.map(item => {
     const optionGroups = getFormattedOrderOptions(item, groupMapping);
@@ -354,7 +415,7 @@ export const buildClientReceiptPayload = (params: {
 };
 
 /**
- * 🟢 4. FONCTION UNIQUE CENTRALISÉE — PAYLOAD BON CUISINE
+ * 🟢 4. PAYLOAD BON CUISINE
  */
 export const buildKitchenReceiptPayload = (params: {
   orderNumber: string;
@@ -393,7 +454,7 @@ export const buildKitchenReceiptPayload = (params: {
 };
 
 /**
- * 🟢 5. MAPPING POUR UN OBJET DB 'ORDERS' DE SUPABASE
+ * 🟢 5. MAPPING POUR OBJET SUPABASE 'ORDERS'
  */
 export const buildReceiptPayloadFromOrder = async (
   order: any,

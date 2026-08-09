@@ -446,14 +446,38 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     return activeSteps.findIndex(s => s.id === lastId);
   }, [activeSteps]);
 
-  // 🟢 VÉRIFICATION SI TOUTES LES ÉTAPES OBLIGATOIRES NON-INGRÉDIENTS SONT REMPLIES (POUR LE BOUTON TERMINER)
-  const canFinish = useMemo(() => {
-    return activeSteps.every(step => {
-      if (step.isIngredientStep) return true;
+  // 🟢 VÉRIFICATION ET DÉTECTION DU PREMIER GROUPE D'OPTIONS INCOMPLET (INCLUANT LES SOUS-GROUPES SECONDARIES)
+  const firstIncompleteStepIndex = useMemo(() => {
+    const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
+
+    for (let i = 0; i < activeSteps.length; i++) {
+      const step = activeSteps[i];
+      if (step.isIngredientStep) continue;
+      if (isSoloMode && step.is_menu) continue;
+
       const sels = stepSelections[step.id] || [];
-      return sels.length >= step.min_choices;
-    });
-  }, [activeSteps, stepSelections]);
+      if (sels.length < step.min_choices) {
+        return i;
+      }
+
+      for (const opt of sels) {
+        const cleanOptId = cleanId(opt.id);
+        if (parentOptionIds.has(cleanOptId)) {
+          const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
+          for (const cg of childGroups) {
+            if (isSoloMode && cg.is_menu) continue;
+            const min = cg.min_choices != null ? Number(cg.min_choices) : 0;
+            const childSels = stepSelections[`sub_${cg.id}`] || [];
+            if (childSels.length < min) return i;
+          }
+        }
+      }
+    }
+    return -1;
+  }, [activeSteps, stepSelections, allSubGroups, isSoloMode]);
+
+  // 🟢 CANFINISH : TRUE SEULEMENT SI AUCUNE ÉTAPE N'EST INCOMPLÈTE DANS TOUTE LA MODALE
+  const canFinish = firstIncompleteStepIndex === -1;
 
   const toggleIngredient = useCallback((ingredientId: number) => {
     setRemovedIngredientIds(prev => {
@@ -598,22 +622,30 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     }, 150);
   }, [isProcessing, allSubGroups, product, ingredients, removedIngredientIds, isSoloMode, soloDiscount]);
 
-  // 🟢 NAVIGATION SUIVANT QUI SAUTE AUTOMATIQUEMENT L'ÉTAPE INGRÉDIENTS SANS Y BASCULER SEUL
+  // 🟢 NAVIGATION SUIVANT SÉCURISÉE AVEC REDIRECTION SUR LE PREMIER GROUPE INCOMPLET
   const handleNextStep = useCallback(() => {
     if (currentStep >= lastOptionStepIndex) {
-      compileFinalOptionsAndSubmit();
+      if (canFinish) {
+        compileFinalOptionsAndSubmit();
+      } else if (firstIncompleteStepIndex !== -1) {
+        setCurrentStep(firstIncompleteStepIndex);
+      }
     } else {
       let nextIndex = currentStep + 1;
       while (nextIndex < activeSteps.length && activeSteps[nextIndex].isIngredientStep) {
         nextIndex++;
       }
       if (nextIndex >= activeSteps.length) {
-        compileFinalOptionsAndSubmit();
+        if (canFinish) {
+          compileFinalOptionsAndSubmit();
+        } else if (firstIncompleteStepIndex !== -1) {
+          setCurrentStep(firstIncompleteStepIndex);
+        }
       } else {
         setCurrentStep(nextIndex);
       }
     }
-  }, [currentStep, lastOptionStepIndex, activeSteps, compileFinalOptionsAndSubmit]);
+  }, [currentStep, lastOptionStepIndex, activeSteps, canFinish, firstIncompleteStepIndex, compileFinalOptionsAndSubmit]);
 
   const handleSkipStep = useCallback(() => {
     const stepId = activeStepsRef.current[currentStep].id;
@@ -842,11 +874,16 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
   const stepData = activeSteps[currentStep];
   const currentSels = stepSelections[stepData.id] || [];
+  
+  // 🟢 VALIDATION ÉTAPE COURANTE
   const canProceed = stepData.isIngredientStep 
     ? true 
     : (currentSels.length >= stepData.min_choices && currentSels.length <= stepData.max_choices);
 
   const isFinalAction = currentStep >= lastOptionStepIndex;
+
+  // 🟢 ÉTAT DU BOUTON SUIVANT/VALIDER (Si c'est l'action finale, il exige que canFinish soit true)
+  const isButtonEnabled = isFinalAction ? canFinish : canProceed;
 
   const paidSelectionCount = currentSels.filter(s => (s.price || 0) > 0).length;
   const isNextChoiceFree = paidSelectionCount < (stepData.free_choices_count || 0);
@@ -882,7 +919,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
              </div>
 
              <div className="flex items-center gap-3">
-                {/* 🟢 BOUTON SEUL (Même taille que Terminer & Suivant, sans prix, changement de couleur quand actif) */}
+                {/* 🟢 BOUTON SEUL */}
                 {isCategoryMenu && (
                   <button
                     onClick={() => handleToggleSoloMode(!isSoloMode)}
@@ -896,7 +933,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                   </button>
                 )}
 
-                {/* 🟢 BOUTON TERMINER (Permet de valider directement si les choix obligatoires sont satisfaits) */}
+                {/* 🟢 BOUTON TERMINER */}
                 <button
                   disabled={!canFinish}
                   onClick={() => { if (canFinish) compileFinalOptionsAndSubmit(); }}
@@ -905,17 +942,17 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                       ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20'
                       : 'bg-gray-200 text-gray-400 cursor-not-allowed'
                   }`}
-                  title={canFinish ? "Valider immédiatement le produit" : "Remplissez les choix obligatoires pour terminer"}
+                  title={canFinish ? "Valider immédiatement le produit" : "Remplissez tous les choix obligatoires pour terminer"}
                 >
                   Terminer
                 </button>
 
-                {/* 🟢 BOUTON SUIVANT / VALIDER */}
+                {/* 🟢 BOUTON SUIVANT / VALIDER (Bloqué si isFinalAction et canFinish = false) */}
                 <button 
-                  disabled={!canProceed}
-                  onClick={() => { if (canProceed) handleNextStep(); }}
+                  disabled={!isButtonEnabled}
+                  onClick={() => { if (isButtonEnabled) handleNextStep(); }}
                   className={`px-8 py-3.5 rounded-xl font-black text-base uppercase tracking-wider shadow-lg transition-all active:scale-95 ${
-                    canProceed ? 'bg-[#04B855] text-white shadow-[#04B855]/20' : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    isButtonEnabled ? 'bg-[#04B855] text-white shadow-[#04B855]/20' : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                   }`}
                 >
                   {isFinalAction ? 'Valider' : 'Suivant ➔'}
@@ -924,12 +961,36 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
           </div>
         </div>
 
-        {/* Barre d'onglets */}
+        {/* 🟢 BARRE D'ONGLETS AVEC INDICATEURS DE SÉLECTION INCOMPLÈTE */}
         <div className="bg-white border-b border-gray-200 p-4 flex gap-3 overflow-x-auto no-scrollbar">
             {activeSteps.map((s, i) => {
+                const sels = stepSelections[s.id] || [];
+                
+                // Détection de choix manquant dans ce groupe principal ou ses sous-groupes obligatoires
+                let isMissingRequired = !s.isIngredientStep && sels.length < s.min_choices;
+                if (!isMissingRequired && !s.isIngredientStep) {
+                  const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
+                  for (const opt of sels) {
+                    const cleanOptId = cleanId(opt.id);
+                    if (parentOptionIds.has(cleanOptId)) {
+                      const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
+                      for (const cg of childGroups) {
+                        if (isSoloMode && cg.is_menu) continue;
+                        const min = cg.min_choices != null ? Number(cg.min_choices) : 0;
+                        const childSels = stepSelections[`sub_${cg.id}`] || [];
+                        if (childSels.length < min) {
+                          isMissingRequired = true;
+                          break;
+                        }
+                      }
+                    }
+                    if (isMissingRequired) break;
+                  }
+                }
+
                 const countText = s.isIngredientStep 
                   ? (removedIngredientIds.size > 0 ? `${removedIngredientIds.size} retiré(s)` : 'Tous inclus')
-                  : `${(stepSelections[s.id] || []).length} / ${s.max_choices}`;
+                  : `${sels.length} / ${s.max_choices}`;
 
                 return (
                   <button
@@ -938,12 +999,17 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                       className={`h-[60px] px-8 rounded-xl font-black text-sm uppercase tracking-wide transition-all border-4 flex flex-col items-center justify-center min-w-[200px] ${
                           currentStep === i
                           ? 'bg-secondary text-white border-secondary shadow-md'
+                          : isMissingRequired
+                          ? 'bg-amber-50 text-amber-800 border-amber-300 hover:border-amber-400'
                           : 'bg-gray-50 text-secondary border-gray-100'
                       }`}
                   >
-                      <span>{s.group_name}</span>
+                      <span className="flex items-center gap-1">
+                        <span>{s.group_name}</span>
+                        {isMissingRequired && <span className="text-amber-600 font-black text-xs">*</span>}
+                      </span>
                       <span className="text-[10px] opacity-70">
-                          {countText}
+                          {countText} {s.min_choices > 0 && `(min ${s.min_choices})`}
                       </span>
                   </button>
                 );
