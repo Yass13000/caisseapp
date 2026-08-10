@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { MapPin, Phone, User, Check, X, Loader2, Search, Users, AlertTriangle, RefreshCw, Plus } from 'lucide-react';
+import { MapPin, Phone, User, Check, X, Loader2, Search, Users, AlertTriangle, RefreshCw, Plus, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 
@@ -63,6 +63,7 @@ export const DeliveryModalCaisse = ({
   const [fee, setFee] = useState<number>(0);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [isCreatingNew, setIsCreatingNew] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
 
   // Géolocalisation & Calcul
   const [isCheckingDistance, setIsCheckingDistance] = useState(false);
@@ -369,6 +370,76 @@ export const DeliveryModalCaisse = ({
     } 
   };
 
+  // 🟢 SAUVEGARDE MANUELLE DE LA FICHE CLIENT DANS SUPABASE
+  const handleSaveClientProfile = async () => {
+    if (!name.trim()) return toast.error("Le nom du client est requis.", { duration: 1000 });
+
+    setIsSavingProfile(true);
+    const fullAddress = `${streetNumber.trim()} ${streetName.trim()}`.trim();
+    const cleanPhone = phone.replace(/\s+/g, '');
+    const activeRestoId = getActiveRestaurantId() || localStorage.getItem('pos_restaurant_id') || RESTAURANT_ID;
+
+    try {
+      if (selectedClientId) {
+        // MISE À JOUR D'UN CLIENT EXISTANT
+        const { data: updatedProfile, error } = await supabase
+          .from('profiles')
+          .update({
+            customer_name: name.trim(),
+            phone: cleanPhone,
+            address: fullAddress
+          })
+          .eq('id', selectedClientId)
+          .select('*')
+          .single();
+
+        if (error) {
+          console.error("Erreur Supabase Update:", error);
+          toast.error("Erreur lors de la mise à jour de la fiche.");
+        } else if (updatedProfile) {
+          setClients(prev => prev.map(c => c.id === selectedClientId ? updatedProfile : c));
+          toast.success("Fiche client enregistrée avec succès !");
+        }
+      } else {
+        // CRÉATION D'UN NOUVEAU CLIENT AVEC EMAIL UNIQUE
+        const newClientId = generateUUID();
+        const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
+        const fakeEmail = cleanPhone 
+          ? `guest_${cleanPhone}_${uniqueSuffix}@caisse.local` 
+          : `guest_${uniqueSuffix}@caisse.local`;
+
+        const { data: newProfile, error } = await supabase
+          .from('profiles')
+          .insert([{
+            id: newClientId,
+            restaurant_id: activeRestoId,
+            customer_name: name.trim(),
+            phone: cleanPhone,
+            address: fullAddress,
+            email: fakeEmail,
+            role: 'client'
+          }])
+          .select('*')
+          .single();
+
+        if (error) {
+          console.error("Erreur Supabase Insert:", error);
+          toast.error("Impossible de créer le client sur Supabase.");
+        } else if (newProfile) {
+          setSelectedClientId(newProfile.id);
+          setIsCreatingNew(false);
+          setClients(prev => [newProfile, ...prev]);
+          toast.success("Nouveau client créé dans Supabase !");
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur lors de la sauvegarde.");
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
   const handleFinalize = async () => {
     if (!streetName && !isEligible) return toast.error("Sélectionnez une adresse valide.", { duration: 1000 });
     if (!name.trim()) return toast.error("Le nom du client est requis.", { duration: 1000 });
@@ -376,13 +447,16 @@ export const DeliveryModalCaisse = ({
     const fullAddress = `${streetNumber.trim()} ${streetName.trim()}`.trim();
     const cleanPhone = phone.replace(/\s+/g, '');
     let finalClientId = selectedClientId;
+    const activeRestoId = getActiveRestaurantId() || localStorage.getItem('pos_restaurant_id') || RESTAURANT_ID;
 
     if (!finalClientId) {
       toast.info("Création de la fiche client...", { id: 'saveClient', duration: 800 });
       
       const newClientId = generateUUID(); 
-      const fakeEmail = cleanPhone ? `guest_${cleanPhone}@caisse.local` : `guest_${Date.now()}@caisse.local`;
-      const activeRestoId = localStorage.getItem('pos_restaurant_id') || RESTAURANT_ID;
+      const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
+      const fakeEmail = cleanPhone 
+        ? `guest_${cleanPhone}_${uniqueSuffix}@caisse.local` 
+        : `guest_${uniqueSuffix}@caisse.local`;
 
       try {
         const { data: newProfile, error } = await supabase
@@ -404,7 +478,30 @@ export const DeliveryModalCaisse = ({
           toast.warning("Client non sauvegardé, mais commande validée !", { id: 'saveClient', duration: 1500 });
         } else if (newProfile) {
           finalClientId = newProfile.id;
+          setClients(prev => [newProfile, ...prev]);
           toast.success("Nouveau client créé !", { id: 'saveClient', duration: 800 });
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    } else {
+      // 🟢 MISE À JOUR DE LA FICHE SI CLIENT EXISTANT DÉJÀ SÉLECTIONNÉ
+      try {
+        const { data: updatedProfile, error } = await supabase
+          .from('profiles')
+          .update({
+            customer_name: name.trim(),
+            phone: cleanPhone,
+            address: fullAddress
+          })
+          .eq('id', finalClientId)
+          .select('*')
+          .single();
+
+        if (error) {
+          console.error("Erreur Supabase Update à la validation:", error);
+        } else if (updatedProfile) {
+          setClients(prev => prev.map(c => c.id === finalClientId ? updatedProfile : c));
         }
       } catch (err) {
         console.error(err);
@@ -546,12 +643,26 @@ export const DeliveryModalCaisse = ({
                     <span className="font-black uppercase text-xs text-primary flex items-center gap-1.5">
                       <User className="h-4 w-4"/> {selectedClientId ? "Fiche Client Sélectionné" : "Nouvelle Fiche Client"}
                     </span>
-                    <button 
-                      onClick={() => { setSelectedClientId(null); setIsCreatingNew(false); }}
-                      className="text-[10px] font-black uppercase text-gray-400 hover:text-red-500 bg-gray-100 px-2 py-1 rounded"
-                    >
-                      Changer
-                    </button>
+                    
+                    <div className="flex items-center gap-2">
+                      {/* 🟢 BOUTON D'ENREGISTREMENT MANUEL DU PROFIL DANS SUPABASE */}
+                      <button
+                        onClick={handleSaveClientProfile}
+                        disabled={isSavingProfile}
+                        className="text-[10px] font-black uppercase text-green-700 bg-green-100 hover:bg-green-200 px-2.5 py-1 rounded transition-colors flex items-center gap-1"
+                        title="Sauvegarder les modifications dans la base de données"
+                      >
+                        {isSavingProfile ? <Loader2 className="w-3 h-3 animate-spin"/> : <Save className="w-3 h-3"/>}
+                        {selectedClientId ? "Enregistrer Fiche" : "Créer Fiche"}
+                      </button>
+
+                      <button 
+                        onClick={() => { setSelectedClientId(null); setIsCreatingNew(false); }}
+                        className="text-[10px] font-black uppercase text-gray-400 hover:text-red-500 bg-gray-100 px-2 py-1 rounded"
+                      >
+                        Changer
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
