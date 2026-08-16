@@ -13,9 +13,21 @@ interface OrderHistoryModalProps {
 
 const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   if (!item) return 0;
-  const basePrice = parseFloat(item.product?.price || item.price || 0);
+  if (item.isReward) return 0;
+
+  // 🟢 PRIORITÉ 1 : Utiliser le prix de ligne déjà calculé et stocké dans l'objet de commande
+  if (item.total_price !== undefined && item.total_price !== null && !isNaN(Number(item.total_price))) {
+    return Number(item.total_price);
+  }
+  if (item.total !== undefined && item.total !== null && !isNaN(Number(item.total))) {
+    return Number(item.total);
+  }
+
+  // 🟢 PRIORITÉ 2 : Calcul strict sans double comptage (base_price + options)
+  const basePrice = parseFloat(item.product?.base_price ?? item.base_price ?? item.product?.price ?? item.price ?? 0);
   const groups = getFormattedOrderOptions(item, groupMapping);
-  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + o.price, 0);
+  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
+
   return (basePrice + optsPrice) * (item.quantity || 1);
 };
 
@@ -159,13 +171,6 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
           toast.error("Impossible d'imprimer : détails de commande vides.");
           return;
       }
-
-      const date = new Date(order.created_at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const orderNumber = order.order_number || order.id.toString().slice(0, 4);
-      
-      let orderType = 'SUR PLACE';
-      if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') orderType = 'EMPORTER';
-      if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') orderType = 'LIVRAISON';
 
       const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping, 'DUPLICATA');
 
