@@ -439,7 +439,7 @@ const Caisse = () => {
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
+    const handleOffline = () => setIsOffline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     return () => { clearInterval(timer); window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
@@ -724,7 +724,13 @@ const Caisse = () => {
         const formattedItem = {
           ...item,
           id: uniqueKey,
-          product: fullProduct,
+          product: {
+            ...fullProduct,
+            rawSelections,
+            selectedSubOptions,
+            removedIngredients,
+            options: selectedSubOptions
+          },
           rawSelections,
           selectedSubOptions,
           removedIngredients,
@@ -751,6 +757,7 @@ const Caisse = () => {
       const { data: optionGroups } = await supabase.from('product_option_groups').select('id').eq('product_id', product.id).limit(1);
       if (optionGroups?.length) {
         setSelectedProduct(product);
+        setInitialSelections(null);
         setIsOptionsModalOpen(true);
       } else {
         const uniqueId = `${product.id}-no-opts`;
@@ -1286,12 +1293,24 @@ const Caisse = () => {
                       const rawId = item.product?.id ?? item.id;
                       const parsed = typeof rawId === 'number' ? rawId : parseInt(String(rawId).split('-')[0], 10);
                       const realId = !isNaN(parsed) ? parsed : rawId;
-                      const fullProduct = menuData.find(p => p.id === realId) || item.product || item;
+                      const baseProduct = menuData.find(p => p.id === realId) || item.product || item;
+                      
+                      const rawSelections = item.rawSelections || item.product?.rawSelections || null;
+                      const flatOptions = item.selectedSubOptions || item.product?.selectedSubOptions || item.options || item.product?.options || [];
+                      const removedIngredients = item.removedIngredients || item.product?.removedIngredients || [];
+
+                      const fullProduct = {
+                        ...baseProduct,
+                        isSolo: item.isSolo === true || item.product?.isSolo === true,
+                        rawSelections,
+                        selectedSubOptions: flatOptions,
+                        removedIngredients,
+                        options: flatOptions
+                      };
                       
                       setEditingItemKey(itemKey);
                       setSelectedProduct(fullProduct);
-                      
-                      setInitialSelections(item.rawSelections || item.selectedSubOptions || item.options || null);
+                      setInitialSelections(rawSelections || flatOptions || null);
                       
                       setIsOptionsModalOpen(true);
                       lastClickRef.current = { id: '', time: 0 };

@@ -43,14 +43,58 @@ interface StepData {
   is_menu?: boolean;
 }
 
-const cleanId = (id: string | number) => String(id).replace('dyn_', '');
+const cleanId = (id: any) => {
+  if (id === undefined || id === null) return '';
+  return String(id).replace(/^dyn_/, '');
+};
 
-// 🟢 HELPER: FORMATTAGE DU NOM DU PRODUIT (ex: "Menu Tacos" -> "Tacos Seul", "Tacos" -> "Tacos Seul")
+const normalizeStr = (s: any) => String(s || '')
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLowerCase()
+  .trim();
+
 const formatProductName = (name: string, isSolo: boolean) => {
   if (!name) return '';
   if (!isSolo) return name;
   const cleanName = name.replace(/^menu\s+/i, '').trim();
   return `${cleanName} Seul`;
+};
+
+// 🟢 EXTRACTEUR UNIVERSEL DE CHOIX (Gère les groupes imbriqués, rawSelections, selectedSubOptions)
+const extractAllChoicesFromSource = (...sources: any[]): any[] => {
+  const flat: any[] = [];
+
+  const traverse = (val: any) => {
+    if (!val) return;
+    if (Array.isArray(val)) {
+      val.forEach(traverse);
+      return;
+    }
+    if (typeof val === 'object') {
+      // Cas de la borne : { groupId: 0, groupName: "Option", options: [ { id: "107", name: "..." } ] }
+      if (Array.isArray(val.options)) {
+        val.options.forEach(opt => {
+          flat.push({
+            ...opt,
+            groupName: val.groupName || opt.groupName,
+            groupId: val.groupId ?? opt.groupId
+          });
+        });
+      } 
+      // Cas direct d'une option : { id: 107, name: "..." }
+      else if (val.id !== undefined || val.name !== undefined) {
+        flat.push(val);
+      } 
+      // Cas d'un dictionnaire comme rawSelections { "base_117": [...] }
+      else {
+        Object.values(val).forEach(traverse);
+      }
+    }
+  };
+
+  sources.forEach(src => traverse(src));
+  return flat;
 };
 
 const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any) => {
@@ -62,7 +106,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   
   const [stepSelections, setStepSelections] = useState<Record<string, CustomizationOption[]>>({});
   
-  // 🟢 GESTION DU MODE SEUL / MENU ET DÉDUCTION DU PRIX
   const [isCategoryMenu, setIsCategoryMenu] = useState(false);
   const [isSoloMode, setIsSoloMode] = useState(false);
   const [soloDiscount, setSoloDiscount] = useState<number>(0);
@@ -114,10 +157,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   }, []);
 
   useEffect(() => {
-    hasInitializedStepRef.current = false;
-  }, [product?.id]);
-
-  useEffect(() => {
     let isMounted = true;
     
     const fetchRulesAndOptions = async () => {
@@ -133,7 +172,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
       const activeRestoId = product?.restaurant_id || (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) || localStorage.getItem('pos_restaurant_id') || RESTAURANT_ID;
 
       try {
-        // 🟢 VÉRIFICATION DU MODE MENU ET RÉCUPÉRATION DE LA DÉDUCTION DANS CATEGORIES
         let categoryIsMenu = false;
         let categorySoloDiscount = 0;
 
@@ -198,7 +236,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                  return { 
                    id: opt.id, 
                    name: opt.name, 
-                   price: opt.price || 0,
+                   price: opt.price || 0, 
                    sort_order: sortedLinks[idx]?.sort_order || 0,
                    image: opt.image_url || '',
                    description: opt.description || '',
@@ -342,54 +380,101 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
           setAllSubGroups(subGroupsData);
           setIngredients(validIngredients);
 
-          // 🟢 RECONSTITUTION INTELLIGENTE DES SÉLECTIONS PRÉALABLES
-          if (initialSelections && typeof initialSelections === 'object' && !Array.isArray(initialSelections) && Object.keys(initialSelections).length > 0) {
-            setStepSelections(initialSelections);
-          } else {
-            const flatList: any[] = Array.isArray(initialSelections)
-              ? initialSelections
-              : (Array.isArray(product?.selectedSubOptions) ? product.selectedSubOptions : (Array.isArray(product?.options) ? product.options : []));
+          if (product?.isSolo === true || product?.is_solo === true || /\bseul\b/i.test(product?.name || '')) {
+            setIsSoloMode(true);
+          }
 
-            if (flatList.length > 0) {
-              const reconstructed: Record<string, CustomizationOption[]> = {};
-              const allStepsToMatch = [
-                ...formattedBaseSteps,
-                ...finalProdGroups.map(g => formatSubGroup(g))
-              ];
+          const allStepsToMatch = [
+            ...formattedBaseSteps,
+            ...subGroupsData.map(g => formatSubGroup(g))
+          ];
 
-              flatList.forEach(chosenOpt => {
-                const cleanChosenId = cleanId(chosenOpt.id);
-                const chosenName = String(chosenOpt.name || chosenOpt.option_name || '').toLowerCase().trim();
+          // 🟢 Extraction complète et aplatie des choix de la borne
+          const flatCandidates = extractAllChoicesFromSource(
+            initialSelections,
+            product?.selectedSubOptions,
+            product?.rawSelections,
+            product?.options,
+            product?.flatOptions,
+            product
+          );
 
-                for (const step of allStepsToMatch) {
-                  const matchedOption = step.options.find(o => 
-                    cleanId(o.id) === cleanChosenId || 
-                    String(o.name || '').toLowerCase().trim() === chosenName
-                  );
+          const reconstructed: Record<string, CustomizationOption[]> = {};
 
-                  if (matchedOption) {
-                    if (!reconstructed[step.id]) {
-                      reconstructed[step.id] = [];
-                    }
-                    if (step.allow_multiple || reconstructed[step.id].length < step.max_choices) {
-                      reconstructed[step.id].push(matchedOption);
-                    }
-                    break;
-                  }
-                }
+          flatCandidates.forEach(cand => {
+            if (!cand) return;
+            const isSans = typeof cand === 'object' && (cand.isSans === true || cand.is_sans === true || /^sans\s+/i.test(cand.name || ''));
+            if (isSans) return;
+
+            const candId = typeof cand === 'object' ? (cand.id ?? cand.option_id ?? cand.product_id) : cand;
+            const candCleanId = cleanId(candId);
+            const candName = typeof cand === 'object' ? normalizeStr(cand.name || cand.option_name || '') : '';
+            const candGroupId = typeof cand === 'object' ? (cand.option_group_id ?? cand.group_id ?? cand.groupId) : undefined;
+            const candGroupName = typeof cand === 'object' ? normalizeStr(cand.groupName || cand.group_name || cand.option_group_name || '') : '';
+
+            // Trier les étapes pour tester en priorité celles qui correspondent au groupe
+            const sortedSteps = [...allStepsToMatch].sort((a, b) => {
+              const matchA = (candGroupId !== undefined && String(a.option_group_id) === String(candGroupId)) || (candGroupName && normalizeStr(a.group_name) === candGroupName) ? 1 : 0;
+              const matchB = (candGroupId !== undefined && String(b.option_group_id) === String(candGroupId)) || (candGroupName && normalizeStr(b.group_name) === candGroupName) ? 1 : 0;
+              return matchB - matchA;
+            });
+
+            for (const step of sortedSteps) {
+              const matched = step.options.find(o => {
+                const oCleanId = cleanId(o.id);
+                const oName = normalizeStr(o.name || '');
+
+                if (candCleanId && (oCleanId === candCleanId || String(o.id) === String(candId))) return true;
+                if (o.original_product_id && candCleanId && (String(o.original_product_id) === candCleanId || String(o.original_product_id) === String(candId))) return true;
+                if (typeof cand === 'object' && cand.original_product_id && oCleanId && (String(cand.original_product_id) === oCleanId || String(cand.original_product_id) === String(o.id))) return true;
+                if (oName && candName && (oName === candName || oName.includes(candName) || candName.includes(oName))) return true;
+                return false;
               });
 
-              setStepSelections(reconstructed);
-            } else {
-              setStepSelections({});
+              if (matched) {
+                if (!reconstructed[step.id]) reconstructed[step.id] = [];
+                const max = step.max_choices || 1;
+                const alreadySelected = reconstructed[step.id].some(s => cleanId(s.id) === cleanId(matched.id));
+                if (!alreadySelected && (step.allow_multiple || reconstructed[step.id].length < max)) {
+                  reconstructed[step.id].push(matched);
+                }
+                break;
+              }
             }
+          });
+
+          setStepSelections(reconstructed);
+
+          // 🟢 INGRÉDIENTS RETIRÉS
+          const removedIds = new Set<number>();
+          const removedSource = product?.removedIngredients || initialSelections?.removedIngredients || [];
+          if (Array.isArray(removedSource)) {
+            removedSource.forEach((item: any) => {
+              if (typeof item === 'number') removedIds.add(item);
+              else if (typeof item === 'string' && !isNaN(Number(item))) removedIds.add(Number(item));
+              else if (item && typeof item.id === 'number') removedIds.add(item.id);
+            });
           }
 
-          // 🟢 RECONSTITUTION DES INGRÉDIENTS RETIRÉS
-          const removed = product?.removedIngredients || initialSelections?.removedIngredients || [];
-          if (Array.isArray(removed) && removed.length > 0) {
-            setRemovedIngredientIds(new Set(removed.map((i: any) => typeof i === 'number' ? i : i.id).filter(Boolean)));
+          if (flatCandidates.length > 0 && validIngredients.length > 0) {
+            flatCandidates.forEach((opt: any) => {
+              if (!opt) return;
+              const isSans = opt.isSans === true || opt.is_sans === true;
+              const optName = String(opt.name || opt.option_name || '').trim();
+              const startsWithSans = /^sans\s+/i.test(optName);
+
+              if (isSans || startsWithSans) {
+                const targetName = normalizeStr(optName.replace(/^sans\s+/i, ''));
+                const matchedIng = validIngredients.find(ing => 
+                  normalizeStr(ing.name) === targetName || 
+                  String(ing.id) === cleanId(opt.id)
+                );
+                if (matchedIng) removedIds.add(matchedIng.id);
+              }
+            });
           }
+
+          setRemovedIngredientIds(removedIds);
         }
 
       } catch (e) { 
@@ -402,36 +487,26 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     fetchRulesAndOptions();
 
     return () => { isMounted = false; };
-  }, [product?.id, product?.isSolo, formatSubGroup]); 
+  }, [product?.id, initialSelections]); 
 
-  // 🟢 BASCULE DU MODE SEUL / MENU ET PURGE DES SÉLECTIONS INCOMPATIBLES
   const handleToggleSoloMode = (soloState: boolean) => {
     setIsSoloMode(soloState);
 
     if (soloState) {
       setStepSelections(prev => {
         const nextState = { ...prev };
-        
         baseSteps.forEach(step => {
-          if (step.is_menu) {
-            delete nextState[step.id];
-          }
+          if (step.is_menu) delete nextState[step.id];
         });
-
         allSubGroups.forEach(sg => {
-          if (sg.is_menu) {
-            delete nextState[`sub_${sg.id}`];
-          }
+          if (sg.is_menu) delete nextState[`sub_${sg.id}`];
         });
-
         return nextState;
       });
-
       setCurrentStep(0);
     }
   };
 
-  // 🟢 CONSTRUCTION DES ÉTAPES ACTIVES
   const activeSteps = useMemo(() => {
     const rawId = String(product.id);
     const parsed = typeof product.id === 'number' ? product.id : parseInt(rawId.split('-')[0], 10);
@@ -474,7 +549,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
   activeStepsRef.current = activeSteps;
 
-  // 🟢 POSITIONNE AUTOMATIQUEMENT L'ÉTAPE INITIALE SUR LA PREMIÈRE ETAPE D'OPTION (ET NON INGRÉDIENTS)
   useEffect(() => {
     if (!hasInitializedStepRef.current && activeSteps.length > 0) {
       const firstOptIndex = activeSteps.findIndex(s => !s.isIngredientStep);
@@ -494,7 +568,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     return activeSteps.findIndex(s => s.id === lastId);
   }, [activeSteps]);
 
-  // 🟢 VÉRIFICATION ET DÉTECTION DU PREMIER GROUPE D'OPTIONS INCOMPLET (INCLUANT LES SOUS-GROUPES SECONDARIES)
   const firstIncompleteStepIndex = useMemo(() => {
     const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
 
@@ -524,7 +597,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     return -1;
   }, [activeSteps, stepSelections, allSubGroups, isSoloMode]);
 
-  // 🟢 CANFINISH : TRUE SEULEMENT SI AUCUNE ÉTAPE N'EST INCOMPLÈTE DANS TOUTE LA MODALE
   const canFinish = firstIncompleteStepIndex === -1;
 
   const toggleIngredient = useCallback((ingredientId: number) => {
@@ -634,7 +706,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             _fusionId: cartItemId 
         }));
 
-        // CALCUL DU NOM ET DU PRIX FINAL EN MODE SEUL
         const finalName = formatProductName(product.name, isSoloMode);
         const originalPrice = Number(product.price || 0);
         const finalBasePrice = isSoloMode && soloDiscount > 0
@@ -670,7 +741,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     }, 150);
   }, [isProcessing, allSubGroups, product, ingredients, removedIngredientIds, isSoloMode, soloDiscount]);
 
-  // 🟢 NAVIGATION SUIVANT SÉCURISÉE AVEC REDIRECTION SUR LE PREMIER GROUPE INCOMPLET
   const handleNextStep = useCallback(() => {
     if (currentStep >= lastOptionStepIndex) {
       if (canFinish) {
@@ -734,7 +804,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     
     setStepSelections(prev => {
         const currentSels = prev[stepId] || [];
-        const occurrenceCount = currentSels.filter(s => String(s.id) === String(option.id)).length;
+        const occurrenceCount = currentSels.filter(s => cleanId(s.id) === cleanOptId || String(s.id) === String(option.id)).length;
         const isAlreadySelected = occurrenceCount > 0;
         
         const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId)
@@ -743,7 +813,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
         if (childGroups.length > 0) {
             if (isAlreadySelected && max === 1) {
-                const newState = { ...prev, [stepId]: currentSels.filter(s => String(s.id) !== String(option.id)) };
+                const newState = { ...prev, [stepId]: currentSels.filter(s => cleanId(s.id) !== cleanOptId && String(s.id) !== String(option.id)) };
                 childGroups.forEach(cg => { newState[`sub_${cg.id}`] = []; }); 
                 return newState;
             } else {
@@ -769,7 +839,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
              if (currentSels.length < max) newSels.push(option);
           } else {
              if (isAlreadySelected) {
-                 newSels = currentSels.filter(s => String(s.id) !== String(option.id));
+                 newSels = currentSels.filter(s => cleanId(s.id) !== cleanOptId && String(s.id) !== String(option.id));
                  removedOptions.push(option);
              } else if (currentSels.length < max) {
                  newSels.push(option);
@@ -797,7 +867,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
       e.stopPropagation();
       setStepSelections(prev => {
           const currentSels = prev[stepId] || [];
-          const indexToRemove = currentSels.map(o => String(o.id)).lastIndexOf(String(choice.id));
+          const indexToRemove = currentSels.map(o => cleanId(o.id)).lastIndexOf(cleanId(choice.id));
           if (indexToRemove !== -1) {
               const newSels = [...currentSels];
               newSels.splice(indexToRemove, 1);
@@ -810,7 +880,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   const handleBubbleChoice = (stepId: string, choice: any, max: number, allowMultiple: boolean) => {
       setStepSelections(prev => {
           const currentSels = prev[stepId] || [];
-          const isAlreadySelected = currentSels.some(s => String(s.id) === String(choice.id));
+          const isAlreadySelected = currentSels.some(s => cleanId(s.id) === cleanId(choice.id));
           let newSels = [...currentSels];
 
           if (max === 1) {
@@ -820,7 +890,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
               if (allowMultiple) {
                   if (currentSels.length < max) newSels.push(choice);
               } else {
-                  if (isAlreadySelected) newSels = currentSels.filter(s => String(s.id) === String(choice.id));
+                  if (isAlreadySelected) newSels = currentSels.filter(s => cleanId(s.id) !== cleanId(choice.id));
                   else if (currentSels.length < max) newSels.push(choice);
               }
           }
@@ -846,7 +916,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
       setStepSelections(prev => {
           const currentSels = prev[baseStepId] || [];
-          const isAlreadySelected = currentSels.some(s => String(s.id) === String(parentItem.id));
+          const isAlreadySelected = currentSels.some(s => cleanId(s.id) === cleanId(parentItem.id));
           let newSels = [...currentSels];
           let removedOptions = [];
 
@@ -876,7 +946,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
       setBubbleOption(null);
   };
 
-  // CALCUL DU TOTAL AVEC DÉDUCTION DU PRIX EN MODE SEUL
   const total = useMemo(() => {
     let basePrice = Number(product.price || 0);
     if (isSoloMode && soloDiscount > 0) {
@@ -923,14 +992,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   const stepData = activeSteps[currentStep];
   const currentSels = stepSelections[stepData.id] || [];
   
-  // 🟢 VALIDATION ÉTAPE COURANTE
   const canProceed = stepData.isIngredientStep 
     ? true 
     : (currentSels.length >= stepData.min_choices && currentSels.length <= stepData.max_choices);
 
   const isFinalAction = currentStep >= lastOptionStepIndex;
-
-  // 🟢 ÉTAT DU BOUTON SUIVANT/VALIDER (Si c'est l'action finale, il exige que canFinish soit true)
   const isButtonEnabled = isFinalAction ? canFinish : canProceed;
 
   const paidSelectionCount = currentSels.filter(s => (s.price || 0) > 0).length;
@@ -967,7 +1033,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
              </div>
 
              <div className="flex items-center gap-3">
-                {/* 🟢 BOUTON SEUL */}
                 {isCategoryMenu && (
                   <button
                     onClick={() => handleToggleSoloMode(!isSoloMode)}
@@ -981,7 +1046,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                   </button>
                 )}
 
-                {/* 🟢 BOUTON TERMINER */}
                 <button
                   disabled={!canFinish}
                   onClick={() => { if (canFinish) compileFinalOptionsAndSubmit(); }}
@@ -995,7 +1059,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                   Terminer
                 </button>
 
-                {/* 🟢 BOUTON SUIVANT / VALIDER (Bloqué si isFinalAction et canFinish = false) */}
                 <button 
                   disabled={!isButtonEnabled}
                   onClick={() => { if (isButtonEnabled) handleNextStep(); }}
@@ -1009,12 +1072,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
           </div>
         </div>
 
-        {/* 🟢 BARRE D'ONGLETS AVEC INDICATEURS DE SÉLECTION INCOMPLÈTE */}
+        {/* Barre d'onglets */}
         <div className="bg-white border-b border-gray-200 p-4 flex gap-3 overflow-x-auto no-scrollbar">
             {activeSteps.map((s, i) => {
                 const sels = stepSelections[s.id] || [];
                 
-                // Détection de choix manquant dans ce groupe principal ou ses sous-groupes obligatoires
                 let isMissingRequired = !s.isIngredientStep && sels.length < s.min_choices;
                 if (!isMissingRequired && !s.isIngredientStep) {
                   const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
@@ -1067,7 +1129,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         {/* Contenu principal */}
         <div className="flex-1 p-6 overflow-y-auto custom-scrollbar">
           {stepData.isIngredientStep ? (
-            /* --- VUE ONGLET INGRÉDIENTS (Optionnel, uniquement si cliqué) --- */
             <div className="space-y-4">
               <div className="flex items-center justify-between bg-primary/10 border border-primary/20 p-4 rounded-xl">
                 <p className="text-sm font-bold text-secondary uppercase tracking-wider">
@@ -1118,9 +1179,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
               </div>
             </div>
           ) : (
-            /* --- VUE OPTIONS STANDARD --- */
             <div className="grid grid-cols-4 gap-4 content-start">
-              
               {stepData.min_choices === 0 && (
                 <div 
                   onClick={handleSkipStep}
@@ -1145,7 +1204,15 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
               )}
 
               {stepData.options.map(opt => {
-                const occurrences = currentSels.filter(o => String(o.id) === String(opt.id));
+                const occurrences = currentSels.filter(o => {
+                  if (String(o.id) === String(opt.id)) return true;
+                  if (cleanId(o.id) === cleanId(opt.id)) return true;
+                  if (o.original_product_id && (String(o.original_product_id) === cleanId(opt.id) || String(o.original_product_id) === String(opt.original_product_id))) return true;
+                  if (opt.original_product_id && (String(opt.original_product_id) === cleanId(o.id))) return true;
+                  if (o.name && opt.name && normalizeStr(o.name) === normalizeStr(opt.name)) return true;
+                  return false;
+                });
+
                 const qty = occurrences.length;
                 const isSel = qty > 0;
                 let displayPrice = opt.price;
@@ -1227,7 +1294,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                               </span>
                           </div>
                           <div className="grid grid-cols-2 gap-3">
-                              
                               {min === 0 && (
                                   <div
                                       onClick={() => setStepSelections(prev => ({ ...prev, [stepId]: [] }))}
@@ -1252,7 +1318,12 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                               )}
 
                               {choices.map((choice: any) => {
-                                  const occurrences = currentSubSels.filter(s => String(s.id) === String(choice.id));
+                                  const occurrences = currentSubSels.filter(s => {
+                                    if (String(s.id) === String(choice.id)) return true;
+                                    if (cleanId(s.id) === cleanId(choice.id)) return true;
+                                    if (s.name && choice.name && normalizeStr(s.name) === normalizeStr(choice.name)) return true;
+                                    return false;
+                                  });
                                   const qty = occurrences.length;
                                   const isSelected = qty > 0;
                                   let effectiveChoicePrice = choice.price;

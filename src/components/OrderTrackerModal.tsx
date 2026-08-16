@@ -199,15 +199,23 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       if (!Array.isArray(items)) items = items.items || items.cart || [items];
       
       items = items.map((item: any, index: number) => {
+         const productObj = item.product || item;
          const productName = extractProductName(item);
          const productPrice = extractProductPrice(item);
-         const productId = item.product?.id || item.id || `prod-${index}`;
 
-         const rawOptions = item.selectedSubOptions || item.selections || item.flatOptions || item.options || [];
+         const rawId = productObj.id ?? item.id;
+         const parsed = typeof rawId === 'number' ? rawId : parseInt(String(rawId).split('-')[0], 10);
+         const realProductId = !isNaN(parsed) ? parsed : rawId;
+
+         // 🟢 Préservation intégrale des données borne (options, rawSelections, suppléments, ingrédients retirés)
+         const rawSelections = item.rawSelections || productObj.rawSelections || item.selections || productObj.selections || null;
+         const rawOptions = item.selectedSubOptions || productObj.selectedSubOptions || item.flatOptions || productObj.flatOptions || item.options || productObj.options || item.selectedOptions || productObj.selectedOptions || [];
+         const removedIngredients = item.removedIngredients || productObj.removedIngredients || [];
+         const isSolo = item.isSolo === true || productObj.isSolo === true || item.is_solo === true || productObj.is_solo === true;
 
          const optionsString = JSON.stringify(rawOptions);
          const optionsHash = btoa(encodeURIComponent(optionsString)).substring(0, 15);
-         const antiFusionId = `${productId}-${optionsHash}-${index}`;
+         const antiFusionId = `loaded-${order.id}-${index}-${realProductId}-${optionsHash}`;
 
          return {
              ...item,
@@ -216,16 +224,26 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
              cartKey: antiFusionId,       
              name: productName,           
              price: productPrice,
+             isSolo,
              product: { 
-               id: productId, 
+               ...productObj,
+               id: realProductId, 
                name: productName, 
                price: productPrice,
                is_available: true,
-               category: item.product?.category || ''
+               category: productObj.category || '',
+               isSolo,
+               rawSelections,
+               options: rawOptions,
+               selectedSubOptions: rawOptions,
+               flatOptions: rawOptions,
+               removedIngredients
              }, 
              selectedSubOptions: rawOptions,
-             rawSelections: item.rawSelections || item.selections || null,
-             removedIngredients: item.removedIngredients || []
+             options: rawOptions,
+             flatOptions: rawOptions,
+             rawSelections,
+             removedIngredients
          };
       });
     } catch (e) {
