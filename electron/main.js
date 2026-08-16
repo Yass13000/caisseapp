@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -258,111 +258,23 @@ ipcMain.handle('remove-offline-order', async (event, offlineId) => {
 });
 
 // ============================================================================
-// --- OUTILS PRO : RECHERCHE D'IMPRIMANTE & ENVOI DE CODES BRUTS ---
-// ============================================================================
-
-async function getTargetPrinter(desiredPrinterName) {
-  if (!mainWindow) return null;
-  const printers = await mainWindow.webContents.getPrintersAsync();
-  
-  if (desiredPrinterName) {
-    const specificPrinter = printers.find(p => p.name === desiredPrinterName);
-    if (specificPrinter) {
-      console.log(`[POS Hardware] Imprimante spécifique résolue: ${specificPrinter.name}`);
-      return specificPrinter;
-    }
-  }
-
-  let targetPrinter = printers.find(p => p.isDefault);
-  if (!targetPrinter) targetPrinter = printers.find(p => p.name.toLowerCase().includes('tm') || p.name.toLowerCase().includes('epson'));
-  if (!targetPrinter && printers.length > 0) targetPrinter = printers[0];
-  
-  console.log(`[POS Hardware] Imprimante cible résolue (défaut/auto): ${targetPrinter ? targetPrinter.name : 'AUCUNE'}`);
-  return targetPrinter;
-}
-
-function sendRawCommandToPrinter(printerName, byteString) {
-  if (process.platform !== 'win32') return Promise.resolve(false);
-
-  console.log(`[POS Hardware] Envoi commande RAW à "${printerName}" -> Octets: [${byteString}]`);
-
-  const psScript = `
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class RawPrinterHelper {
-    [DllImport("winspool.Drv", EntryPoint="OpenPrinterA", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool OpenPrinter([MarshalAs(UnmanagedType.LPStr)] string szPrinter, out IntPtr hPrinter, IntPtr pd);
-    [DllImport("winspool.Drv", EntryPoint="ClosePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool ClosePrinter(IntPtr hPrinter);
-    [DllImport("winspool.Drv", EntryPoint="StartDocPrinterA", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool StartDocPrinter(IntPtr hPrinter, int level, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOA di);
-    [DllImport("winspool.Drv", EntryPoint="EndDocPrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool EndDocPrinter(IntPtr hPrinter);
-    [DllImport("winspool.Drv", EntryPoint="StartPagePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool StartPagePrinter(IntPtr hPrinter);
-    [DllImport("winspool.Drv", EntryPoint="EndPagePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool EndPagePrinter(IntPtr hPrinter);
-    [DllImport("winspool.Drv", EntryPoint="WritePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
-    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
-    public class DOCINFOA {
-        [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
-        [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
-    }
-    public static bool SendBytesToPrinter(string szPrinterName, byte[] bytes) {
-        IntPtr pUnmanagedBytes = Marshal.AllocCoTaskMem(bytes.Length);
-        Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);
-        bool bSuccess = false;
-        IntPtr hPrinter = new IntPtr(0);
-        DOCINFOA di = new DOCINFOA();
-        di.pDocName = "Signal ESC/POS"; di.pDataType = "RAW";
-        if (OpenPrinter(szPrinterName, out hPrinter, IntPtr.Zero)) {
-            if (StartDocPrinter(hPrinter, 1, di)) {
-                if (StartPagePrinter(hPrinter)) {
-                    int dwWritten = 0;
-                    bSuccess = WritePrinter(hPrinter, pUnmanagedBytes, bytes.Length, out dwWritten);
-                    EndPagePrinter(hPrinter);
-                }
-                EndDocPrinter(hPrinter);
-            }
-            ClosePrinter(hPrinter);
-        }
-        Marshal.FreeCoTaskMem(pUnmanagedBytes); return bSuccess;
-    }
-}
-"@
-[RawPrinterHelper]::SendBytesToPrinter("${printerName}", [byte[]](${byteString}))
-`;
-  
-  const scriptPath = path.join(os.tmpdir(), 'raw_printer_signal.ps1');
-  fs.writeFileSync(scriptPath, psScript, 'utf8');
-
-  return new Promise((resolve) => {
-    exec(`powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "${scriptPath}"`, (error, stdout) => {
-      const output = stdout.trim().toLowerCase();
-      const isSuccess = !error && output === 'true';
-      console.log(`[POS Hardware] Résultat WritePrinter via PowerShell: ${isSuccess} (Output: ${output})`);
-      resolve(isSuccess);
-    });
-  });
-}
-
-// ============================================================================
 // --- IPC HANDLERS MATÉRIEL (DÉLÉGUÉS À PRINTER MANAGER) ---
 // ============================================================================
 
 ipcMain.handle('get-printers', async () => {
-  if (mainWindow) return await mainWindow.webContents.getPrintersAsync();
+  const win = mainWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  if (win) return await win.webContents.getPrintersAsync();
   return [];
 });
 
 ipcMain.handle('print-receipt', async (event, data, printerName) => {
-  return await PrinterManager.printReceipt(data, printerName, mainWindow);
+  const win = mainWindow || BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow();
+  return await PrinterManager.printReceipt(data, printerName, win);
 });
 
 ipcMain.handle('open-drawer', async (event, printerName) => {
-  return await PrinterManager.openDrawer(printerName, mainWindow);
+  const win = mainWindow || BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow();
+  return await PrinterManager.openDrawer(printerName, win);
 });
 
 // --- FERMETURE DE L'APPLICATION ---
@@ -372,8 +284,8 @@ ipcMain.on('close-app', () => {
 
 // --- EXTINCTION DU PC COMPLET (AVEC CONFIRMATION NATIVE OBLIGATOIRE) ---
 ipcMain.on('shutdown-pc', () => {
-  const { dialog } = require('electron');
-  const response = dialog.showMessageBoxSync(mainWindow, {
+  const win = mainWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  const response = dialog.showMessageBoxSync(win, {
     type: 'warning',
     buttons: ['Annuler', 'Éteindre la caisse'],
     defaultId: 0,
@@ -390,8 +302,8 @@ ipcMain.on('shutdown-pc', () => {
 
 // --- REDÉMARRAGE DU PC COMPLET (AVEC CONFIRMATION NATIVE OBLIGATOIRE) ---
 ipcMain.on('restart-pc', () => {
-  const { dialog } = require('electron');
-  const response = dialog.showMessageBoxSync(mainWindow, {
+  const win = mainWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  const response = dialog.showMessageBoxSync(win, {
     type: 'warning',
     buttons: ['Annuler', 'Redémarrer'],
     defaultId: 0,
@@ -406,10 +318,9 @@ ipcMain.on('restart-pc', () => {
   }
 });
 
-// --- ALIAS IPC NATIVE POS (CANAL ALIAS DE COMPATIBILITÉ POUR FUTURS MODULES EXTERNES) ---
-// Note de documentation : electronAPI.printReceipt via 'print-receipt' reste le canal principal utilisé par le frontend.
-// Les canaux 'pos:print-receipt', 'pos:open-drawer' et 'pos:printer-status' sont conservés comme alias de compatibilité standard POS.
+// --- ALIAS IPC NATIVE POS ---
 ipcMain.handle('pos:print-receipt', async (event, data) => {
+  const win = mainWindow || BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow();
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       resolve({ success: false, error: 'TIMEOUT_PRINTER_UNREACHABLE' });
@@ -417,7 +328,7 @@ ipcMain.handle('pos:print-receipt', async (event, data) => {
 
     const printerName = typeof data === 'object' ? data?.printerName : undefined;
 
-    PrinterManager.printReceipt(data, printerName, mainWindow).then((res) => {
+    PrinterManager.printReceipt(data, printerName, win).then((res) => {
       clearTimeout(timer);
       resolve(res);
     }).catch((err) => {
@@ -428,10 +339,12 @@ ipcMain.handle('pos:print-receipt', async (event, data) => {
 });
 
 ipcMain.handle('pos:open-drawer', async (event, printerName) => {
+  const win = mainWindow || BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow();
   const targetName = typeof printerName === 'string' ? printerName : undefined;
-  return await PrinterManager.openDrawer(targetName, mainWindow);
+  return await PrinterManager.openDrawer(targetName, win);
 });
 
-ipcMain.handle('pos:printer-status', async () => {
-  return await PrinterManager.checkPrinterStatus(mainWindow);
+ipcMain.handle('pos:printer-status', async (event) => {
+  const win = mainWindow || BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow();
+  return await PrinterManager.checkPrinterStatus(win);
 });

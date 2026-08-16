@@ -1437,7 +1437,7 @@ const Caisse = () => {
           </div>
           
           <div className="w-full px-2 pb-1">
-            <button onClick={() => { if (cartItemCount > 0) { setShowClearConfirm(true); } else { setIsAuthenticated(false); } }} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Lock size={24} className="text-red-400" /></button>
+            <button onClick={() => { if (cartItemCount > 0) { setShowLogoutConfirm(true); } else { setIsAuthenticated(false); } }} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Verrouiller la caisse"><Lock size={24} className="text-red-400" /></button>
           </div>
         </div>
 
@@ -1481,7 +1481,7 @@ const Caisse = () => {
             <p className="text-gray-500 font-bold mb-8">Tous les articles en cours seront supprimés.</p>
             <div className="flex gap-4 w-full">
               <button onClick={() => setShowClearConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all">Retour</button>
-              <button onClick={() => { clearCart(); setLoadedOrderId(null); setDeliveryFee(0); setClientInfo(null); clientInfoRef.current = null; setOrderType(getDefaultOrderType()); setShowClearConfirm(false); setIsAuthenticated(false); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all">Oui, Annuler</button>
+              <button onClick={() => { clearCart(); setLoadedOrderId(null); setDeliveryFee(0); setClientInfo(null); clientInfoRef.current = null; setOrderType(getDefaultOrderType()); setShowClearConfirm(false); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all">Oui, Annuler</button>
             </div>
           </div>
         </div>

@@ -163,17 +163,18 @@ async function getCachedLogoDataUrl(logoUrl, restaurantId) {
 }
 
 async function getTargetPrinter(desiredPrinterName, mainWindow) {
-  if (!mainWindow) return null;
-  const printers = await mainWindow.webContents.getPrintersAsync();
+  const win = mainWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  if (!win) return null;
+  const printers = await win.webContents.getPrintersAsync();
   
-  if (desiredPrinterName) {
+  if (desiredPrinterName && typeof desiredPrinterName === 'string' && desiredPrinterName.trim() !== '') {
     const specificPrinter = printers.find(p => p.name === desiredPrinterName);
     if (specificPrinter) return specificPrinter;
   }
 
   const settings = readSettingsFile();
   const configuredName = settings.imprimante_caisse || settings.imprimante_cuisine;
-  if (configuredName) {
+  if (configuredName && typeof configuredName === 'string' && configuredName.trim() !== '') {
     const configuredPrinter = printers.find(p => p.name === configuredName);
     if (configuredPrinter) return configuredPrinter;
   }
@@ -186,9 +187,9 @@ async function getTargetPrinter(desiredPrinterName, mainWindow) {
 }
 
 function sendRawCommandToPrinter(printerName, byteString) {
-  if (process.platform !== 'win32') return Promise.resolve(false);
+  if (process.platform !== 'win32' || !printerName) return Promise.resolve(false);
 
-  const safePrinterName = String(printerName || '').replace(/"/g, '`"');
+  const printerNameBase64 = Buffer.from(String(printerName), 'utf8').toString('base64');
   const uniqueId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const scriptPath = path.join(os.tmpdir(), `raw_printer_${uniqueId}.ps1`);
 
@@ -197,12 +198,12 @@ Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 public class RawPrinterHelper {
-    [DllImport("winspool.Drv", EntryPoint="OpenPrinterA", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool OpenPrinter([MarshalAs(UnmanagedType.LPStr)] string szPrinter, out IntPtr hPrinter, IntPtr pd);
+    [DllImport("winspool.Drv", EntryPoint="OpenPrinterW", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
+    public static extern bool OpenPrinter([MarshalAs(UnmanagedType.LPWStr)] string szPrinter, out IntPtr hPrinter, IntPtr pd);
     [DllImport("winspool.Drv", EntryPoint="ClosePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool ClosePrinter(IntPtr hPrinter);
-    [DllImport("winspool.Drv", EntryPoint="StartDocPrinterA", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool StartDocPrinter(IntPtr hPrinter, int level, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOA di);
+    [DllImport("winspool.Drv", EntryPoint="StartDocPrinterW", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
+    public static extern bool StartDocPrinter(IntPtr hPrinter, int level, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOW di);
     [DllImport("winspool.Drv", EntryPoint="EndDocPrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool EndDocPrinter(IntPtr hPrinter);
     [DllImport("winspool.Drv", EntryPoint="StartPagePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
@@ -211,18 +212,20 @@ public class RawPrinterHelper {
     public static extern bool EndPagePrinter(IntPtr hPrinter);
     [DllImport("winspool.Drv", EntryPoint="WritePrinter", ExactSpelling=true, SetLastError=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
-    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
-    public class DOCINFOA {
-        [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
-        [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    public class DOCINFOW {
+        [MarshalAs(UnmanagedType.LPWStr)] public string pDocName;
+        [MarshalAs(UnmanagedType.LPWStr)] public string pOutputFile;
+        [MarshalAs(UnmanagedType.LPWStr)] public string pDataType;
     }
     public static bool SendBytesToPrinter(string szPrinterName, byte[] bytes) {
         IntPtr pUnmanagedBytes = Marshal.AllocCoTaskMem(bytes.Length);
         Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);
         bool bSuccess = false;
         IntPtr hPrinter = new IntPtr(0);
-        DOCINFOA di = new DOCINFOA();
-        di.pDocName = "Signal ESC/POS"; di.pDataType = "RAW";
+        DOCINFOW di = new DOCINFOW();
+        di.pDocName = "Signal ESC/POS";
+        di.pDataType = "RAW";
         if (OpenPrinter(szPrinterName, out hPrinter, IntPtr.Zero)) {
             if (StartDocPrinter(hPrinter, 1, di)) {
                 if (StartPagePrinter(hPrinter)) {
@@ -238,7 +241,8 @@ public class RawPrinterHelper {
     }
 }
 "@
-[RawPrinterHelper]::SendBytesToPrinter("${safePrinterName}", [byte[]](${byteString}))
+$printerName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${printerNameBase64}"))
+[RawPrinterHelper]::SendBytesToPrinter($printerName, [byte[]](${byteString}))
 `;
 
   try {
@@ -343,7 +347,6 @@ function buildZReportHtml(reportData, widthMm = '72') {
   const is58mm = Number(widthMm) <= 60;
   const fontSize = is58mm ? '10px' : '12px';
 
-  // Extraction stricte : 'name' en priorité absolue
   const restoName = escapeHtml(reportData.name || reportData.restaurantName || reportData.restaurant_name || 'VOTRE RESTAURANT');
   const restoAddress = reportData.restaurantAddress || reportData.address ? escapeHtml(reportData.restaurantAddress || reportData.address) : null;
   const restoPhone = reportData.restaurantPhone || reportData.phone ? escapeHtml(reportData.restaurantPhone || reportData.phone) : null;
@@ -931,8 +934,9 @@ const PrinterManager = {
   },
 
   async checkPrinterStatus(mainWindow) {
-    if (!mainWindow) return { ready: false };
-    const printers = await mainWindow.webContents.getPrintersAsync();
+    const win = mainWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    if (!win) return { ready: false };
+    const printers = await win.webContents.getPrintersAsync();
     const settings = readSettingsFile();
     const configuredName = settings.imprimante_caisse || settings.imprimante_cuisine;
     const targetPrinter = printers.find(p => configuredName ? p.name === configuredName : (p.isDefault || p.name.toLowerCase().includes('tm') || p.name.toLowerCase().includes('epson')));
