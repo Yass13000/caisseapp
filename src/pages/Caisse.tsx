@@ -709,13 +709,28 @@ const Caisse = () => {
 
     setTimeout(() => {
       items.forEach((item, idx) => {
-        const baseId = item.product?.id || item.id;
+        const productObj = item.product || item;
+        const rawId = productObj.id ?? item.id;
+        const parsed = typeof rawId === 'number' ? rawId : parseInt(String(rawId).split('-')[0], 10);
+        const realProductId = !isNaN(parsed) ? parsed : rawId;
+        const fullProduct = menuData.find(p => p.id === realProductId) || productObj;
+
+        const rawSelections = item.rawSelections || productObj.rawSelections || null;
+        const selectedSubOptions = item.selectedSubOptions || productObj.selectedSubOptions || item.options || [];
+        const removedIngredients = item.removedIngredients || productObj.removedIngredients || [];
+
+        const uniqueKey = `loaded-${orderId}-${idx}-${realProductId}`;
+
         const formattedItem = {
           ...item,
-          id: `${baseId}-loaded-${idx}`,
-          product: { id: item.id, name: item.name, price: item.price },
+          id: uniqueKey,
+          product: fullProduct,
+          rawSelections,
+          selectedSubOptions,
+          removedIngredients,
           quantity: item.quantity || 1,
-          cartKey: `loaded-${orderId}-${idx}-${Math.random()}`
+          cartKey: uniqueKey,
+          customKey: uniqueKey
         };
         addToCart(formattedItem);
       });
@@ -1268,11 +1283,15 @@ const Caisse = () => {
                   onClick={() => {
                     const now = Date.now();
                     if (lastClickRef.current.id === itemKey && now - lastClickRef.current.time < 300) {
-                      const fullProduct = menuData.find(p => p.id === (item.product?.id || item.id)) || item.product || item;
+                      const rawId = item.product?.id ?? item.id;
+                      const parsed = typeof rawId === 'number' ? rawId : parseInt(String(rawId).split('-')[0], 10);
+                      const realId = !isNaN(parsed) ? parsed : rawId;
+                      const fullProduct = menuData.find(p => p.id === realId) || item.product || item;
+                      
                       setEditingItemKey(itemKey);
                       setSelectedProduct(fullProduct);
                       
-                      setInitialSelections(item.rawSelections || null);
+                      setInitialSelections(item.rawSelections || item.selectedSubOptions || item.options || null);
                       
                       setIsOptionsModalOpen(true);
                       lastClickRef.current = { id: '', time: 0 };

@@ -128,7 +128,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
       setIsLoading(true);
 
       const rawId = String(product.id);
-      const realProductId = parseInt(rawId.split('-')[0], 10);
+      const parsed = typeof product.id === 'number' ? product.id : parseInt(rawId.split('-')[0], 10);
+      const realProductId = !isNaN(parsed) ? parsed : product.id;
       const activeRestoId = product?.restaurant_id || (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) || localStorage.getItem('pos_restaurant_id') || RESTAURANT_ID;
 
       try {
@@ -165,12 +166,12 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
           supabase
             .from('product_option_groups')
             .select(`id, min_choices, max_choices, step_order, free_choices_count, is_menu, option_groups (id, name, allow_multiple, free_choices_count, is_menu, target_category_name, target_subcategory_id, product_overrides, option_group_links ( sort_order, options ( id, name, price, image_url, is_available, description ) ))`)
-            .eq('product_id', product.id)
+            .eq('product_id', realProductId)
             .order('step_order'),
           supabase
             .from('sub_option_groups')
             .select(`id, name, min_choices, max_choices, free_choices_count, sort_order, option_id, product_id, is_menu, sub_option_choices ( id, name, price, is_available, sort_order )`)
-            .eq('product_id', product.id),
+            .eq('product_id', realProductId),
           realProductId ? supabase
             .from('product_ingredients')
             .select(`global_ingredients ( id, name, image_url, is_available )`)
@@ -325,7 +326,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
           .map((row: any) => row.global_ingredients)
           .filter((ing: any) => ing && ing.is_available !== false);
 
-        const finalProdGroups = subGroupsData.filter(g => String(g.product_id) === String(product.id));
+        const finalProdGroups = subGroupsData.filter(g => String(g.product_id) === String(realProductId) || String(g.product_id) === String(product.id));
         const hasValidSubGroups = finalProdGroups.some(g => formatSubGroup(g).options.length > 0);
 
         if (formattedBaseSteps.length === 0 && !hasValidSubGroups && validIngredients.length === 0) {
@@ -340,11 +341,54 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
           setBaseSteps(formattedBaseSteps);
           setAllSubGroups(subGroupsData);
           setIngredients(validIngredients);
-          
-          if (initialSelections && Object.keys(initialSelections).length > 0) {
+
+          // 🟢 RECONSTITUTION INTELLIGENTE DES SÉLECTIONS PRÉALABLES
+          if (initialSelections && typeof initialSelections === 'object' && !Array.isArray(initialSelections) && Object.keys(initialSelections).length > 0) {
             setStepSelections(initialSelections);
           } else {
-            setStepSelections({});
+            const flatList: any[] = Array.isArray(initialSelections)
+              ? initialSelections
+              : (Array.isArray(product?.selectedSubOptions) ? product.selectedSubOptions : (Array.isArray(product?.options) ? product.options : []));
+
+            if (flatList.length > 0) {
+              const reconstructed: Record<string, CustomizationOption[]> = {};
+              const allStepsToMatch = [
+                ...formattedBaseSteps,
+                ...finalProdGroups.map(g => formatSubGroup(g))
+              ];
+
+              flatList.forEach(chosenOpt => {
+                const cleanChosenId = cleanId(chosenOpt.id);
+                const chosenName = String(chosenOpt.name || chosenOpt.option_name || '').toLowerCase().trim();
+
+                for (const step of allStepsToMatch) {
+                  const matchedOption = step.options.find(o => 
+                    cleanId(o.id) === cleanChosenId || 
+                    String(o.name || '').toLowerCase().trim() === chosenName
+                  );
+
+                  if (matchedOption) {
+                    if (!reconstructed[step.id]) {
+                      reconstructed[step.id] = [];
+                    }
+                    if (step.allow_multiple || reconstructed[step.id].length < step.max_choices) {
+                      reconstructed[step.id].push(matchedOption);
+                    }
+                    break;
+                  }
+                }
+              });
+
+              setStepSelections(reconstructed);
+            } else {
+              setStepSelections({});
+            }
+          }
+
+          // 🟢 RECONSTITUTION DES INGRÉDIENTS RETIRÉS
+          const removed = product?.removedIngredients || initialSelections?.removedIngredients || [];
+          if (Array.isArray(removed) && removed.length > 0) {
+            setRemovedIngredientIds(new Set(removed.map((i: any) => typeof i === 'number' ? i : i.id).filter(Boolean)));
           }
         }
 
@@ -389,8 +433,12 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
   // 🟢 CONSTRUCTION DES ÉTAPES ACTIVES
   const activeSteps = useMemo(() => {
+    const rawId = String(product.id);
+    const parsed = typeof product.id === 'number' ? product.id : parseInt(rawId.split('-')[0], 10);
+    const realProductId = !isNaN(parsed) ? parsed : product.id;
+
     const optionSteps: StepData[] = [];
-    const prodGroups = allSubGroups.filter(g => String(g.product_id) === String(product.id)).sort((a,b)=> (a.sort_order||0) - (b.sort_order||0));
+    const prodGroups = allSubGroups.filter(g => String(g.product_id) === String(realProductId) || String(g.product_id) === String(product.id)).sort((a,b)=> (a.sort_order||0) - (b.sort_order||0));
     
     prodGroups.forEach(g => {
         if (isSoloMode && g.is_menu) return;
