@@ -61,14 +61,18 @@ const formatProductName = (name: string, isSolo: boolean) => {
   return `${cleanName} Seul`;
 };
 
-// 🟢 EXTRACTEUR UNIVERSEL DE CHOIX (Gère les groupes imbriqués, rawSelections, selectedSubOptions)
+// 🟢 EXTRACTEUR UNIVERSEL DE CHOIX (Sécurisé pour ignorer les ingrédients de base)
 const extractAllChoicesFromSource = (...sources: any[]): any[] => {
   const flat: any[] = [];
 
-  const traverse = (val: any) => {
+  const traverse = (val: any, key?: string) => {
     if (!val) return;
+    // Protection absolue : ne jamais extraire les listes d'ingrédients
+    if (key === 'ingredients' || key === 'global_ingredients' || key === 'product_ingredients' || key === 'removedIngredients') {
+      return;
+    }
     if (Array.isArray(val)) {
-      val.forEach(traverse);
+      val.forEach(item => traverse(item));
       return;
     }
     if (typeof val === 'object') {
@@ -88,7 +92,7 @@ const extractAllChoicesFromSource = (...sources: any[]): any[] => {
       } 
       // Cas d'un dictionnaire comme rawSelections { "base_117": [...] }
       else {
-        Object.values(val).forEach(traverse);
+        Object.entries(val).forEach(([k, v]) => traverse(v, k));
       }
     }
   };
@@ -389,14 +393,13 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             ...subGroupsData.map(g => formatSubGroup(g))
           ];
 
-          // 🟢 Extraction complète et aplatie des choix de la borne
+          // 🟢 Extraction sécurisée : seules les sélections réelles sont analysées (produit brut exclu)
           const flatCandidates = extractAllChoicesFromSource(
             initialSelections,
             product?.selectedSubOptions,
             product?.rawSelections,
             product?.options,
-            product?.flatOptions,
-            product
+            product?.flatOptions
           );
 
           const reconstructed: Record<string, CustomizationOption[]> = {};
@@ -412,7 +415,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             const candGroupId = typeof cand === 'object' ? (cand.option_group_id ?? cand.group_id ?? cand.groupId) : undefined;
             const candGroupName = typeof cand === 'object' ? normalizeStr(cand.groupName || cand.group_name || cand.option_group_name || '') : '';
 
-            // Trier les étapes pour tester en priorité celles qui correspondent au groupe
             const sortedSteps = [...allStepsToMatch].sort((a, b) => {
               const matchA = (candGroupId !== undefined && String(a.option_group_id) === String(candGroupId)) || (candGroupName && normalizeStr(a.group_name) === candGroupName) ? 1 : 0;
               const matchB = (candGroupId !== undefined && String(b.option_group_id) === String(candGroupId)) || (candGroupName && normalizeStr(b.group_name) === candGroupName) ? 1 : 0;

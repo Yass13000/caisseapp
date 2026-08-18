@@ -541,7 +541,17 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                 <tbody className="divide-y divide-gray-50">
                   {orders.map((order) => {
                     const isApp = order.order_origin?.toLowerCase() === 'app';
-                    const originLabel = isApp ? 'App' : 'Borne';
+                    
+                    // 🟢 Si machine_id est renseigné et valide, on l'affiche à la place de l'origine
+                    const hasValidMachineId = order.machine_id && 
+                      String(order.machine_id).trim() !== '' && 
+                      String(order.machine_id).trim().toUpperCase() !== 'BORNE-NON-CONFIGURÉE' && 
+                      String(order.machine_id).trim().toUpperCase() !== 'BORNE-NON-CONFIGUREE';
+
+                    const originLabel = hasValidMachineId 
+                      ? String(order.machine_id).trim() 
+                      : (isApp ? 'App' : 'Borne');
+
                     const clientLabel = order.customer_name || `Client ${originLabel}`;
                     const typeLabel = ORDER_TYPE_LABELS[order.order_type_id] || 'SUR PLACE';
 
@@ -559,7 +569,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                           <td className="p-4">
                             <div className="font-bold text-gray-800 text-base">{clientLabel}</div>
                             <div className="flex gap-1 mt-1">
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${isApp ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${isApp ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-700'}`}>
                                 {originLabel}
                                 </span>
                                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${typeLabel === 'LIVRAISON' ? 'bg-purple-100 text-purple-600' : typeLabel === 'EMPORTER' ? 'bg-orange-100 text-orange-600' : 'bg-green-100 text-green-600'}`}>
