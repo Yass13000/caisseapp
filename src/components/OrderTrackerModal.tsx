@@ -1,11 +1,12 @@
 // @ts-nocheck
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, CreditCard, Trash2, Banknote } from 'lucide-react';
 import { toast } from 'sonner';
 import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload } from '@/lib/orderFormatter';
+import { addLoyaltyPointsThreadSafe, getActiveRestoId } from '@/lib/loyaltyPoints';
 import { PaymentModal } from '@/pages/Caisse';
 
 interface OrderTrackerModalProps {
@@ -14,12 +15,40 @@ interface OrderTrackerModalProps {
   restaurantName?: string;
 }
 
+// 🟢 CALCUL STRICT DU TOTAL SANS DOUBLE COMPTAGE DES OPTIONS
 const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   if (!item) return 0;
-  const basePrice = parseFloat(item.product?.price || item.price || 0);
+  if (item.isReward || item.is_reward) return 0;
+
+  // PRIORITÉ 1 : Utiliser le prix de ligne déjà calculé et stocké
+  if (item.total_price !== undefined && item.total_price !== null && !isNaN(Number(item.total_price))) {
+    return Number(item.total_price);
+  }
+  if (item.total !== undefined && item.total !== null && !isNaN(Number(item.total))) {
+    return Number(item.total);
+  }
+
+  // PRIORITÉ 2 : Calcul strict sans double comptage (base_price + options)
+  const basePrice = parseFloat(item.product?.base_price ?? item.base_price ?? item.product?.price ?? item.price ?? 0);
   const groups = getFormattedOrderOptions(item, groupMapping);
-  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + o.price, 0);
+  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
+
   return (basePrice + optsPrice) * (item.quantity || 1);
+};
+
+// Extraction sécurisée des items de commande
+const extractItemsSafely = (detailsRaw: any) => {
+  try {
+    let parsed = typeof detailsRaw === 'string' ? JSON.parse(detailsRaw) : detailsRaw;
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && Array.isArray(parsed.items)) return parsed.items;
+    if (parsed && parsed.cart && Array.isArray(parsed.cart.items)) return parsed.cart.items;
+    if (parsed && parsed.cart && Array.isArray(parsed.cart)) return parsed.cart;
+    if (parsed) return [parsed];
+    return [];
+  } catch (e) {
+    return [];
+  }
 };
 
 // Extraction robuste du nom du produit
@@ -31,11 +60,14 @@ const extractProductName = (item: any) => {
   return 'Produit inconnu';
 };
 
-// Extraction robuste du prix du produit
+// 🟢 Extraction robuste du prix de base
 const extractProductPrice = (item: any) => {
   if (!item) return 0;
-  if (item.product && item.product.price !== undefined) return parseFloat(item.product.price);
-  if (item.price !== undefined) return parseFloat(item.price);
+  if (item.isReward || item.is_reward) return 0;
+  if (item.product?.base_price !== undefined && item.product?.base_price !== null) return parseFloat(item.product.base_price);
+  if (item.base_price !== undefined && item.base_price !== null) return parseFloat(item.base_price);
+  if (item.product?.price !== undefined && item.product?.price !== null) return parseFloat(item.product.price);
+  if (item.price !== undefined && item.price !== null) return parseFloat(item.price);
   return 0;
 };
 
@@ -64,6 +96,12 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
   const [filterDate, setFilterDate] = useState(getLocalToday());
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
 
+  // Références pour éviter les fuites Realtime
+  const filterDateRef = useRef(filterDate);
+  const sortOrderRef = useRef(sortOrder);
+  filterDateRef.current = filterDate;
+  sortOrderRef.current = sortOrder;
+
   const fetchPendingOrders = async () => {
     setIsLoading(true);
     try {
@@ -77,22 +115,13 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         return;
       }
 
-      let startOfDay: string;
-      let endOfDay: string;
+      const currentDate = filterDateRef.current;
+      const [year, month, day] = currentDate.split('-').map(Number);
+      const startOfDayLocal = new Date(year, month - 1, day, 0, 0, 0, 0);
+      const endOfDayLocal = new Date(year, month - 1, day, 23, 59, 59, 999);
 
-      if (filterDate === getLocalToday()) {
-        const now = new Date();
-        const startOfDayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-        startOfDay = startOfDayLocal.toISOString();
-        const endOfDayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-        endOfDay = endOfDayLocal.toISOString();
-      } else {
-        const [year, month, day] = filterDate.split('-').map(Number);
-        const startOfDayLocal = new Date(year, month - 1, day, 0, 0, 0, 0);
-        const endOfDayLocal = new Date(year, month - 1, day, 23, 59, 59, 999);
-        startOfDay = startOfDayLocal.toISOString();
-        endOfDay = endOfDayLocal.toISOString();
-      }
+      const startOfDay = startOfDayLocal.toISOString();
+      const endOfDay = endOfDayLocal.toISOString();
 
       const { data, error } = await supabase
         .from('orders')
@@ -102,7 +131,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         .neq('status', 'Annulée') 
         .gte('created_at', startOfDay)
         .lte('created_at', endOfDay)
-        .order('created_at', { ascending: sortOrder === 'asc' });
+        .order('created_at', { ascending: sortOrderRef.current === 'asc' });
 
       if (error) throw error;
       setOrders(data || []);
@@ -122,15 +151,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         || localStorage.getItem('pos_restaurant_id') 
         || RESTAURANT_ID;
 
-      const allItems = orders.flatMap(o => {
-        try {
-          const parsed = typeof o.order_details === 'string' ? JSON.parse(o.order_details) : o.order_details;
-          return Array.isArray(parsed) ? parsed : (parsed?.items || [parsed]);
-        } catch (e) {
-          return [];
-        }
-      });
-
+      const allItems = orders.flatMap(o => extractItemsSafely(o.order_details));
       const mapping = await fetchOptionGroupMapping(allItems, activeRestoId);
       setOptionGroupMapping(mapping);
     };
@@ -138,15 +159,19 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     loadMapping();
   }, [orders]);
 
+  // Chargement des commandes sur changement de filtre
   useEffect(() => { 
     fetchPendingOrders(); 
+  }, [filterDate, sortOrder]);
 
+  // 🟢 Abonnement WebSocket Realtime unique (sans fuite mémoire)
+  useEffect(() => {
     const activeRestoId = (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) 
       || localStorage.getItem('pos_restaurant_id') 
       || RESTAURANT_ID;
 
     const channel = supabase
-      .channel('tracker_orders_realtime')
+      .channel('tracker_orders_realtime_channel')
       .on(
         'postgres_changes',
         {
@@ -164,12 +189,13 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [filterDate, sortOrder]);
+  }, []);
 
+  // 🟢 Navigation de date sans décalage de fuseau horaire
   const changeDay = (days: number) => {
-    const current = new Date(filterDate);
-    current.setDate(current.getDate() + days);
-    const newDateStr = current.toISOString().split('T')[0];
+    const [year, month, day] = filterDate.split('-').map(Number);
+    const date = new Date(year, month - 1, day + days);
+    const newDateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     const todayStr = getLocalToday();
 
     if (newDateStr > todayStr) return;
@@ -181,9 +207,10 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     const todayStr = getLocalToday();
     if (filterDate === todayStr) return "Aujourd'hui";
     
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    if (filterDate === yesterday.toISOString().split('T')[0]) return "Hier";
+    const today = new Date();
+    const offset = today.getTimezoneOffset() * 60000;
+    const yesterday = new Date(today.getTime() - offset - 86400000).toISOString().split('T')[0];
+    if (filterDate === yesterday) return "Hier";
 
     const [year, month, day] = filterDate.split('-').map(Number);
     const targetDate = new Date(year, month - 1, day);
@@ -192,22 +219,23 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const toggleExpand = (id: string | number) => setExpandedOrderId(prev => prev === id ? null : id);
 
+  // 🟢 Ouverture en caisse avec préservation des récompenses et des options
   const handleSelectOrder = (order: any) => {
     let items = [];
     try {
-      items = typeof order.order_details === 'string' ? JSON.parse(order.order_details) : order.order_details;
-      if (!Array.isArray(items)) items = items.items || items.cart || [items];
+      const rawItems = extractItemsSafely(order.order_details);
       
-      items = items.map((item: any, index: number) => {
+      items = rawItems.map((item: any, index: number) => {
          const productObj = item.product || item;
          const productName = extractProductName(item);
-         const productPrice = extractProductPrice(item);
+         const isReward = item.isReward === true || item.is_reward === true;
+         const rawBasePrice = extractProductPrice(item);
+         const productPrice = isReward ? 0 : rawBasePrice;
 
          const rawId = productObj.id ?? item.id;
          const parsed = typeof rawId === 'number' ? rawId : parseInt(String(rawId).split('-')[0], 10);
          const realProductId = !isNaN(parsed) ? parsed : rawId;
 
-         // 🟢 Préservation intégrale des données borne (options, rawSelections, suppléments, ingrédients retirés)
          const rawSelections = item.rawSelections || productObj.rawSelections || item.selections || productObj.selections || null;
          const rawOptions = item.selectedSubOptions || productObj.selectedSubOptions || item.flatOptions || productObj.flatOptions || item.options || productObj.options || item.selectedOptions || productObj.selectedOptions || [];
          const removedIngredients = item.removedIngredients || productObj.removedIngredients || [];
@@ -224,15 +252,19 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
              cartKey: antiFusionId,       
              name: productName,           
              price: productPrice,
+             base_price: productPrice,
              isSolo,
+             isReward,
              product: { 
                ...productObj,
                id: realProductId, 
                name: productName, 
                price: productPrice,
+               base_price: productPrice,
                is_available: true,
                category: productObj.category || '',
                isSolo,
+               isReward,
                rawSelections,
                options: rawOptions,
                selectedSubOptions: rawOptions,
@@ -286,8 +318,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     if (!(window as any).electronAPI) return;
 
     try {
-      let items = typeof order.order_details === 'string' ? JSON.parse(order.order_details) : order.order_details;
-      if (!Array.isArray(items)) items = items.items || items.cart || [items];
+      const items = extractItemsSafely(order.order_details);
 
       const printerName = localStorage.getItem('imprimante_cuisine') || undefined;
       const date = new Date(order.created_at || Date.now()).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -311,6 +342,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     }
   };
 
+  // 🟢 Encaissement CB direct + Crédit automatique des points fidélité
   const handleQuickPay = async (e: React.MouseEvent, order: any) => {
     e.stopPropagation();
     try {
@@ -324,6 +356,23 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         .eq('id', order.id);
 
       if (error) throw error;
+
+      // Créditer les points gagnés au client s'il est rattaché
+      const activeRestoId = getActiveRestoId(order.restaurant_id);
+      const pointsToEarn = Number(order.points_earned) || 0;
+      if (order.user_id && order.user_id !== "00000000-0000-0000-0000-000000000000" && pointsToEarn > 0) {
+        try {
+          await addLoyaltyPointsThreadSafe(
+            order.user_id,
+            pointsToEarn,
+            order.id,
+            `Points gagnés commande #${order.order_number || order.id}`,
+            activeRestoId
+          );
+        } catch (loyaltyErr) {
+          console.warn("Erreur attribution points fidélité (non bloquant) :", loyaltyErr);
+        }
+      }
 
       toast.success(`Commande #${order.order_number || order.id.toString().slice(0, 4)} encaissée par carte`);
       
@@ -351,6 +400,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     setIsPaymentModalOpen(true);
   };
 
+  // 🟢 Encaissement Espèces + Crédit automatique des points fidélité
   const handleCashPaymentConfirm = async (method: string, cashAmount: number) => {
     if (!paymentOrder) return;
     setIsProcessing(true);
@@ -366,6 +416,23 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         .eq('id', paymentOrder.id);
 
       if (error) throw error;
+
+      // Créditer les points gagnés au client s'il est rattaché
+      const activeRestoId = getActiveRestoId(paymentOrder.restaurant_id);
+      const pointsToEarn = Number(paymentOrder.points_earned) || 0;
+      if (paymentOrder.user_id && paymentOrder.user_id !== "00000000-0000-0000-0000-000000000000" && pointsToEarn > 0) {
+        try {
+          await addLoyaltyPointsThreadSafe(
+            paymentOrder.user_id,
+            pointsToEarn,
+            paymentOrder.id,
+            `Points gagnés commande #${paymentOrder.order_number || paymentOrder.id}`,
+            activeRestoId
+          );
+        } catch (loyaltyErr) {
+          console.warn("Erreur attribution points fidélité (non bloquant) :", loyaltyErr);
+        }
+      }
 
       toast.success(`Commande #${paymentOrder.order_number || paymentOrder.id.toString().slice(0, 4)} encaissée`);
 
@@ -412,9 +479,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const renderOrderDetails = (detailsRaw: any) => {
     try {
-      let items = typeof detailsRaw === 'string' ? JSON.parse(detailsRaw) : detailsRaw;
-      if (!Array.isArray(items)) items = items.items || items.cart || [items];
-
+      const items = extractItemsSafely(detailsRaw);
       if (!items || items.length === 0) return <p className="text-gray-400 italic">Aucun détail disponible</p>;
 
       return (
@@ -452,7 +517,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                               <span className={opt.isSans ? "text-red-500 font-bold" : "font-medium"}>
                                 {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
                               </span>
-                              {opt.price > 0 && <span> (+{opt.price.toFixed(2)}€)</span>}
+                              {opt.price > 0 && <span> (+{opt.price.toFixed(2)} €)</span>}
                               {oIdx < grp.items.length - 1 ? ', ' : ''}
                             </span>
                           ))}
@@ -467,7 +532,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         </div>
       );
     } catch (e) {
-      console.error("Erreur de rendu orderDetails:", e);
+      console.error("Erreur de rendu orderDetails :", e);
       return <p className="text-red-500 text-sm">Détails illisibles</p>;
     }
   };
@@ -542,7 +607,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                   {orders.map((order) => {
                     const isApp = order.order_origin?.toLowerCase() === 'app';
                     
-                    // 🟢 Si machine_id est renseigné et valide, on l'affiche à la place de l'origine
                     const hasValidMachineId = order.machine_id && 
                       String(order.machine_id).trim() !== '' && 
                       String(order.machine_id).trim().toUpperCase() !== 'BORNE-NON-CONFIGURÉE' && 
