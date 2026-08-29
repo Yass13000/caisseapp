@@ -15,25 +15,51 @@ interface OrderTrackerModalProps {
   restaurantName?: string;
 }
 
-// 🟢 CALCUL STRICT DU TOTAL SANS DOUBLE COMPTAGE DES OPTIONS
+// 🟢 CALCUL DU TOTAL DE LIGNE (GARANTI SANS DOUBLE COMPTAGE)
 const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   if (!item) return 0;
   if (item.isReward || item.is_reward) return 0;
 
-  // PRIORITÉ 1 : Utiliser le prix de ligne déjà calculé et stocké
+  const qty = Number(item.quantity) || 1;
+
+  // 1. Si un prix total calculé est déjà stocké sur l'article
   if (item.total_price !== undefined && item.total_price !== null && !isNaN(Number(item.total_price))) {
     return Number(item.total_price);
+  }
+  if (item.totalPrice !== undefined && item.totalPrice !== null && !isNaN(Number(item.totalPrice))) {
+    return Number(item.totalPrice);
   }
   if (item.total !== undefined && item.total !== null && !isNaN(Number(item.total))) {
     return Number(item.total);
   }
+  if (item.item_total !== undefined && item.item_total !== null && !isNaN(Number(item.item_total))) {
+    return Number(item.item_total);
+  }
 
-  // PRIORITÉ 2 : Calcul strict sans double comptage (base_price + options)
-  const basePrice = parseFloat(item.product?.base_price ?? item.base_price ?? item.product?.price ?? item.price ?? 0);
+  // 2. Calcul du montant cumulé des options
   const groups = getFormattedOrderOptions(item, groupMapping);
   const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
 
-  return (basePrice + optsPrice) * (item.quantity || 1);
+  const directPrice = item.price !== undefined ? parseFloat(item.price) : (item.unit_price !== undefined ? parseFloat(item.unit_price) : undefined);
+  const explicitBasePrice = (item.base_price !== undefined && item.base_price !== null) 
+    ? parseFloat(item.base_price) 
+    : (item.product?.base_price !== undefined && item.product?.base_price !== null)
+      ? parseFloat(item.product.base_price)
+      : undefined;
+
+  // Si directPrice existe (ex: 14.70 €)
+  if (directPrice !== undefined && !isNaN(directPrice) && directPrice > 0) {
+    // Si un prix de base explicite existe et qu'il est inférieur à directPrice, directPrice contient déjà les options
+    if (explicitBasePrice !== undefined && explicitBasePrice < directPrice) {
+      return directPrice * qty;
+    }
+    // Dans les commandes Borne / App, item.price est TOUJOURS le prix unitaire final
+    return directPrice * qty;
+  }
+
+  // Si pas de directPrice, on additionne base_price + options
+  const base = explicitBasePrice ?? parseFloat(item.product?.price ?? 0);
+  return (base + optsPrice) * qty;
 };
 
 // Extraction sécurisée des items de commande
@@ -60,15 +86,29 @@ const extractProductName = (item: any) => {
   return 'Produit inconnu';
 };
 
-// 🟢 Extraction robuste du prix de base
-const extractProductPrice = (item: any) => {
+// 🟢 Extraction robuste du prix de base pour ouverture en caisse
+const extractProductPrice = (item: any, groupMapping: Record<string, string> = {}) => {
   if (!item) return 0;
   if (item.isReward || item.is_reward) return 0;
-  if (item.product?.base_price !== undefined && item.product?.base_price !== null) return parseFloat(item.product.base_price);
-  if (item.base_price !== undefined && item.base_price !== null) return parseFloat(item.base_price);
-  if (item.product?.price !== undefined && item.product?.price !== null) return parseFloat(item.product.price);
-  if (item.price !== undefined && item.price !== null) return parseFloat(item.price);
-  return 0;
+
+  if (item.base_price !== undefined && item.base_price !== null && !isNaN(Number(item.base_price))) {
+    return parseFloat(item.base_price);
+  }
+  if (item.product?.base_price !== undefined && item.product?.base_price !== null && !isNaN(Number(item.product.base_price))) {
+    return parseFloat(item.product.base_price);
+  }
+
+  const groups = getFormattedOrderOptions(item, groupMapping);
+  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
+
+  const rawPrice = parseFloat(item.price ?? item.unit_price ?? item.product?.price ?? 0);
+
+  // Si item.price incluait déjà les options, on retrouve le prix de base exact (ex: 14.70 - 4.70 = 10.00 €)
+  if (rawPrice > 0 && optsPrice > 0 && rawPrice >= optsPrice) {
+    return Math.max(0, rawPrice - optsPrice);
+  }
+
+  return rawPrice;
 };
 
 // Dictionnaire pour traduire les ID de commande en texte lisible par la caisse
@@ -96,7 +136,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
   const [filterDate, setFilterDate] = useState(getLocalToday());
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
 
-  // Références pour éviter les fuites Realtime
   const filterDateRef = useRef(filterDate);
   const sortOrderRef = useRef(sortOrder);
   filterDateRef.current = filterDate;
@@ -142,7 +181,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     }
   };
 
-  // 🟢 Chargement du mapping des groupes d'options Supabase
   useEffect(() => {
     const loadMapping = async () => {
       if (orders.length === 0) return;
@@ -159,12 +197,10 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     loadMapping();
   }, [orders]);
 
-  // Chargement des commandes sur changement de filtre
   useEffect(() => { 
     fetchPendingOrders(); 
   }, [filterDate, sortOrder]);
 
-  // 🟢 Abonnement WebSocket Realtime unique (sans fuite mémoire)
   useEffect(() => {
     const activeRestoId = (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) 
       || localStorage.getItem('pos_restaurant_id') 
@@ -191,7 +227,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     };
   }, []);
 
-  // 🟢 Navigation de date sans décalage de fuseau horaire
   const changeDay = (days: number) => {
     const [year, month, day] = filterDate.split('-').map(Number);
     const date = new Date(year, month - 1, day + days);
@@ -219,7 +254,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const toggleExpand = (id: string | number) => setExpandedOrderId(prev => prev === id ? null : id);
 
-  // 🟢 Ouverture en caisse avec préservation des récompenses et des options
   const handleSelectOrder = (order: any) => {
     let items = [];
     try {
@@ -229,7 +263,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
          const productObj = item.product || item;
          const productName = extractProductName(item);
          const isReward = item.isReward === true || item.is_reward === true;
-         const rawBasePrice = extractProductPrice(item);
+         const rawBasePrice = extractProductPrice(item, optionGroupMapping);
          const productPrice = isReward ? 0 : rawBasePrice;
 
          const rawId = productObj.id ?? item.id;
@@ -342,7 +376,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     }
   };
 
-  // 🟢 Encaissement CB direct + Crédit automatique des points fidélité
   const handleQuickPay = async (e: React.MouseEvent, order: any) => {
     e.stopPropagation();
     try {
@@ -357,7 +390,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
       if (error) throw error;
 
-      // Créditer les points gagnés au client s'il est rattaché
       const activeRestoId = getActiveRestoId(order.restaurant_id);
       const pointsToEarn = Number(order.points_earned) || 0;
       if (order.user_id && order.user_id !== "00000000-0000-0000-0000-000000000000" && pointsToEarn > 0) {
@@ -370,7 +402,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
             activeRestoId
           );
         } catch (loyaltyErr) {
-          console.warn("Erreur attribution points fidélité (non bloquant) :", loyaltyErr);
+          console.warn("Erreur attribution points fidélité :", loyaltyErr);
         }
       }
 
@@ -400,7 +432,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     setIsPaymentModalOpen(true);
   };
 
-  // 🟢 Encaissement Espèces + Crédit automatique des points fidélité
   const handleCashPaymentConfirm = async (method: string, cashAmount: number) => {
     if (!paymentOrder) return;
     setIsProcessing(true);
@@ -417,7 +448,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
       if (error) throw error;
 
-      // Créditer les points gagnés au client s'il est rattaché
       const activeRestoId = getActiveRestoId(paymentOrder.restaurant_id);
       const pointsToEarn = Number(paymentOrder.points_earned) || 0;
       if (paymentOrder.user_id && paymentOrder.user_id !== "00000000-0000-0000-0000-000000000000" && pointsToEarn > 0) {
@@ -430,7 +460,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
             activeRestoId
           );
         } catch (loyaltyErr) {
-          console.warn("Erreur attribution points fidélité (non bloquant) :", loyaltyErr);
+          console.warn("Erreur attribution points fidélité :", loyaltyErr);
         }
       }
 

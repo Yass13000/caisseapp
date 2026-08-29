@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Package, Search, ChevronDown, ChevronRight, Layers, AlertOctagon, ListTree } from 'lucide-react';
+import { X, Package, Search, ChevronDown, ChevronRight, Layers, AlertOctagon, ListTree, AlertTriangle } from 'lucide-react';
 import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
 import { toast } from 'sonner';
 
@@ -19,6 +19,29 @@ interface StockModalProps {
   onClose: () => void;
 }
 
+const getResolvedRestoId = async (): Promise<string | number | null> => {
+  const localId = localStorage.getItem('pos_restaurant_id') || 
+                  localStorage.getItem('admin_override_restaurant_id') || 
+                  RESTAURANT_ID;
+
+  if (localId && localId !== 'undefined' && localId !== 'null' && String(localId).trim() !== '') {
+    return !isNaN(Number(localId)) && Number(localId) > 0 ? Number(localId) : localId;
+  }
+
+  // Fallback de secours spécifique à Electron si le localStorage est vide
+  try {
+    const { data } = await supabase.from('restaurants').select('id').limit(1).maybeSingle();
+    if (data?.id) {
+      localStorage.setItem('pos_restaurant_id', String(data.id));
+      return data.id;
+    }
+  } catch (e) {
+    console.warn("Impossible de récupérer le restaurant de secours :", e);
+  }
+
+  return null;
+};
+
 const StockModal = ({ onClose }: StockModalProps) => {
   const [items, setItems] = useState<StockItem[]>([]);
   
@@ -31,6 +54,7 @@ const StockModal = ({ onClose }: StockModalProps) => {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [missingConfig, setMissingConfig] = useState(false);
 
   useEffect(() => {
     loadStock();
@@ -38,27 +62,41 @@ const StockModal = ({ onClose }: StockModalProps) => {
 
   const loadStock = async () => {
     setIsLoading(true);
+    setMissingConfig(false);
     try {
-      const activeRestoId = localStorage.getItem('pos_restaurant_id') || localStorage.getItem('admin_override_restaurant_id') || RESTAURANT_ID;
+      const activeRestoId = await getResolvedRestoId();
       
-      if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') {
-        toast.error("Veuillez configurer la caisse (ID restaurant manquant)");
+      if (!activeRestoId) {
+        setMissingConfig(true);
+        toast.error("ID restaurant introuvable sur cette caisse Electron");
         setIsLoading(false);
         return;
       }
 
-      const { data: productsData, error: productsError } = await supabase
-        .from('product').select('id, name, description, category, is_available, image').eq('restaurant_id', activeRestoId);
+      // Requêtes parallèles avec filtre resto_id compatible UUID et Entier
+      const [{ data: productsData, error: productsError }, { data: optionsData, error: optionsError }, { data: groupsData }, { data: subGroupsData }] = await Promise.all([
+        supabase
+          .from('product')
+          .select('id, name, description, category, is_available, image')
+          .or(`restaurant_id.eq.${activeRestoId},restaurant_id.eq.${String(activeRestoId)}`),
+        
+        supabase
+          .from('options')
+          .select('id, name, description, is_available, image_url')
+          .or(`restaurant_id.eq.${activeRestoId},restaurant_id.eq.${String(activeRestoId)}`),
+        
+        supabase
+          .from('option_groups')
+          .select(`name, option_group_links (option_id)`)
+          .or(`restaurant_id.eq.${activeRestoId},restaurant_id.eq.${String(activeRestoId)}`),
+        
+        supabase
+          .from('sub_option_groups')
+          .select(`name, sub_option_choices (id, name, is_available)`)
+      ]);
 
-      if (productsError) throw productsError;
-
-      const { data: optionsData, error: optionsError } = await supabase
-        .from('options').select('id, name, description, is_available, image_url').eq('restaurant_id', activeRestoId);
-
-      if (optionsError) throw optionsError;
-
-      const { data: groupsData } = await supabase
-        .from('option_groups').select(`name, option_group_links (option_id)`).eq('restaurant_id', activeRestoId);
+      if (productsError) console.error("Erreur products:", productsError);
+      if (optionsError) console.error("Erreur options:", optionsError);
 
       const optionCategoryMap: Record<string, string> = {};
       if (groupsData) {
@@ -73,15 +111,12 @@ const StockModal = ({ onClose }: StockModalProps) => {
         });
       }
 
-      const { data: subGroupsData } = await supabase
-        .from('sub_option_groups').select(`name, sub_option_choices (id, name, is_available)`);
-
       const formattedProducts: StockItem[] = (productsData || []).map(p => ({
         id: p.id,
         name: p.name,
         description: p.description || '',
-        category: p.category,
-        is_available: p.is_available,
+        category: p.category || 'Non classé',
+        is_available: p.is_available !== false,
         image: p.image || '',
         type: 'product'
       }));
@@ -91,7 +126,7 @@ const StockModal = ({ onClose }: StockModalProps) => {
         name: o.name,
         description: o.description || '',
         category: optionCategoryMap[o.id] || 'Autres', 
-        is_available: o.is_available,
+        is_available: o.is_available !== false,
         image: o.image_url || '',
         type: 'option'
       }));
@@ -107,7 +142,7 @@ const StockModal = ({ onClose }: StockModalProps) => {
                   name: choice.name,
                   description: '', 
                   category: group.name || 'Autres',
-                  is_available: choice.is_available,
+                  is_available: choice.is_available !== false,
                   image: '',
                   type: 'sub_option'
                 });
@@ -118,7 +153,8 @@ const StockModal = ({ onClose }: StockModalProps) => {
       }
 
       setItems([...formattedProducts, ...formattedOptions, ...formattedSubOptions]);
-    } catch (e) {
+    } catch (e: any) {
+      console.error(e);
       toast.error("Erreur lors du chargement des stocks");
     } finally {
       setIsLoading(false);
@@ -257,7 +293,6 @@ const StockModal = ({ onClose }: StockModalProps) => {
         )}
 
         <div className="flex-1 min-w-0">
-          {/* ✅ FIX : Suppression de line-through pour garder le texte propre et lisible */}
           <h4 className="font-black text-base uppercase leading-tight">
             {item.name}
           </h4>
@@ -463,6 +498,16 @@ const StockModal = ({ onClose }: StockModalProps) => {
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <span className="text-gray-400 font-bold text-xl uppercase tracking-widest animate-pulse">Chargement des stocks...</span>
+            </div>
+          ) : missingConfig ? (
+            <div className="flex flex-col items-center justify-center h-full text-center gap-4 p-8">
+              <div className="w-20 h-20 bg-amber-100 text-amber-600 rounded-3xl flex items-center justify-center">
+                <AlertTriangle size={44} />
+              </div>
+              <h2 className="text-2xl font-black text-secondary uppercase">Caisse non configurée</h2>
+              <p className="text-gray-500 font-medium max-w-md">
+                L'identifiant du restaurant est introuvable dans cette instance Electron. Veuillez sélectionner votre restaurant dans les réglages de la caisse.
+              </p>
             </div>
           ) : filteredItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
