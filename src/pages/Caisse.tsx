@@ -436,10 +436,13 @@ const Caisse = () => {
   const activeDeliveryFee = orderType === 'LIVRAISON' ? (parseFloat(deliveryFee) || 0) : 0;
   const finalTotal = subtotal + activeDeliveryFee;
 
+  // 🟢 Détection de commande active (articles OU client enregistré OU commande chargée)
+  const hasActiveOrderData = cartItemCount > 0 || !!clientInfo || !!loadedOrderId || deliveryFee > 0;
+
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOffline(false);
+    const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     return () => { clearInterval(timer); window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
@@ -492,7 +495,7 @@ const Caisse = () => {
         setIsAuthenticated(true);
         setPinCode("");
 
-        if (cartState.items.length > 0) {
+        if (hasActiveOrderData) {
           clearCart();
           setLoadedOrderId(null);
           setDeliveryFee(0);
@@ -517,6 +520,7 @@ const Caisse = () => {
             .from('cash_sessions')
             .select('id')
             .eq('status', 'OPEN')
+            .is('closed_at', null)
             .order('opened_at', { ascending: false })
             .limit(1)
             .maybeSingle();
@@ -920,16 +924,19 @@ const Caisse = () => {
         const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
         if (orderData?.order_number) targetOrderNumber = orderData.order_number;
       } else {
-        try {
-          const { data: nextNum, error: rpcError } = await supabase.rpc('get_next_order_number', { prefix: 'C' });
-          if (!rpcError && nextNum) targetOrderNumber = nextNum;
-        } catch (err) {}
+        const { offline_id, is_update, target_id, order_number, ...insertPayload } = orderPayload;
 
-        orderPayload.order_number = targetOrderNumber;
-        const { offline_id, is_update, target_id, ...insertPayload } = orderPayload;
+        // 🟢 Insertion avec délégation atomique du order_number à Supabase
+        const { data: insertedOrder, error } = await supabase
+          .from('orders')
+          .insert([insertPayload])
+          .select('id, order_number')
+          .single();
 
-        const { error } = await supabase.from('orders').insert([insertPayload]);
         if (error) throw error;
+        if (insertedOrder?.order_number) {
+          targetOrderNumber = insertedOrder.order_number;
+        }
       }
 
       customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
@@ -1074,16 +1081,19 @@ const Caisse = () => {
         const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
         if (orderData?.order_number) targetOrderNumber = orderData.order_number;
       } else {
-        try {
-          const { data: nextNum, error: rpcError } = await supabase.rpc('get_next_order_number', { prefix: 'C' });
-          if (!rpcError && nextNum) targetOrderNumber = nextNum;
-        } catch (err) {}
+        const { offline_id, is_update, target_id, order_number, ...insertPayload } = orderPayload;
 
-        orderPayload.order_number = targetOrderNumber;
-        const { offline_id, is_update, target_id, ...insertPayload } = orderPayload;
+        // 🟢 Insertion avec délégation atomique du order_number à Supabase
+        const { data: insertedOrder, error } = await supabase
+          .from('orders')
+          .insert([insertPayload])
+          .select('id, order_number')
+          .single();
 
-        const { error } = await supabase.from('orders').insert([insertPayload]);
         if (error) throw error;
+        if (insertedOrder?.order_number) {
+          targetOrderNumber = insertedOrder.order_number;
+        }
       }
 
       customToast(`Commande en attente de ${finalTotal.toFixed(2)}€`, "success");
@@ -1405,10 +1415,12 @@ const Caisse = () => {
                 PAYER
               </button>
 
+              {/* 🟢 Bouton Corbeille : actif dès qu'il y a des articles OU un client enregistré */}
               <button 
-                disabled={cartItemCount === 0 || isProcessing} 
+                disabled={!hasActiveOrderData || isProcessing} 
                 onClick={() => setShowClearConfirm(true)} 
                 className="w-16 bg-red-50 text-red-500 flex items-center justify-center rounded-xl hover:bg-red-100 active:scale-95 disabled:opacity-50 transition-all border border-red-100"
+                title="Réinitialiser la commande"
               >
                 <Trash2 size={24} />
               </button>
@@ -1437,7 +1449,7 @@ const Caisse = () => {
           </div>
           
           <div className="w-full px-2 pb-1">
-            <button onClick={() => { if (cartItemCount > 0) { setShowLogoutConfirm(true); } else { setIsAuthenticated(false); } }} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Verrouiller la caisse"><Lock size={24} className="text-red-400" /></button>
+            <button onClick={() => { if (hasActiveOrderData) { setShowLogoutConfirm(true); } else { setIsAuthenticated(false); } }} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Verrouiller la caisse"><Lock size={24} className="text-red-400" /></button>
           </div>
         </div>
 
@@ -1478,7 +1490,7 @@ const Caisse = () => {
           <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl border-2 border-red-100 flex flex-col items-center text-center">
             <div className="w-20 h-20 bg-red-100 text-red-500 rounded-full flex items-center justify-center mb-6"><Trash2 size={40} /></div>
             <h3 className="text-2xl font-black text-secondary uppercase tracking-wide mb-2">Annuler la commande ?</h3>
-            <p className="text-gray-500 font-bold mb-8">Tous les articles en cours seront supprimés.</p>
+            <p className="text-gray-500 font-bold mb-8">Toutes les informations en cours (client, articles) seront réinitialisées.</p>
             <div className="flex gap-4 w-full">
               <button onClick={() => setShowClearConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all">Retour</button>
               <button onClick={() => { clearCart(); setLoadedOrderId(null); setDeliveryFee(0); setClientInfo(null); clientInfoRef.current = null; setOrderType(getDefaultOrderType()); setShowClearConfirm(false); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all">Oui, Annuler</button>
@@ -1492,7 +1504,7 @@ const Caisse = () => {
           <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl border-2 border-red-100 flex flex-col items-center text-center">
             <div className="w-20 h-20 bg-red-100 text-red-500 rounded-full flex items-center justify-center mb-6"><AlertTriangle size={40} /></div>
             <h3 className="text-2xl font-black text-secondary uppercase tracking-wide mb-2">Commande en cours</h3>
-            <p className="text-gray-500 font-bold mb-8">Attention, une commande est en cours. Voulez-vous l'annuler et quitter ?</p>
+            <p className="text-gray-500 font-bold mb-8">Attention, une commande ou un client est en cours. Voulez-vous l'annuler et quitter ?</p>
             <div className="flex gap-4 w-full">
               <button onClick={() => setShowLogoutConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all">Rester</button>
               <button onClick={() => { clearCart(); setIsAuthenticated(false); setDeliveryFee(0); setClientInfo(null); clientInfoRef.current = null; setOrderType(getDefaultOrderType()); setShowLogoutConfirm(false); navigate('/'); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all leading-tight">Quitter et annuler</button>

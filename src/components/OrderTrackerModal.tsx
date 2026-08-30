@@ -22,7 +22,6 @@ const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
 
   const qty = Number(item.quantity) || 1;
 
-  // 1. Si un prix total calculé est déjà stocké sur l'article
   if (item.total_price !== undefined && item.total_price !== null && !isNaN(Number(item.total_price))) {
     return Number(item.total_price);
   }
@@ -36,7 +35,6 @@ const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
     return Number(item.item_total);
   }
 
-  // 2. Calcul du montant cumulé des options
   const groups = getFormattedOrderOptions(item, groupMapping);
   const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
 
@@ -47,17 +45,13 @@ const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
       ? parseFloat(item.product.base_price)
       : undefined;
 
-  // Si directPrice existe (ex: 14.70 €)
   if (directPrice !== undefined && !isNaN(directPrice) && directPrice > 0) {
-    // Si un prix de base explicite existe et qu'il est inférieur à directPrice, directPrice contient déjà les options
     if (explicitBasePrice !== undefined && explicitBasePrice < directPrice) {
       return directPrice * qty;
     }
-    // Dans les commandes Borne / App, item.price est TOUJOURS le prix unitaire final
     return directPrice * qty;
   }
 
-  // Si pas de directPrice, on additionne base_price + options
   const base = explicitBasePrice ?? parseFloat(item.product?.price ?? 0);
   return (base + optsPrice) * qty;
 };
@@ -103,7 +97,6 @@ const extractProductPrice = (item: any, groupMapping: Record<string, string> = {
 
   const rawPrice = parseFloat(item.price ?? item.unit_price ?? item.product?.price ?? 0);
 
-  // Si item.price incluait déjà les options, on retrouve le prix de base exact (ex: 14.70 - 4.70 = 10.00 €)
   if (rawPrice > 0 && optsPrice > 0 && rawPrice >= optsPrice) {
     return Math.max(0, rawPrice - optsPrice);
   }
@@ -111,7 +104,6 @@ const extractProductPrice = (item: any, groupMapping: Record<string, string> = {
   return rawPrice;
 };
 
-// Dictionnaire pour traduire les ID de commande en texte lisible par la caisse
 const ORDER_TYPE_LABELS = {
   '633425b1-f86c-4c17-8cba-b258906ad317': 'SUR PLACE',
   '2cac3f10-73e2-40a5-a7e0-053bd861b4d9': 'EMPORTER',
@@ -140,6 +132,28 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
   const sortOrderRef = useRef(sortOrder);
   filterDateRef.current = filterDate;
   sortOrderRef.current = sortOrder;
+
+  // Récupération de la session active de caisse
+  const resolveActiveSessionId = async (restoId: string): Promise<string | null> => {
+    const local = localStorage.getItem('pos_session_id');
+    if (local && local !== 'null' && local !== 'undefined') return local;
+
+    try {
+      const { data } = await supabase
+        .from('cash_sessions')
+        .select('id')
+        .eq('restaurant_id', restoId)
+        .eq('status', 'OPEN')
+        .is('closed_at', null)
+        .order('opened_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      return data?.id || null;
+    } catch {
+      return null;
+    }
+  };
 
   const fetchPendingOrders = async () => {
     setIsLoading(true);
@@ -376,21 +390,34 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     }
   };
 
+  // 🟢 Encaissement direct par CB
   const handleQuickPay = async (e: React.MouseEvent, order: any) => {
     e.stopPropagation();
     try {
+      const activeRestoId = getActiveRestoId(order.restaurant_id) 
+        || (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) 
+        || localStorage.getItem('pos_restaurant_id') 
+        || RESTAURANT_ID;
+
+      const activeSessionId = order.session_id || await resolveActiveSessionId(activeRestoId);
+
+      const updatePayload: any = { 
+        is_paid: true,
+        payment_status: 'paid',
+        payment_method: 'Carte bancaire'
+      };
+
+      if (activeSessionId) {
+        updatePayload.session_id = activeSessionId;
+      }
+
       const { error } = await supabase
         .from('orders')
-        .update({ 
-          is_paid: true,
-          payment_status: 'paid',
-          payment_method: 'Carte bancaire'
-        })
+        .update(updatePayload)
         .eq('id', order.id);
 
       if (error) throw error;
 
-      const activeRestoId = getActiveRestoId(order.restaurant_id);
       const pointsToEarn = Number(order.points_earned) || 0;
       if (order.user_id && order.user_id !== "00000000-0000-0000-0000-000000000000" && pointsToEarn > 0) {
         try {
@@ -410,7 +437,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       
       const isAutoPrintReceiptEnabled = localStorage.getItem('auto_print_receipt') === 'true';
       if (isAutoPrintReceiptEnabled) {
-        await printOrder(order, false);
+        await printOrder({ ...order, ...updatePayload }, false);
       }
 
       const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
@@ -432,23 +459,36 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     setIsPaymentModalOpen(true);
   };
 
+  // 🟢 Encaissement Espèces / Autre
   const handleCashPaymentConfirm = async (method: string, cashAmount: number) => {
     if (!paymentOrder) return;
     setIsProcessing(true);
     try {
+      const activeRestoId = getActiveRestoId(paymentOrder.restaurant_id) 
+        || (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) 
+        || localStorage.getItem('pos_restaurant_id') 
+        || RESTAURANT_ID;
+
+      const activeSessionId = paymentOrder.session_id || await resolveActiveSessionId(activeRestoId);
+
+      const updatePayload: any = {
+        is_paid: true,
+        payment_status: 'paid',
+        payment_method: method,
+        cash_amount: cashAmount
+      };
+
+      if (activeSessionId) {
+        updatePayload.session_id = activeSessionId;
+      }
+
       const { error } = await supabase
         .from('orders')
-        .update({
-          is_paid: true,
-          payment_status: 'paid',
-          payment_method: method,
-          cash_amount: cashAmount
-        })
+        .update(updatePayload)
         .eq('id', paymentOrder.id);
 
       if (error) throw error;
 
-      const activeRestoId = getActiveRestoId(paymentOrder.restaurant_id);
       const pointsToEarn = Number(paymentOrder.points_earned) || 0;
       if (paymentOrder.user_id && paymentOrder.user_id !== "00000000-0000-0000-0000-000000000000" && pointsToEarn > 0) {
         try {
@@ -466,7 +506,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
       toast.success(`Commande #${paymentOrder.order_number || paymentOrder.id.toString().slice(0, 4)} encaissée`);
 
-      const updatedOrder = { ...paymentOrder, payment_method: method, cash_amount: cashAmount, is_paid: true, payment_status: 'paid' };
+      const updatedOrder = { ...paymentOrder, ...updatePayload };
 
       const isAutoPrintReceiptEnabled = localStorage.getItem('auto_print_receipt') !== 'false';
       if (isAutoPrintReceiptEnabled) {
