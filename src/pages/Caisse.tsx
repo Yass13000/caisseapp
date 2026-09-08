@@ -18,7 +18,8 @@ import {
   ClipboardList, History, Package, Wifi, WifiOff,
   UserRound, CalendarDays, LayoutDashboard, AlertTriangle,
   CreditCard, Banknote, CheckCircle2, Store, ArchiveRestore,
-  Calculator, Hourglass, Plus, RotateCcw, RotateCw
+  Calculator, Hourglass, Plus, RotateCcw, RotateCw,
+  UtensilsCrossed, Bike
 } from 'lucide-react';
 
 // Composants
@@ -1233,7 +1234,11 @@ const Caisse = () => {
 
         <div className="relative z-10 bg-white/80 backdrop-blur-xl p-6 rounded-[2rem] shadow-[0_20px_80px_-15px_rgba(0,0,0,0.1)] flex flex-col items-center border border-white max-w-[300px] w-full mx-4">
           <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4 shadow-lg overflow-hidden bg-[#0B0F19] border border-gray-800">
-            <img src={restaurantLogo || "/icon.png"} alt="Logo" className="w-full h-full object-contain p-1.5" />
+            {restaurantLogo ? (
+              <img src={restaurantLogo} alt="Logo" className="w-full h-full object-contain p-1.5" />
+            ) : (
+              <Store size={28} className="text-primary" />
+            )}
           </div>
           
           <h2 className="text-secondary text-xl font-black uppercase tracking-widest mb-1">Caisse Sécurisée</h2>
@@ -1267,7 +1272,11 @@ const Caisse = () => {
           <div className={isOnline ? 'text-green-400' : 'text-red-500 animate-pulse'}>{isOnline ? <Wifi size={16} /> : <WifiOff size={16} />}</div>
           <div className="w-px h-3 bg-white/20"></div>
           <div className="flex items-center gap-2 text-white/90">
-            <img src={restaurantLogo || "/icon.png"} alt="App Logo" className="w-4 h-4 rounded object-contain bg-black/40" />
+            {restaurantLogo ? (
+              <img src={restaurantLogo} alt="App Logo" className="w-4 h-4 rounded object-contain bg-black/40" />
+            ) : (
+              <Store size={14} className="text-primary" />
+            )}
             <span>{restaurantInfo?.name || "Caisse Principale"}</span>
           </div>
         </div>
@@ -1291,29 +1300,63 @@ const Caisse = () => {
         
         <div className="flex-1 flex flex-col h-full bg-[#F3F4F6] relative min-w-0">
           
+          {/* 🟢 Panneau Supérieur : Sélecteur de Mode + Catégories Compactées */}
           <div className="bg-white border-b border-gray-200 shadow-sm flex-shrink-0 z-20">
+            
+            {/* 🟢 Sélecteur Mode de Commande (Style Segmenté Moderne avec Icônes) */}
             {activeOrderTypes.length > 0 && (
-              <div className="flex p-2 gap-2 bg-gray-100">
-                {activeOrderTypes.map(type => (
-                  <button key={type} onClick={() => handleOrderTypeChange(type as any)} className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all shadow-sm cursor-pointer ${orderType === type ? 'text-white scale-[1.02]' : 'bg-white text-gray-500 hover:bg-gray-50'}`} style={orderType === type ? { backgroundColor: themeColors.secondary } : undefined}>
-                    {type === 'SUR PLACE' ? 'Sur Place' : type === 'EMPORTER' ? 'À Emporter' : 'Livraison'}
-                  </button>
-                ))}
+              <div className="p-2 bg-gray-100/90 border-b border-gray-200">
+                <div className="flex gap-2 max-w-2xl">
+                  {activeOrderTypes.map(type => {
+                    const isActive = orderType === type;
+                    const Icon = type === 'SUR PLACE' ? UtensilsCrossed : type === 'LIVRAISON' ? Bike : ShoppingBag;
+                    const label = type === 'SUR PLACE' ? 'Sur Place' : type === 'EMPORTER' ? 'À Emporter' : 'Livraison';
+
+                    return (
+                      <button
+                        key={type}
+                        onClick={() => handleOrderTypeChange(type as any)}
+                        className={`flex-1 h-11 px-4 rounded-xl font-black text-[12px] uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                          isActive
+                            ? 'text-white shadow-md scale-[1.01]'
+                            : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200 shadow-sm'
+                        }`}
+                        style={isActive ? { backgroundColor: themeColors.secondary } : undefined}
+                      >
+                        <Icon size={16} className={isActive ? 'text-primary' : 'text-gray-400'} />
+                        <span>{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
-            <div className="p-4 grid grid-cols-5 gap-3 border-t border-gray-200">
-              {categories.map(cat => (
-                <button key={cat.name} onClick={() => setSelectedCategory(cat.name)} className={`h-[70px] rounded-xl font-black text-[13px] xl:text-[15px] uppercase tracking-wide transition-all border-4 cursor-pointer`} style={{ backgroundColor: selectedCategory === cat.name ? themeColors.secondary : '#f9fafb', borderColor: selectedCategory === cat.name ? themeColors.secondary : '#f3f4f6', color: selectedCategory === cat.name ? '#ffffff' : themeColors.secondary }}>
-                  {cat.name}
-                </button>
-              ))}
+            {/* 🟢 Catégories Compactes (h-[48px] au lieu de 70px) */}
+            <div className="p-2.5 sm:p-3 grid grid-cols-5 gap-2 sm:gap-2.5">
+              {categories.map(cat => {
+                const isSelected = selectedCategory === cat.name;
+                return (
+                  <button
+                    key={cat.name}
+                    onClick={() => setSelectedCategory(cat.name)}
+                    className="h-[46px] sm:h-[48px] px-2 rounded-xl font-black text-[12px] xl:text-[13.5px] uppercase tracking-wide transition-all border-2 flex items-center justify-center text-center truncate cursor-pointer shadow-sm active:scale-95"
+                    style={{
+                      backgroundColor: isSelected ? themeColors.secondary : '#ffffff',
+                      borderColor: isSelected ? themeColors.secondary : '#e5e7eb',
+                      color: isSelected ? '#ffffff' : themeColors.secondary
+                    }}
+                  >
+                    <span className="truncate">{cat.name}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          {/* 🟢 Grille de produits adaptative (Largeur minimale de 205px par carte) */}
-          <div className="flex-1 p-3.5 sm:p-4 lg:p-5 overflow-y-auto custom-scrollbar">
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(205px,1fr))] gap-3 sm:gap-3.5 content-start">
+          {/* 🟢 Grille de produits : 5 colonnes max en Full HD (min 265px) pour de plus grosses cartes */}
+          <div className="flex-1 p-3.5 sm:p-4 xl:p-5 overflow-y-auto custom-scrollbar">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(265px,1fr))] gap-3.5 xl:gap-4 content-start">
               {menuData.filter(p => p.category === selectedCategory).map(product => (
                 <ProductCard key={product.id} product={product as any} onSelectProduct={handleSelectProduct as any} />
               ))}
@@ -1524,6 +1567,7 @@ const Caisse = () => {
 
       {isCashSessionModalOpen && (
         <CashSessionModal 
+          restaurantId={posRestoId}
           onClose={(isSuccess?: boolean) => {
             if (!currentSessionId && isSuccess !== true) {
               customToast("Attention : Caisse non ouverte !", "error");
