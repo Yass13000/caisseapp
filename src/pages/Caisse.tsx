@@ -14,12 +14,11 @@ import {
 } from '@/lib/orderFormatter';
 
 import { 
-  Trash2, Delete, ShoppingBag, Settings, Lock, 
+  Trash2, Delete, Settings, Lock, 
   ClipboardList, History, Package, Wifi, WifiOff,
   UserRound, CalendarDays, LayoutDashboard, AlertTriangle,
   CreditCard, Banknote, CheckCircle2, Store, ArchiveRestore,
-  Calculator, Hourglass, Plus, RotateCcw, RotateCw,
-  UtensilsCrossed, Bike
+  Calculator, Hourglass, Plus, RotateCcw, RotateCw
 } from 'lucide-react';
 
 // Composants
@@ -56,6 +55,12 @@ const ORDER_TYPE_IDS = {
   'SUR PLACE': '633425b1-f86c-4c17-8cba-b258906ad317',
   'EMPORTER': '2cac3f10-73e2-40a5-a7e0-053bd861b4d9',
   'LIVRAISON': 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d'
+};
+
+const ORDER_TYPE_CONFIG: Record<string, { label: string; icon: string }> = {
+  'SUR PLACE': { label: 'Sur Place', icon: '/SVG/SP.svg' },
+  'EMPORTER': { label: 'À Emporter', icon: '/SVG/EMP.svg' },
+  'LIVRAISON': { label: 'Livraison', icon: '/SVG/liv.svg' }
 };
 
 const getSecureSetting = (key: string, defaultValue: any) => {
@@ -1300,31 +1305,34 @@ const Caisse = () => {
         
         <div className="flex-1 flex flex-col h-full bg-[#F3F4F6] relative min-w-0">
           
-          {/* 🟢 Panneau Supérieur : Sélecteur de Mode + Catégories Compactées */}
           <div className="bg-white border-b border-gray-200 shadow-sm flex-shrink-0 z-20">
-            
-            {/* 🟢 Sélecteur Mode de Commande (Style Segmenté Moderne avec Icônes) */}
+            {/* 🟢 Sélecteur Mode de Commande avec icônes personnalisées (/SVG/SP.svg, /SVG/EMP.svg, /SVG/liv.svg) */}
             {activeOrderTypes.length > 0 && (
               <div className="p-2 bg-gray-100/90 border-b border-gray-200">
                 <div className="flex gap-2 max-w-2xl">
                   {activeOrderTypes.map(type => {
                     const isActive = orderType === type;
-                    const Icon = type === 'SUR PLACE' ? UtensilsCrossed : type === 'LIVRAISON' ? Bike : ShoppingBag;
-                    const label = type === 'SUR PLACE' ? 'Sur Place' : type === 'EMPORTER' ? 'À Emporter' : 'Livraison';
+                    const config = ORDER_TYPE_CONFIG[type] || { label: type, icon: '' };
 
                     return (
-                      <button
-                        key={type}
-                        onClick={() => handleOrderTypeChange(type as any)}
-                        className={`flex-1 h-11 px-4 rounded-xl font-black text-[12px] uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                          isActive
-                            ? 'text-white shadow-md scale-[1.01]'
-                            : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200 shadow-sm'
-                        }`}
+                      <button 
+                        key={type} 
+                        onClick={() => handleOrderTypeChange(type as any)} 
+                        className={`flex-1 h-11 px-4 rounded-xl font-black text-[12px] uppercase tracking-wider transition-all flex items-center justify-center gap-2.5 cursor-pointer shadow-sm ${
+                          isActive 
+                            ? 'text-white shadow-md scale-[1.01]' 
+                            : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+                        }`} 
                         style={isActive ? { backgroundColor: themeColors.secondary } : undefined}
                       >
-                        <Icon size={16} className={isActive ? 'text-primary' : 'text-gray-400'} />
-                        <span>{label}</span>
+                        {config.icon && (
+                          <img 
+                            src={config.icon} 
+                            alt={config.label} 
+                            className={`w-5 h-5 object-contain transition-all ${isActive ? 'brightness-0 invert' : 'opacity-80'}`} 
+                          />
+                        )}
+                        <span>{config.label}</span>
                       </button>
                     );
                   })}
@@ -1332,19 +1340,19 @@ const Caisse = () => {
               </div>
             )}
 
-            {/* 🟢 Catégories Compactes (h-[48px] au lieu de 70px) */}
+            {/* 🟢 Catégories compactées (h-[48px] au lieu de 70px, bordures 2px au lieu de 4px) */}
             <div className="p-2.5 sm:p-3 grid grid-cols-5 gap-2 sm:gap-2.5">
               {categories.map(cat => {
                 const isSelected = selectedCategory === cat.name;
                 return (
-                  <button
-                    key={cat.name}
-                    onClick={() => setSelectedCategory(cat.name)}
-                    className="h-[46px] sm:h-[48px] px-2 rounded-xl font-black text-[12px] xl:text-[13.5px] uppercase tracking-wide transition-all border-2 flex items-center justify-center text-center truncate cursor-pointer shadow-sm active:scale-95"
-                    style={{
-                      backgroundColor: isSelected ? themeColors.secondary : '#ffffff',
-                      borderColor: isSelected ? themeColors.secondary : '#e5e7eb',
-                      color: isSelected ? '#ffffff' : themeColors.secondary
+                  <button 
+                    key={cat.name} 
+                    onClick={() => setSelectedCategory(cat.name)} 
+                    className="h-[46px] sm:h-[48px] px-2 rounded-xl font-black text-[12px] xl:text-[13.5px] uppercase tracking-wide transition-all border-2 flex items-center justify-center text-center truncate cursor-pointer shadow-sm active:scale-95" 
+                    style={{ 
+                      backgroundColor: isSelected ? themeColors.secondary : '#ffffff', 
+                      borderColor: isSelected ? themeColors.secondary : '#e5e7eb', 
+                      color: isSelected ? '#ffffff' : themeColors.secondary 
                     }}
                   >
                     <span className="truncate">{cat.name}</span>
@@ -1354,9 +1362,9 @@ const Caisse = () => {
             </div>
           </div>
 
-          {/* 🟢 Grille de produits : 5 colonnes max en Full HD (min 265px) pour de plus grosses cartes */}
+          {/* 🟢 Grille de produits : 5 cartes par ligne sur Full HD (min 265px) */}
           <div className="flex-1 p-3.5 sm:p-4 xl:p-5 overflow-y-auto custom-scrollbar">
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(265px,1fr))] gap-3.5 xl:gap-4 content-start">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(265px,1fr))] gap-3 sm:gap-3.5 xl:gap-4 content-start">
               {menuData.filter(p => p.category === selectedCategory).map(product => (
                 <ProductCard key={product.id} product={product as any} onSelectProduct={handleSelectProduct as any} />
               ))}
@@ -1376,7 +1384,11 @@ const Caisse = () => {
                 </button>
               )}
             </div>
-            <span className="flex items-center gap-1.5 bg-gray-200 px-2.5 py-1 rounded-lg font-black text-xs" style={{ color: themeColors.secondary }}><ShoppingBag size={14} /> {cartItemCount}</span>
+            {/* 🟢 Remplacement ShoppingBag par /SVG/kraft.svg */}
+            <span className="flex items-center gap-1.5 bg-gray-200 px-2.5 py-1 rounded-lg font-black text-xs" style={{ color: themeColors.secondary }}>
+              <img src="/SVG/kraft.svg" alt="Panier" className="w-4 h-4 object-contain" /> 
+              {cartItemCount}
+            </span>
           </div>
 
           <div className="flex-1 overflow-y-auto p-2 space-y-1.5 bg-gray-50/50 custom-scrollbar">
