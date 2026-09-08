@@ -40,6 +40,9 @@ export interface Product {
   name: string;
   price: number;
   category: string;
+  image?: string | null;
+  image_url?: string | null;
+  solo_image_url?: string | null;
   is_available: boolean;
   hide_on_kiosk?: boolean;
 }
@@ -94,10 +97,25 @@ const hexToHslString = (hex: string) => {
   return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
 };
 
+/**
+ * 🟢 CALCUL SÉCURISÉ DU TOTAL ARTICLE (ANTI-DOUBLON OPTIONS ET BORNE)
+ */
 const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
-  const basePrice = parseFloat(item.product?.price || item.price || 0);
   const groups = getFormattedOrderOptions(item, groupMapping);
-  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + o.price, 0);
+  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
+  
+  let basePrice = parseFloat(item.product?.price !== undefined ? item.product.price : (item.price || 0));
+
+  if (item.price !== undefined && item.product?.price !== undefined && optsPrice > 0) {
+    if (Math.abs(Number(item.price) - (Number(item.product.price) + optsPrice)) < 0.01) {
+      basePrice = Number(item.product.price);
+    }
+  } else if (item.price !== undefined && optsPrice > 0 && Number(item.price) > optsPrice && !item.product?.price) {
+    if (item.is_total_price || item.includes_options) {
+      basePrice = Math.max(0, Number(item.price) - optsPrice);
+    }
+  }
+
   return (basePrice + optsPrice) * (item.quantity || 1);
 };
 
@@ -212,6 +230,8 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
   };
 
   const addPaymentLine = (method: 'CB' | 'Espèces') => {
+    if (isProcessing) return;
+
     let amt = inputAmount;
     if (amt === 0 || (amt > remaining && method === 'CB')) {
       amt = remaining;
@@ -273,7 +293,7 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
                 <div className="text-[10px] font-black uppercase text-gray-400 tracking-wider mt-1">Total Ticket</div>
               </div>
               {lines.length > 0 && (
-                <button onClick={resetSplit} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all active:scale-95 text-gray-500">
+                <button onClick={resetSplit} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all active:scale-95 text-gray-500 cursor-pointer">
                   <RotateCcw size={18} />
                 </button>
               )}
@@ -299,18 +319,18 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
             )}
           </div>
 
-          <button onClick={onClose} disabled={isProcessing} className="w-full py-4 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-500 font-black uppercase tracking-wider active:scale-95 transition-all text-xs">
+          <button onClick={onClose} disabled={isProcessing} className="w-full py-4 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-500 font-black uppercase tracking-wider active:scale-95 transition-all text-xs cursor-pointer">
             Retour
           </button>
         </div>
 
         <div className="flex-1 flex flex-col p-6 gap-4">
           <div className="grid grid-cols-2 gap-4 flex-shrink-0">
-            <button onClick={() => addPaymentLine('CB')} disabled={isProcessing} className="h-20 bg-blue-600 text-white rounded-2xl flex flex-col items-center justify-center gap-1 hover:bg-blue-700 active:scale-95 transition-all shadow-md">
+            <button onClick={() => addPaymentLine('CB')} disabled={isProcessing} className="h-20 bg-blue-600 text-white rounded-2xl flex flex-col items-center justify-center gap-1 hover:bg-blue-700 active:scale-95 transition-all shadow-md cursor-pointer disabled:opacity-50">
               <CreditCard size={28} />
               <span className="text-[10px] font-black uppercase tracking-widest">Carte Bancaire</span>
             </button>
-            <button onClick={() => addPaymentLine('Espèces')} disabled={isProcessing || (inputAmount < remaining && inputAmount === 0)} className="h-20 bg-primary text-white rounded-2xl flex flex-col items-center justify-center gap-1 hover:bg-primary/90 active:scale-95 transition-all shadow-md disabled:opacity-50">
+            <button onClick={() => addPaymentLine('Espèces')} disabled={isProcessing || (inputAmount < remaining && inputAmount === 0)} className="h-20 bg-primary text-white rounded-2xl flex flex-col items-center justify-center gap-1 hover:bg-primary/90 active:scale-95 transition-all shadow-md disabled:opacity-50 cursor-pointer">
               <Banknote size={28} />
               <span className="text-[10px] font-black uppercase tracking-widest">Valider Espèces</span>
             </button>
@@ -329,11 +349,11 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
 
           <div className="flex-1 flex gap-4 min-h-0">
             <div className="w-[30%] flex flex-col gap-2">
-              <button onClick={handleExactCount} className="flex-1 bg-white border border-gray-200 hover:border-secondary text-secondary font-black text-sm rounded-xl active:scale-95 transition-all shadow-sm">
+              <button onClick={handleExactCount} className="flex-1 bg-white border border-gray-200 hover:border-secondary text-secondary font-black text-sm rounded-xl active:scale-95 transition-all shadow-sm cursor-pointer">
                 Compte Exact
               </button>
               {[5, 10, 20, 50].map(amt => (
-                <button key={amt} onClick={() => handleAddAmount(amt)} className="flex-1 bg-white border border-gray-200 hover:border-secondary text-secondary font-black text-sm rounded-xl active:scale-95 transition-all shadow-sm flex items-center justify-center gap-1">
+                <button key={amt} onClick={() => handleAddAmount(amt)} className="flex-1 bg-white border border-gray-200 hover:border-secondary text-secondary font-black text-sm rounded-xl active:scale-95 transition-all shadow-sm flex items-center justify-center gap-1 cursor-pointer">
                   <Plus size={12} className="text-gray-400" /> {amt} €
                 </button>
               ))}
@@ -342,13 +362,13 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
             <div className="flex-1 flex flex-col gap-2">
               <div className="grid grid-cols-3 gap-2 flex-1">
                 {['1','2','3','4','5','6','7','8','9','0','00','.'].map(key => (
-                  <button key={key} onClick={() => handleNumpad(key)} className="bg-white border border-gray-200 hover:border-secondary text-secondary text-lg font-black rounded-xl active:scale-95 transition-all shadow-sm flex items-center justify-center">
+                  <button key={key} onClick={() => handleNumpad(key)} className="bg-white border border-gray-200 hover:border-secondary text-secondary text-lg font-black rounded-xl active:scale-95 transition-all shadow-sm flex items-center justify-center cursor-pointer">
                     {key}
                   </button>
                 ))}
               </div>
               <div className="h-14 flex-shrink-0">
-                <button onClick={() => handleNumpad('DEL')} className="w-full h-full bg-red-50 hover:bg-red-100 text-red-500 font-black rounded-xl active:scale-95 transition-all border border-red-100 flex items-center justify-center shadow-sm">
+                <button onClick={() => handleNumpad('DEL')} className="w-full h-full bg-red-50 hover:bg-red-100 text-red-500 font-black rounded-xl active:scale-95 transition-all border border-red-100 flex items-center justify-center shadow-sm cursor-pointer">
                   <Delete size={20} />
                 </button>
               </div>
@@ -391,6 +411,9 @@ const Caisse = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // 🛑 Verrou synchrone immédiat anti-double clic / rebond tactile
+  const isSubmittingRef = useRef(false);
+
   const [isOrderTrackerOpen, setIsOrderTrackerOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -429,7 +452,6 @@ const Caisse = () => {
   const customToast = (msg: string, type: 'success' | 'error' = 'success', options = {}) => 
     toast[type](msg, { duration: 800, ...options });
 
-  // Écouteur réactif d'association ou dissociation via événement custom
   useEffect(() => {
     const handleRestoChanged = (e?: any) => {
       const newId = e?.detail?.restaurantId || getInitialRestaurantId();
@@ -460,7 +482,6 @@ const Caisse = () => {
   const activeDeliveryFee = orderType === 'LIVRAISON' ? (parseFloat(deliveryFee) || 0) : 0;
   const finalTotal = subtotal + activeDeliveryFee;
 
-  // Détection de commande active (articles OU client enregistré OU commande chargée)
   const hasActiveOrderData = cartItemCount > 0 || !!clientInfo || !!loadedOrderId || deliveryFee > 0;
 
   useEffect(() => {
@@ -536,7 +557,6 @@ const Caisse = () => {
     }
   }, [pinCode]);
 
-  // Vérification de la session de caisse strictement rattachée au restaurant actif
   useEffect(() => {
     if (isAuthenticated && posRestoId) {
       const checkCashSession = async () => {
@@ -748,14 +768,17 @@ const Caisse = () => {
         const rawSelections = item.rawSelections || productObj.rawSelections || null;
         const selectedSubOptions = item.selectedSubOptions || productObj.selectedSubOptions || item.options || [];
         const removedIngredients = item.removedIngredients || productObj.removedIngredients || [];
+        const isSolo = item.isSolo === true || item.product?.isSolo === true || item.is_solo === true || /\bseul\b/i.test(item.name || productObj.name || '');
 
         const uniqueKey = `loaded-${orderId}-${idx}-${realProductId}`;
 
         const formattedItem = {
           ...item,
           id: uniqueKey,
+          isSolo,
           product: {
             ...fullProduct,
+            isSolo,
             rawSelections,
             selectedSubOptions,
             removedIngredients,
@@ -844,6 +867,7 @@ const Caisse = () => {
     addToCart({
       id: uniqueCartKey,
       product: p,
+      isSolo: p.isSolo === true,
       selectedSubOptions: finalFlatOptions,
       rawSelections: finalRawSelections,
       removedIngredients: removedIngredientsList,
@@ -860,167 +884,143 @@ const Caisse = () => {
   const finalizePayment = async (method: string, cashAmount: number = 0) => {
     if (cartState.items.length === 0) return;
     
-    if (!currentSessionId) {
-      customToast("Veuillez ouvrir la caisse d'abord !", "error");
-      setIsCashSessionModalOpen(true);
-      setIsPaymentModalOpen(false);
-      return;
-    }
-
+    // 🛑 Verrou synchrone immédiat : bloque tout double-clic ou rebond tactile
+    if (isSubmittingRef.current || isProcessing) return;
+    isSubmittingRef.current = true;
     setIsProcessing(true);
-    
-    const activeRestoId = getActiveRestaurantId();
-    const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
-    const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
-    let targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
-
-    const offlineId = `offline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const orderPayload = {
-      offline_id: offlineId,
-      is_update: !!loadedOrderId,
-      target_id: loadedOrderId || null,
-      restaurant_id: activeRestoId,
-      total_price: parseFloat(finalTotal.toFixed(2)),
-      delivery_fee: activeDeliveryFee, 
-      is_paid: true,
-      payment_status: 'paid',
-      status: 'En cours',
-      payment_method: method,
-      cash_amount: cashAmount,
-      order_origin: 'caisse',
-      order_type_id: currentOrderTypeId,
-      order_details: cleanOrderDetails,
-      customer_name: clientInfo?.name || 'Client Caisse',
-      customer_phone: clientInfo?.phone || null,
-      customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
-      order_number: targetOrderNumber,
-      session_id: currentSessionId 
-    };
-
-    if (!isOnline) {
-      if ((window as any).electronAPI?.saveOfflineOrder) {
-        await (window as any).electronAPI.saveOfflineOrder(orderPayload);
-        customToast(`Encaissé (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
-
-        const isCashMethodOffline = String(method).toLowerCase().includes('espece') || 
-                                   String(method).toLowerCase().includes('cash') || 
-                                   String(method).toLowerCase() === 'counter' || 
-                                   cashAmount > 0;
-        if (isCashMethodOffline) {
-          openCashDrawer(true);
-        }
-        
-        const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
-        if (isAutoPrintReceiptEnabled) {
-          await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
-        }
-        
-        const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
-        if (isKitchenTicketEnabled && !loadedOrderId) {
-          setTimeout(async () => {
-            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
-          }, 500);
-        }
-
-        clearCart();
-        setLoadedOrderId(null);
-        setDeliveryFee(0);
-        setClientInfo(null);
-        clientInfoRef.current = null;
-        setOrderType(getDefaultOrderType());
-        setIsPaymentModalOpen(false);
-      } else {
-        customToast("Erreur : Mode hors-ligne impossible sur le Web", "error");
-      }
-      setIsProcessing(false);
-      return;
-    }
 
     try {
-      if (loadedOrderId) {
-        const { error } = await supabase
-          .from('orders')
-          .update({ 
-            is_paid: true, 
-            payment_status: 'paid', 
-            status: 'En cours', 
-            payment_method: method, 
-            cash_amount: cashAmount, 
-            order_type_id: currentOrderTypeId || undefined,
-            order_details: cleanOrderDetails,
-            total_price: parseFloat(finalTotal.toFixed(2)),
-            delivery_fee: activeDeliveryFee,
-            session_id: currentSessionId 
-          })
-          .eq('id', loadedOrderId);
-        if (error) throw error;
-
-        const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
-        if (orderData?.order_number) targetOrderNumber = orderData.order_number;
-      } else {
-        const { offline_id, is_update, target_id, order_number, ...insertPayload } = orderPayload;
-
-        const { data: insertedOrder, error } = await supabase
-          .from('orders')
-          .insert([insertPayload])
-          .select('id, order_number')
-          .single();
-
-        if (error) throw error;
-        if (insertedOrder?.order_number) {
-          targetOrderNumber = insertedOrder.order_number;
-        }
-      }
-
-      customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
-
-      const isCashMethodOnline = String(method).toLowerCase().includes('espece') || 
-                                String(method).toLowerCase().includes('cash') || 
-                                String(method).toLowerCase() === 'counter' || 
-                                cashAmount > 0;
-      if (isCashMethodOnline) {
-        openCashDrawer(true);
-      }
-
-      const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
-      if (isAutoPrintReceiptEnabled) {
-        await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
+      if (!currentSessionId) {
+        customToast("Veuillez ouvrir la caisse d'abord !", "error");
+        setIsCashSessionModalOpen(true);
+        setIsPaymentModalOpen(false);
+        return;
       }
       
-      const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
-      if (isKitchenTicketEnabled && !loadedOrderId) {
-        setTimeout(async () => {
-          await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
-        }, 500);
+      const activeRestoId = getActiveRestaurantId();
+      const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
+      const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
+      let targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
+
+      const offlineId = `offline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const orderPayload = {
+        offline_id: offlineId,
+        is_update: !!loadedOrderId,
+        target_id: loadedOrderId || null,
+        restaurant_id: activeRestoId,
+        total_price: parseFloat(finalTotal.toFixed(2)),
+        delivery_fee: activeDeliveryFee, 
+        is_paid: true,
+        payment_status: 'paid',
+        status: 'En cours',
+        payment_method: method,
+        cash_amount: cashAmount,
+        order_origin: 'caisse',
+        order_type_id: currentOrderTypeId,
+        order_details: cleanOrderDetails,
+        customer_name: clientInfo?.name || 'Client Caisse',
+        customer_phone: clientInfo?.phone || null,
+        customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
+        order_number: targetOrderNumber,
+        session_id: currentSessionId 
+      };
+
+      if (!isOnline) {
+        if ((window as any).electronAPI?.saveOfflineOrder) {
+          await (window as any).electronAPI.saveOfflineOrder(orderPayload);
+          customToast(`Encaissé (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
+
+          const isCashMethodOffline = String(method).toLowerCase().includes('espece') || 
+                                     String(method).toLowerCase().includes('cash') || 
+                                     String(method).toLowerCase() === 'counter' || 
+                                     cashAmount > 0;
+          if (isCashMethodOffline) {
+            openCashDrawer(true);
+          }
+          
+          const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
+          if (isAutoPrintReceiptEnabled) {
+            await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
+          }
+          
+          const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
+          if (isKitchenTicketEnabled && !loadedOrderId) {
+            setTimeout(async () => {
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
+            }, 500);
+          }
+
+          clearCart();
+          setLoadedOrderId(null);
+          setDeliveryFee(0);
+          setClientInfo(null);
+          clientInfoRef.current = null;
+          setOrderType(getDefaultOrderType());
+          setIsPaymentModalOpen(false);
+        } else {
+          customToast("Erreur : Mode hors-ligne impossible sur le Web", "error");
+        }
+        return;
       }
 
-      clearCart();
-      setLoadedOrderId(null);
-      setDeliveryFee(0);
-      setClientInfo(null);
-      clientInfoRef.current = null;
-      setOrderType(getDefaultOrderType());
-      setIsPaymentModalOpen(false);
+      try {
+        if (loadedOrderId) {
+          const { error } = await supabase
+            .from('orders')
+            .update({ 
+              is_paid: true, 
+              payment_status: 'paid', 
+              status: 'En cours', 
+              payment_method: method, 
+              cash_amount: cashAmount, 
+              order_type_id: currentOrderTypeId || undefined,
+              order_details: cleanOrderDetails,
+              total_price: parseFloat(finalTotal.toFixed(2)),
+              delivery_fee: activeDeliveryFee,
+              session_id: currentSessionId 
+            })
+            .eq('id', loadedOrderId);
+          if (error) throw error;
 
-    } catch (e) {
-      console.error("Crash réseau inattendu, bascule de secours locale :", e);
-      if ((window as any).electronAPI?.saveOfflineOrder) {
-        orderPayload.order_number = targetOrderNumber;
-        await (window as any).electronAPI.saveOfflineOrder(orderPayload);
-        customToast(`Encaissé (Local de secours) ${finalTotal.toFixed(2)}€`, "success");
-        
+          const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
+          if (orderData?.order_number) targetOrderNumber = orderData.order_number;
+        } else {
+          const { offline_id, is_update, target_id, order_number, ...insertPayload } = orderPayload;
+
+          const { data: insertedOrder, error } = await supabase
+            .from('orders')
+            .insert([insertPayload])
+            .select('id, order_number')
+            .single();
+
+          if (error) throw error;
+          if (insertedOrder?.order_number) {
+            targetOrderNumber = insertedOrder.order_number;
+          }
+        }
+
+        customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
+
+        const isCashMethodOnline = String(method).toLowerCase().includes('espece') || 
+                                  String(method).toLowerCase().includes('cash') || 
+                                  String(method).toLowerCase() === 'counter' || 
+                                  cashAmount > 0;
+        if (isCashMethodOnline) {
+          openCashDrawer(true);
+        }
+
         const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
         if (isAutoPrintReceiptEnabled) {
           await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
         }
-
+        
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
         if (isKitchenTicketEnabled && !loadedOrderId) {
           setTimeout(async () => {
             await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
           }, 500);
         }
-        
+
         clearCart();
         setLoadedOrderId(null);
         setDeliveryFee(0);
@@ -1028,10 +1028,39 @@ const Caisse = () => {
         clientInfoRef.current = null;
         setOrderType(getDefaultOrderType());
         setIsPaymentModalOpen(false);
-      } else {
-        customToast("Erreur d'enregistrement BDD", "error");
+
+      } catch (e) {
+        console.error("Crash réseau inattendu, bascule de secours locale :", e);
+        if ((window as any).electronAPI?.saveOfflineOrder) {
+          orderPayload.order_number = targetOrderNumber;
+          await (window as any).electronAPI.saveOfflineOrder(orderPayload);
+          customToast(`Encaissé (Local de secours) ${finalTotal.toFixed(2)}€`, "success");
+          
+          const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
+          if (isAutoPrintReceiptEnabled) {
+            await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
+          }
+
+          const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
+          if (isKitchenTicketEnabled && !loadedOrderId) {
+            setTimeout(async () => {
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
+            }, 500);
+          }
+          
+          clearCart();
+          setLoadedOrderId(null);
+          setDeliveryFee(0);
+          setClientInfo(null);
+          clientInfoRef.current = null;
+          setOrderType(getDefaultOrderType());
+          setIsPaymentModalOpen(false);
+        } else {
+          customToast("Erreur d'enregistrement BDD", "error");
+        }
       }
     } finally {
+      isSubmittingRef.current = false;
       setIsProcessing(false);
     }
   };
@@ -1039,46 +1068,107 @@ const Caisse = () => {
   const processPendingOrder = async () => {
     if (cartState.items.length === 0) return;
     
-    if (!currentSessionId) {
-      customToast("Veuillez ouvrir la caisse d'abord !", "error");
-      setIsCashSessionModalOpen(true);
-      return;
-    }
-
+    // 🛑 Verrou synchrone immédiat : bloque tout double-clic
+    if (isSubmittingRef.current || isProcessing) return;
+    isSubmittingRef.current = true;
     setIsProcessing(true);
-    
-    const activeRestoId = getActiveRestaurantId();
-    const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
-    const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
-    let targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
 
-    const offlineId = `offline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const orderPayload = {
-      offline_id: offlineId,
-      is_update: !!loadedOrderId,
-      target_id: loadedOrderId || null,
-      restaurant_id: activeRestoId,
-      total_price: parseFloat(finalTotal.toFixed(2)),
-      delivery_fee: activeDeliveryFee, 
-      is_paid: false,
-      payment_status: 'pending',
-      status: 'En cours',
-      payment_method: 'en attente',
-      cash_amount: 0,
-      order_origin: 'caisse',
-      order_type_id: currentOrderTypeId,
-      order_details: cleanOrderDetails,
-      customer_name: clientInfo?.name || 'Client Caisse',
-      customer_phone: clientInfo?.phone || null,
-      customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
-      order_number: targetOrderNumber,
-      session_id: currentSessionId 
-    };
+    try {
+      if (!currentSessionId) {
+        customToast("Veuillez ouvrir la caisse d'abord !", "error");
+        setIsCashSessionModalOpen(true);
+        return;
+      }
+      
+      const activeRestoId = getActiveRestaurantId();
+      const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
+      const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
+      let targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
 
-    if (!isOnline) {
-      if ((window as any).electronAPI?.saveOfflineOrder) {
-        await (window as any).electronAPI.saveOfflineOrder(orderPayload);
-        customToast(`En attente (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
+      const offlineId = `offline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const orderPayload = {
+        offline_id: offlineId,
+        is_update: !!loadedOrderId,
+        target_id: loadedOrderId || null,
+        restaurant_id: activeRestoId,
+        total_price: parseFloat(finalTotal.toFixed(2)),
+        delivery_fee: activeDeliveryFee, 
+        is_paid: false,
+        payment_status: 'pending',
+        status: 'En cours',
+        payment_method: 'en attente',
+        cash_amount: 0,
+        order_origin: 'caisse',
+        order_type_id: currentOrderTypeId,
+        order_details: cleanOrderDetails,
+        customer_name: clientInfo?.name || 'Client Caisse',
+        customer_phone: clientInfo?.phone || null,
+        customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
+        order_number: targetOrderNumber,
+        session_id: currentSessionId 
+      };
+
+      if (!isOnline) {
+        if ((window as any).electronAPI?.saveOfflineOrder) {
+          await (window as any).electronAPI.saveOfflineOrder(orderPayload);
+          customToast(`En attente (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
+          
+          const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
+          if (isKitchenTicketEnabled && !loadedOrderId) {
+            setTimeout(async () => {
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
+            }, 500);
+          }
+
+          clearCart();
+          setLoadedOrderId(null);
+          setDeliveryFee(0);
+          setClientInfo(null);
+          clientInfoRef.current = null;
+          setOrderType(getDefaultOrderType());
+        } else {
+          customToast("Erreur : Mode hors-ligne impossible sur le Web", "error");
+        }
+        return;
+      }
+
+      try {
+        if (loadedOrderId) {
+          const { error } = await supabase
+            .from('orders')
+            .update({ 
+              is_paid: false, 
+              payment_status: 'pending', 
+              status: 'En cours', 
+              payment_method: 'en attente', 
+              cash_amount: 0, 
+              order_type_id: currentOrderTypeId || undefined,
+              order_details: cleanOrderDetails,
+              total_price: parseFloat(finalTotal.toFixed(2)),
+              delivery_fee: activeDeliveryFee, 
+              session_id: currentSessionId 
+            })
+            .eq('id', loadedOrderId);
+          if (error) throw error;
+
+          const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
+          if (orderData?.order_number) targetOrderNumber = orderData.order_number;
+        } else {
+          const { offline_id, is_update, target_id, order_number, ...insertPayload } = orderPayload;
+
+          const { data: insertedOrder, error } = await supabase
+            .from('orders')
+            .insert([insertPayload])
+            .select('id, order_number')
+            .single();
+
+          if (error) throw error;
+          if (insertedOrder?.order_number) {
+            targetOrderNumber = insertedOrder.order_number;
+          }
+        }
+
+        customToast(`Commande en attente de ${finalTotal.toFixed(2)}€`, "success");
         
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
         if (isKitchenTicketEnabled && !loadedOrderId) {
@@ -1093,89 +1183,32 @@ const Caisse = () => {
         setClientInfo(null);
         clientInfoRef.current = null;
         setOrderType(getDefaultOrderType());
-      } else {
-        customToast("Erreur : Mode hors-ligne impossible sur le Web", "error");
-      }
-      setIsProcessing(false);
-      return;
-    }
 
-    try {
-      if (loadedOrderId) {
-        const { error } = await supabase
-          .from('orders')
-          .update({ 
-            is_paid: false, 
-            payment_status: 'pending', 
-            status: 'En cours', 
-            payment_method: 'en attente', 
-            cash_amount: 0, 
-            order_type_id: currentOrderTypeId || undefined,
-            order_details: cleanOrderDetails,
-            total_price: parseFloat(finalTotal.toFixed(2)),
-            delivery_fee: activeDeliveryFee, 
-            session_id: currentSessionId 
-          })
-          .eq('id', loadedOrderId);
-        if (error) throw error;
-
-        const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
-        if (orderData?.order_number) targetOrderNumber = orderData.order_number;
-      } else {
-        const { offline_id, is_update, target_id, order_number, ...insertPayload } = orderPayload;
-
-        const { data: insertedOrder, error } = await supabase
-          .from('orders')
-          .insert([insertPayload])
-          .select('id, order_number')
-          .single();
-
-        if (error) throw error;
-        if (insertedOrder?.order_number) {
-          targetOrderNumber = insertedOrder.order_number;
+      } catch (e) {
+        console.error("Crash réseau inattendu, bascule de secours locale :", e);
+        if ((window as any).electronAPI?.saveOfflineOrder) {
+          orderPayload.order_number = targetOrderNumber;
+          await (window as any).electronAPI.saveOfflineOrder(orderPayload);
+          customToast(`En attente (Sauvegardé localement) ${finalTotal.toFixed(2)}€`, "success");
+          
+          clearCart();
+          setLoadedOrderId(null);
+          setDeliveryFee(0);
+          setClientInfo(null);
+          clientInfoRef.current = null;
+          setOrderType(getDefaultOrderType());
+        } else {
+          customToast("Erreur d'enregistrement BDD", "error");
         }
       }
-
-      customToast(`Commande en attente de ${finalTotal.toFixed(2)}€`, "success");
-      
-      const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
-      if (isKitchenTicketEnabled && !loadedOrderId) {
-        setTimeout(async () => {
-          await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
-        }, 500);
-      }
-
-      clearCart();
-      setLoadedOrderId(null);
-      setDeliveryFee(0);
-      setClientInfo(null);
-      clientInfoRef.current = null;
-      setOrderType(getDefaultOrderType());
-
-    } catch (e) {
-      console.error("Crash réseau inattendu, bascule de secours locale :", e);
-      if ((window as any).electronAPI?.saveOfflineOrder) {
-        orderPayload.order_number = targetOrderNumber;
-        await (window as any).electronAPI.saveOfflineOrder(orderPayload);
-        customToast(`En attente (Sauvegardé localement) ${finalTotal.toFixed(2)}€`, "success");
-        
-        clearCart();
-        setLoadedOrderId(null);
-        setDeliveryFee(0);
-        setClientInfo(null);
-        clientInfoRef.current = null;
-        setOrderType(getDefaultOrderType());
-      } else {
-        customToast("Erreur d'enregistrement BDD", "error");
-      }
     } finally {
+      isSubmittingRef.current = false;
       setIsProcessing(false);
     }
   };
 
   const rightBarBtnClass = "w-[56px] h-[56px] flex flex-col items-center justify-center text-primary rounded-xl hover:bg-white/10 active:scale-95 transition-all shadow-sm mx-auto cursor-pointer";
 
-  // Premier démarrage : écran QR code unifié si aucun identifiant n'est actif
   if (!posRestoId || posRestoId === 'null' || posRestoId === 'undefined' || posRestoId.trim() === '') {
     return (
       <PosSetup>
@@ -1278,8 +1311,9 @@ const Caisse = () => {
             </div>
           </div>
 
-          <div className="flex-1 p-6 overflow-y-auto custom-scrollbar">
-            <div className="grid grid-cols-4 gap-4 content-start">
+          {/* 🟢 Grille de produits adaptative (Largeur minimale de 205px par carte) */}
+          <div className="flex-1 p-3.5 sm:p-4 lg:p-5 overflow-y-auto custom-scrollbar">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(205px,1fr))] gap-3 sm:gap-3.5 content-start">
               {menuData.filter(p => p.category === selectedCategory).map(product => (
                 <ProductCard key={product.id} product={product as any} onSelectProduct={handleSelectProduct as any} />
               ))}
@@ -1412,7 +1446,7 @@ const Caisse = () => {
             
             <div className="flex gap-2">
               <button 
-                disabled={cartItemCount === 0 || isProcessing} 
+                disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current} 
                 onClick={processPendingOrder} 
                 className="w-16 bg-orange-50 text-orange-500 flex items-center justify-center rounded-xl hover:bg-orange-100 active:scale-95 disabled:opacity-50 transition-all border border-orange-100 cursor-pointer" 
                 title="Mettre en attente de paiement (Impression Cuisine uniquement)"
@@ -1421,7 +1455,7 @@ const Caisse = () => {
               </button>
               
               <button 
-                disabled={cartItemCount === 0 || isProcessing} 
+                disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current} 
                 onClick={() => setIsPaymentModalOpen(true)} 
                 className="flex-1 text-white font-black text-xl py-3 rounded-xl shadow-md active:scale-95 disabled:opacity-50 transition-transform uppercase tracking-wider cursor-pointer" 
                 style={{ backgroundColor: themeColors.primary }}
@@ -1430,7 +1464,7 @@ const Caisse = () => {
               </button>
 
               <button 
-                disabled={!hasActiveOrderData || isProcessing} 
+                disabled={!hasActiveOrderData || isProcessing || isSubmittingRef.current} 
                 onClick={() => setShowClearConfirm(true)} 
                 className="w-16 bg-red-50 text-red-500 flex items-center justify-center rounded-xl hover:bg-red-100 active:scale-95 disabled:opacity-50 transition-all border border-red-100 cursor-pointer"
                 title="Réinitialiser la commande"
@@ -1444,7 +1478,12 @@ const Caisse = () => {
         <div className="w-[74px] flex flex-col items-center py-3 z-40 shadow-[-5px_0_15px_rgba(0,0,0,0.2)] flex-shrink-0 justify-between" style={{ backgroundColor: themeColors.secondary }}>
           <div className="flex flex-col gap-1.5 w-full px-2 items-center">
             
-            <button disabled={cartItemCount === 0 || isProcessing} onClick={() => finalizePayment('cb', 0)} className={`w-[56px] h-[56px] mx-auto flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95 cursor-pointer' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} title="Paiement Rapide CB">
+            <button 
+              disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current} 
+              onClick={() => finalizePayment('cb', 0)} 
+              className={`w-[56px] h-[56px] mx-auto flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing && !isSubmittingRef.current ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95 cursor-pointer' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} 
+              title="Paiement Rapide CB"
+            >
               <CreditCard size={24} />
               <span className="text-[8px] font-black uppercase mt-0.5 tracking-wider">Rapide</span>
             </button>
@@ -1453,7 +1492,7 @@ const Caisse = () => {
             <button onClick={() => setIsDashboardOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><LayoutDashboard size={24} /></button>
             <button onClick={() => setIsOrderTrackerOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><ClipboardList size={24} /></button>
             <button onClick={() => setIsHistoryOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><History size={24} /></button>
-            <button onClick={openCashDrawer} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Ouvrir le tiroir caisse"><ArchiveRestore size={24} /></button>
+            <button onClick={() => openCashDrawer(false)} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Ouvrir le tiroir caisse"><ArchiveRestore size={24} /></button>
             
             <button onClick={() => setIsCashSessionModalOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Gestion Caisse (Ticket X/Z)"><Calculator size={24} /></button>
             
