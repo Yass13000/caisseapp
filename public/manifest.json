@@ -1,26 +1,26 @@
 {
-  "name": "Caisse",
+  "name": "Module Caisse",
   "short_name": "Caisse",
-  "description": "Application",
-  "start_url": "/",
+  "description": "Application de caisse enregistreuse tactile haute performance",
+  "start_url": "/#/caisse",
   "scope": "/",
   "display": "fullscreen",
   "display_override": ["fullscreen", "standalone"],
-  "orientation": "portrait-primary",
-  "background_color": "#0f5426",
-  "theme_color": "#0f5426",
+  "orientation": "landscape",
+  "background_color": "#0B0F19",
+  "theme_color": "#0B0F19",
   "lang": "fr",
   "categories": ["food", "business"],
   "prefer_related_applications": false,
   "icons": [
     {
-      "src": "/iconmob.png",
+      "src": "/icon-192x192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/iconmob.png",
+      "src": "/icon-512x512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"

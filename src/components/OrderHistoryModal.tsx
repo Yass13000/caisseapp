@@ -14,7 +14,13 @@ import {
   ChevronRight, 
   Printer, 
   ChefHat,
-  Filter
+  Utensils,
+  Truck,
+  Store,
+  Smartphone,
+  Monitor,
+  Layers,
+  ArrowUpDown
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload } from '@/lib/orderFormatter';
@@ -28,7 +34,6 @@ const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   if (!item) return 0;
   if (item.isReward) return 0;
 
-  // 🟢 PRIORITÉ 1 : Utiliser le prix de ligne déjà calculé et stocké dans l'objet de commande
   if (item.total_price !== undefined && item.total_price !== null && !isNaN(Number(item.total_price))) {
     return Number(item.total_price);
   }
@@ -36,7 +41,6 @@ const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
     return Number(item.total);
   }
 
-  // 🟢 PRIORITÉ 2 : Calcul strict sans double comptage (base_price + options)
   const basePrice = parseFloat(item.product?.base_price ?? item.base_price ?? item.product?.price ?? item.price ?? 0);
   const groups = getFormattedOrderOptions(item, groupMapping);
   const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
@@ -75,7 +79,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
           setOrderTypesMap(map);
         }
       } catch (e) {
-        console.error("Erreur chargement types de commande:", e);
+        console.error("Erreur chargement types de commande :", e);
       }
     };
     fetchOrderTypes();
@@ -91,7 +95,9 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
       if (parsed && parsed.cart && Array.isArray(parsed.cart)) return parsed.cart;
       if (parsed) return [parsed];
       return [];
-    } catch(e) { return []; }
+    } catch { 
+      return []; 
+    }
   };
 
   // Helpers de normalisation
@@ -129,7 +135,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
         || RESTAURANT_ID;
       
       if (!activeRestoId || activeRestoId === 'undefined' || activeRestoId === 'null') {
-        toast.error("Veuillez configurer la caisse (ID manquant)");
+        toast.error("Veuillez configurer la caisse (identifiant manquant)");
         setIsLoading(false);
         return;
       }
@@ -152,14 +158,13 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
 
       if (error) throw error;
       setOrders(data || []);
-    } catch (e) {
+    } catch {
       toast.error("Erreur lors du chargement de l'historique");
     } finally {
       setIsLoading(false);
     }
   };
 
-  // 🟢 Chargement du mapping des groupes d'options Supabase
   useEffect(() => {
     const loadMapping = async () => {
       if (orders.length === 0) return;
@@ -181,7 +186,6 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterDate, sortOrder]);
 
-  // Calcul dynamique des éléments existants (> 0)
   const availableTypeCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     orders.forEach(o => {
@@ -200,7 +204,6 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     return counts;
   }, [orders, getOrderOrigin]);
 
-  // Réinitialisation automatique du filtre si la sélection actuelle n'a pas de commandes
   useEffect(() => {
     if (selectedOrderType !== 'all' && !availableTypeCounts[selectedOrderType]) {
       setSelectedOrderType('all');
@@ -210,7 +213,6 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     }
   }, [availableTypeCounts, availableOriginCounts, selectedOrderType, selectedOrigin]);
 
-  // Commandes filtrées
   const filteredOrders = useMemo(() => {
     return orders.filter(order => {
       if (selectedOrderType !== 'all' && getOrderType(order) !== selectedOrderType) {
@@ -262,29 +264,42 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     return method;
   };
 
-  // --- FONCTION D'IMPRESSION DEPUIS L'HISTORIQUE ---
+  // --- ICÔNES ASSOCIÉES ---
+  const getTypeIcon = (typeName: string) => {
+    const t = typeName.toLowerCase();
+    if (t.includes('place')) return Utensils;
+    if (t.includes('emporter') || t.includes('collect')) return ShoppingBag;
+    if (t.includes('livraison')) return Truck;
+    return Layers;
+  };
+
+  const getOriginIcon = (originName: string) => {
+    const o = originName.toLowerCase();
+    if (o.includes('borne')) return Monitor;
+    if (o.includes('app')) return Smartphone;
+    return Store;
+  };
+
   const handlePrintPastOrder = async (order: any) => {
     if (!window.electronAPI) {
-        toast.error("Impression non disponible sur la version Web.");
-        return;
+      toast.error("Impression non disponible sur la version Web.");
+      return;
     }
 
     try {
       const items = extractItemsSafely(order.order_details);
       if (!items || items.length === 0) {
-          toast.error("Impossible d'imprimer : détails de commande vides.");
-          return;
+        toast.error("Impossible d'imprimer : détails de commande vides.");
+        return;
       }
 
       const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping, 'DUPLICATA');
-
       const result = await (window as any).electronAPI.printReceipt(orderPayloadData);
       if (!result.success) toast.error("Erreur avec l'imprimante !");
       else toast.success("Duplicata imprimé");
-
     } catch (err) {
-        console.error("Erreur impression historique :", err);
-        toast.error("Erreur lors de la génération du ticket");
+      console.error("Erreur impression historique :", err);
+      toast.error("Erreur lors de la génération du ticket");
     }
   };
 
@@ -323,7 +338,6 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     }
   };
 
-  // --- AFFICHAGE À L'ÉCRAN ---
   const renderOrderDetails = (detailsRaw: any) => {
     try {
       const items = extractItemsSafely(detailsRaw);
@@ -373,14 +387,13 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
                       ))}
                     </div>
                   )}
-                  
                 </li>
               );
             })}
           </ul>
         </div>
       );
-    } catch (e) {
+    } catch {
       return <p className="text-red-500 text-sm">Détails illisibles</p>;
     }
   };
@@ -391,23 +404,29 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     <div className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 font-helvetica select-none">
       <div className="bg-[#F3F4F6] w-[1280px] h-[780px] max-w-[96vw] max-h-[96vh] rounded-[1.5rem] shadow-2xl flex flex-col overflow-hidden border border-white/20">
         
-        <div className="bg-white border-b border-gray-200 p-5 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-4 flex-wrap">
-            <h2 className="text-2xl font-black text-secondary uppercase tracking-tight">Historique des Ventes</h2>
-            
-            <div className="flex items-center gap-2 bg-gray-50 p-1.5 rounded-xl border border-gray-200 shadow-inner flex-wrap">
-              
-              <div className="flex items-center bg-white rounded-lg shadow-sm border border-gray-200 p-1">
+        {/* EN-TÊTE PRINCIPAL MODERNISÉ */}
+        <div className="bg-white border-b border-gray-200 px-6 py-4 flex flex-col gap-3.5 flex-shrink-0">
+          
+          {/* LIGNE SUPÉRIEURE : TITRE, DATE, TRI ET FERMETURE */}
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <h2 className="text-xl font-black text-secondary uppercase tracking-tight">
+                Historique des Ventes
+              </h2>
+
+              {/* SÉLECTEUR DE DATE */}
+              <div className="flex items-center bg-gray-100 p-0.5 rounded-xl border border-gray-200">
                 <button 
                   onClick={() => changeDay(-1)} 
-                  className="p-1.5 hover:bg-gray-100 rounded-md transition-colors active:scale-95 text-gray-600"
+                  className="p-1.5 hover:bg-white rounded-lg transition-all active:scale-95 text-gray-600 hover:shadow-sm"
+                  title="Jour précédent"
                 >
-                  <ChevronLeft className="w-5 h-5" />
+                  <ChevronLeft className="w-4 h-4" />
                 </button>
                 
-                <div className="flex items-center gap-2 px-3 justify-center min-w-[150px]">
-                  <Calendar className="text-primary w-4 h-4" />
-                  <span className="font-bold text-secondary text-sm capitalize">
+                <div className="flex items-center gap-2 px-3 justify-center min-w-[140px]">
+                  <Calendar className="text-primary w-3.5 h-3.5" />
+                  <span className="font-bold text-secondary text-xs capitalize">
                     {getFormattedDateLabel()}
                   </span>
                 </div>
@@ -415,68 +434,144 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
                 <button 
                   onClick={() => !isToday && changeDay(1)} 
                   disabled={isToday}
-                  className={`p-1.5 rounded-md transition-colors ${isToday ? 'opacity-30 cursor-not-allowed' : 'hover:bg-gray-100 active:scale-95 text-gray-600'}`}
+                  className={`p-1.5 rounded-lg transition-all ${isToday ? 'opacity-25 cursor-not-allowed' : 'hover:bg-white hover:shadow-sm active:scale-95 text-gray-600'}`}
+                  title="Jour suivant"
                 >
-                  <ChevronRight className="w-5 h-5" />
+                  <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* TRI CHRONOLOGIQUE */}
+              {/* BOUTON TRI CHRONOLOGIQUE */}
               <button 
                 onClick={() => setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc')}
-                className="flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-gray-100 border border-gray-200 text-secondary rounded-lg font-bold text-xs active:scale-95 transition-all shadow-sm h-full"
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-sm active:scale-95 ${
+                  sortOrder === 'desc' 
+                    ? 'bg-white border-gray-200 text-secondary' 
+                    : 'bg-primary/10 border-primary/30 text-primary font-black'
+                }`}
                 title="Inverser le tri"
               >
-                <Clock className={`w-4 h-4 ${sortOrder === 'desc' ? 'text-primary' : 'text-gray-400'}`} />
-                {sortOrder === 'desc' ? 'Plus récents' : 'Plus anciens'}
+                <ArrowUpDown className="w-3.5 h-3.5" />
+                <span>{sortOrder === 'desc' ? 'Plus récents' : 'Plus anciens'}</span>
               </button>
-
-              {/* FILTRE PAR ORDER TYPE (MASQUÉ SI 0 CHOIX) */}
-              {Object.keys(availableTypeCounts).length > 0 && (
-                <div className="relative flex items-center">
-                  <select
-                    value={selectedOrderType}
-                    onChange={(e) => setSelectedOrderType(e.target.value)}
-                    className="bg-white hover:bg-gray-100 border border-gray-200 text-secondary rounded-lg font-bold text-xs px-3 py-2 outline-none cursor-pointer shadow-sm appearance-none pr-7 transition-all h-full"
-                  >
-                    <option value="all">Tous types ({orders.length})</option>
-                    {Object.entries(availableTypeCounts).map(([type, count]) => (
-                      <option key={type} value={type}>
-                        {type} ({count})
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-2 pointer-events-none" />
-                </div>
-              )}
-
-              {/* FILTRE PAR CANAL / ORIGINE (MASQUÉ SI 0 CHOIX) */}
-              {Object.keys(availableOriginCounts).length > 0 && (
-                <div className="relative flex items-center">
-                  <select
-                    value={selectedOrigin}
-                    onChange={(e) => setSelectedOrigin(e.target.value)}
-                    className="bg-white hover:bg-gray-100 border border-gray-200 text-secondary rounded-lg font-bold text-xs px-3 py-2 outline-none cursor-pointer shadow-sm appearance-none pr-7 transition-all h-full"
-                  >
-                    <option value="all">Toutes origines ({orders.length})</option>
-                    {Object.entries(availableOriginCounts).map(([orig, count]) => (
-                      <option key={orig} value={orig}>
-                        {orig} ({count})
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="w-3.5 h-3.5 text-gray-400 absolute right-2 pointer-events-none" />
-                </div>
-              )}
-
             </div>
+
+            <button 
+              onClick={onClose} 
+              className="w-9 h-9 bg-red-50 text-red-600 hover:bg-red-500 hover:text-white rounded-xl flex items-center justify-center font-black transition-all active:scale-90"
+              title="Fermer la fenêtre"
+            >
+              <X size={20} />
+            </button>
           </div>
 
-          <button onClick={onClose} className="w-10 h-10 bg-red-100 text-red-600 rounded-lg flex items-center justify-center font-black hover:bg-red-200 active:scale-90 transition-all">
-            <X size={24} />
-          </button>
+          {/* LIGNE INFÉRIEURE : BARRE DE NAVIGATION PAR ICÔNES (SEGMENTED PILLS) */}
+          <div className="flex items-center justify-between gap-4 flex-wrap pt-1 border-t border-gray-100">
+            
+            {/* SEGMENT 1 : TYPES DE COMMANDE */}
+            <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
+              <span className="text-[10px] font-black uppercase text-gray-400 tracking-wider mr-1">Type</span>
+              
+              <div className="flex items-center bg-gray-100 p-1 rounded-xl border border-gray-200 gap-1">
+                <button
+                  type="button"
+                  onClick={() => setSelectedOrderType('all')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 ${
+                    selectedOrderType === 'all'
+                      ? 'bg-white text-slate-900 shadow-sm border border-black/5 font-black'
+                      : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
+                  }`}
+                >
+                  <Layers size={14} className={selectedOrderType === 'all' ? 'text-primary' : 'text-gray-400'} />
+                  <span>Tous</span>
+                  <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${
+                    selectedOrderType === 'all' ? 'bg-primary/10 text-primary' : 'bg-gray-200 text-gray-600'
+                  }`}>
+                    {orders.length}
+                  </span>
+                </button>
+
+                {Object.entries(availableTypeCounts).map(([type, count]) => {
+                  const IconComponent = getTypeIcon(type);
+                  const isSelected = selectedOrderType === type;
+                  return (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => setSelectedOrderType(type)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 ${
+                        isSelected
+                          ? 'bg-white text-slate-900 shadow-sm border border-black/5 font-black'
+                          : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
+                      }`}
+                    >
+                      <IconComponent size={14} className={isSelected ? 'text-primary' : 'text-gray-400'} />
+                      <span>{type}</span>
+                      <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${
+                        isSelected ? 'bg-primary/10 text-primary' : 'bg-gray-200 text-gray-600'
+                      }`}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* SEGMENT 2 : CANAUX / ORIGINES */}
+            <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
+              <span className="text-[10px] font-black uppercase text-gray-400 tracking-wider mr-1">Canal</span>
+              
+              <div className="flex items-center bg-gray-100 p-1 rounded-xl border border-gray-200 gap-1">
+                <button
+                  type="button"
+                  onClick={() => setSelectedOrigin('all')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 ${
+                    selectedOrigin === 'all'
+                      ? 'bg-white text-slate-900 shadow-sm border border-black/5 font-black'
+                      : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
+                  }`}
+                >
+                  <Layers size={14} className={selectedOrigin === 'all' ? 'text-secondary' : 'text-gray-400'} />
+                  <span>Tous</span>
+                  <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${
+                    selectedOrigin === 'all' ? 'bg-secondary/10 text-secondary' : 'bg-gray-200 text-gray-600'
+                  }`}>
+                    {orders.length}
+                  </span>
+                </button>
+
+                {Object.entries(availableOriginCounts).map(([orig, count]) => {
+                  const IconComponent = getOriginIcon(orig);
+                  const isSelected = selectedOrigin === orig;
+                  return (
+                    <button
+                      key={orig}
+                      type="button"
+                      onClick={() => setSelectedOrigin(orig)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 ${
+                        isSelected
+                          ? 'bg-white text-slate-900 shadow-sm border border-black/5 font-black'
+                          : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
+                      }`}
+                    >
+                      <IconComponent size={14} className={isSelected ? 'text-secondary' : 'text-gray-400'} />
+                      <span>{orig}</span>
+                      <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${
+                        isSelected ? 'bg-secondary/10 text-secondary' : 'bg-gray-200 text-gray-600'
+                      }`}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+          </div>
         </div>
 
+        {/* CONTENU PRINCIPAL */}
         <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
           {isLoading ? (
             <div className="h-full flex flex-col items-center justify-center space-y-3">
@@ -592,24 +687,25 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
           )}
         </div>
 
+        {/* PIED DE FENÊTRE : STATISTIQUES */}
         <div className="p-5 bg-white border-t border-gray-200 flex items-center justify-center flex-shrink-0">
-            <div className="flex gap-16 items-center bg-gray-50 px-8 py-3.5 rounded-2xl border border-gray-200 shadow-inner">
-                <div className="flex flex-col items-center">
-                    <span className="text-gray-400 font-bold uppercase text-[10px] tracking-widest mb-1">
-                      {selectedOrderType !== 'all' || selectedOrigin !== 'all' ? 'Ventes Filtrées' : 'Ventes Finalisées'}
-                    </span>
-                    <span className="text-2xl font-black text-secondary">{filteredOrders.length}</span>
-                </div>
-                
-                <div className="w-px h-9 bg-gray-300"></div>
-                
-                <div className="flex flex-col items-center">
-                    <span className="text-gray-400 font-bold uppercase text-[10px] tracking-widest mb-1">Chiffre d'Affaires</span>
-                    <span className="text-3xl font-black text-[#04B855]">
-                        {filteredOrders.reduce((acc, curr) => acc + (Number(curr.total_price) || 0), 0).toFixed(2)} €
-                    </span>
-                </div>
+          <div className="flex gap-16 items-center bg-gray-50 px-8 py-3.5 rounded-2xl border border-gray-200 shadow-inner">
+            <div className="flex flex-col items-center">
+              <span className="text-gray-400 font-bold uppercase text-[10px] tracking-widest mb-1">
+                {selectedOrderType !== 'all' || selectedOrigin !== 'all' ? 'Ventes Filtrées' : 'Ventes Finalisées'}
+              </span>
+              <span className="text-2xl font-black text-secondary">{filteredOrders.length}</span>
             </div>
+            
+            <div className="w-px h-9 bg-gray-300"></div>
+            
+            <div className="flex flex-col items-center">
+              <span className="text-gray-400 font-bold uppercase text-[10px] tracking-widest mb-1">Chiffre d'Affaires</span>
+              <span className="text-3xl font-black text-[#04B855]">
+                {filteredOrders.reduce((acc, curr) => acc + (Number(curr.total_price) || 0), 0).toFixed(2)} €
+              </span>
+            </div>
+          </div>
         </div>
 
       </div>

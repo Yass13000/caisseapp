@@ -2,10 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { 
-  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Store, Power, RefreshCw, ShoppingBag
+  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { supabase } from '@/lib/supabaseClient';
+import PosSetup from '@/components/PosSetup';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -40,10 +40,6 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
 
-  // --- ÉTATS SYSTÈME ---
-  const [newRestoId, setNewRestoId] = useState('');
-  const [isCheckingResto, setIsCheckingResto] = useState(false);
-
   // --- ÉTATS COMMANDE PAR DÉFAUT ---
   const [defaultOrderType, setDefaultOrderType] = useState(() => getSecureSetting('default_order_type', 'EMPORTER'));
 
@@ -62,7 +58,6 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
   const [copiesClient, setCopiesClient] = useState(() => getSecureSetting('receipt_copies_client', '1'));
   const [copiesKitchen, setCopiesKitchen] = useState(() => getSecureSetting('receipt_copies_kitchen', '1'));
 
-  // 🟢 CORRECTION DU LOGO : Stockage strict sous forme de chaîne 'true' / 'false'
   const [showLogo, setShowLogo] = useState(() => getSecureSetting('show_logo', 'true') !== 'false');
   const [showHeaderInfo, setShowHeaderInfo] = useState(() => getSecureSetting('show_header_info', 'true') !== 'false');
   const [showTaxDetails, setShowTaxDetails] = useState(() => getSecureSetting('show_tax_details', 'false') === 'true');
@@ -89,7 +84,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
         setAvailablePrinters(printers || []);
         toast.success("Liste des imprimantes actualisée !");
       } catch (e) {
-        console.error("Erreur lors du chargement des imprimantes:", e);
+        console.error("Erreur lors du chargement des imprimantes :", e);
       }
     }
   };
@@ -126,7 +121,6 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     }
   };
 
-  // --- HANDLER MODE PAR DÉFAUT ---
   const handleDefaultOrderTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
     setDefaultOrderType(val);
@@ -134,7 +128,6 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     toast.success(`Mode de commande par défaut : ${val}`);
   };
 
-  // --- HANDLERS SÉCURITÉ ---
   const handleSavePin = () => {
     const savedPin = getSecureSetting('pos_pin', '1234');
     if (currentPin !== savedPin) return toast.error("Le code actuel est incorrect");
@@ -144,35 +137,6 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     setSecureSetting('pos_pin', newPin);
     toast.success("Code PIN modifié !");
     setCurrentPin(''); setNewPin(''); setConfirmPin('');
-  };
-
-  // --- HANDLERS SYSTÈME ---
-  const handleVerifyAndSaveRestoId = async () => {
-    const trimmedId = newRestoId.trim();
-    if (trimmedId.length < 5) return toast.error("Veuillez entrer un ID valide");
-
-    setIsCheckingResto(true);
-    try {
-      const { data, error } = await supabase
-        .from('restaurants')
-        .select('id, name')
-        .eq('id', trimmedId)
-        .single();
-
-      if (error || !data) {
-        toast.error("Cet ID Restaurant n'existe pas !");
-      } else {
-        setSecureSetting('pos_restaurant_id', trimmedId);
-        toast.success(`Connecté à ${data.name || 'nouveau restaurant'} ! Redémarrage en cours...`);
-        setTimeout(() => {
-          window.location.reload();
-        }, 1500);
-      }
-    } catch (e) {
-      toast.error("Erreur de vérification de l'ID");
-    } finally {
-      setIsCheckingResto(false);
-    }
   };
 
   const handleCloseApp = () => {
@@ -199,13 +163,13 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     }
   };
 
-  const handleGearClick = () => {
+  const handleGearClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
     setGearClicks(prev => {
       const nextCount = prev + 1;
       if (nextCount === 3) {
         setActiveTab('secret-system');
         setShowPowerMenu(false);
-        toast.success("Accès Administrateur déverrouillé");
         return 0;
       }
       return nextCount;
@@ -223,15 +187,37 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     { id: 'security', icon: ShieldCheck, label: 'Sécurité', description: 'Code PIN d\'accès' },
   ];
 
+  // 🟢 TRIPLE-CLIC : Affichage direct du composant PosSetup (source de vérité unique)
+  if (activeTab === 'secret-system') {
+    return createPortal(
+      <div className="fixed inset-0 z-[100000]">
+        <button
+          type="button"
+          onClick={() => setActiveTab('printing')}
+          className="fixed top-3 left-6 z-[100001] flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white transition-all text-xs font-semibold uppercase tracking-wider cursor-pointer border border-white/10 backdrop-blur-md"
+        >
+          <ArrowLeft size={16} />
+          <span>Retour aux réglages</span>
+        </button>
+
+        <PosSetup forceShow={true}>
+          <></>
+        </PosSetup>
+      </div>,
+      document.body
+    );
+  }
+
   return createPortal(
     <div className="fixed inset-0 z-[99999] bg-[#F3F4F6] flex flex-col font-helvetica select-none">
       
-      {/* EN-TÊTE */}
+      {/* EN-TÊTE RÉGLAGES */}
       <div className="bg-white h-24 border-b border-gray-200 flex items-center justify-between px-10 flex-shrink-0 shadow-sm z-10">
         <div className="flex items-center gap-5">
           <div 
             onClick={handleGearClick}
             className="w-14 h-14 bg-secondary text-white rounded-2xl flex items-center justify-center shadow-md cursor-pointer active:scale-95 transition-transform"
+            title="Cliquez 3 fois pour jumeler ou dissocier"
           >
             <Settings size={32} />
           </div>
@@ -242,13 +228,12 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
         </div>
         <button 
           onClick={onClose} 
-          className="h-14 px-6 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center font-black text-lg hover:bg-red-100 active:scale-95 transition-all gap-2 border border-red-100"
+          className="h-14 px-6 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center font-black text-lg hover:bg-red-100 active:scale-95 transition-all gap-2 border border-red-100 cursor-pointer"
         >
           <X size={24} /> FERMER
         </button>
       </div>
 
-      {/* CORPS */}
       <div className="flex flex-1 overflow-hidden">
         
         {/* SIDEBAR */}
@@ -261,7 +246,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                 <button
                   key={item.id}
                   onClick={() => { setActiveTab(item.id); setShowPowerMenu(false); }}
-                  className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all ${
+                  className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all cursor-pointer ${
                     isActive 
                       ? 'bg-primary text-white shadow-md shadow-primary/20 scale-[1.02]' 
                       : 'bg-transparent text-gray-600 hover:bg-gray-50'
@@ -286,27 +271,27 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
             })}
           </div>
 
-          {/* BOUTON FLOTTANT D'ALIMENTATION */}
+          {/* BOUTON D'ALIMENTATION */}
           <div className="px-6 mt-auto pt-4 border-t border-gray-100 flex justify-end relative">
             {showPowerMenu && (
               <div className="absolute bottom-16 right-6 w-56 bg-white rounded-2xl shadow-[0_10px_40px_-10px_rgba(0,0,0,0.25)] border border-gray-200 p-1.5 flex flex-col gap-0.5 animate-in fade-in slide-in-from-bottom-2 duration-150 z-50">
                 <button 
                   onClick={() => { handleCloseApp(); setShowPowerMenu(false); }}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-gray-100 rounded-xl transition-colors text-left text-secondary font-black uppercase text-[11px] tracking-wider"
+                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-gray-100 rounded-xl transition-colors text-left text-secondary font-black uppercase text-[11px] tracking-wider cursor-pointer"
                 >
                   <Power size={16} className="text-gray-500" />
                   Fermer
                 </button>
                 <button 
                   onClick={() => { handleRestartPC(); setShowPowerMenu(false); }}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-orange-50 rounded-xl transition-colors text-left text-orange-600 font-black uppercase text-[11px] tracking-wider"
+                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-orange-50 rounded-xl transition-colors text-left text-orange-600 font-black uppercase text-[11px] tracking-wider cursor-pointer"
                 >
                   <RefreshCw size={16} className="text-orange-500" />
                   Redémarrer
                 </button>
                 <button 
                   onClick={() => { handleShutdownPC(); setShowPowerMenu(false); }}
-                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 rounded-xl transition-colors text-left text-red-600 font-black uppercase text-[11px] tracking-wider"
+                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-red-50 rounded-xl transition-colors text-left text-red-600 font-black uppercase text-[11px] tracking-wider cursor-pointer"
                 >
                   <Power size={16} className="text-red-500" />
                   Éteindre
@@ -316,7 +301,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
 
             <button
               onClick={() => setShowPowerMenu(!showPowerMenu)}
-              className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all ${
+              className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all cursor-pointer ${
                 showPowerMenu 
                   ? 'bg-red-500 text-white shadow-md shadow-red-500/20 scale-[1.02]' 
                   : 'bg-red-50 text-red-600 hover:bg-red-100 active:scale-95'
@@ -331,7 +316,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
         {/* ZONE DE CONTENU */}
         <div className="flex-1 overflow-y-auto p-10 bg-[#F3F4F6]">
           
-          {/* ONGLET IMPRESSION & MODE DE COMMANDE */}
+          {/* ONGLET IMPRESSION */}
           {activeTab === 'printing' && (
             <div className="max-w-3xl animate-in fade-in duration-300">
               <div className="mb-8">
@@ -342,7 +327,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
               <div className="bg-white rounded-[2rem] shadow-sm border border-gray-200 overflow-hidden space-y-2">
                 <div className="p-8 space-y-6">
                   
-                  {/* 🟢 SELECTION DU MODE DE COMMANDE PAR DÉFAUT */}
+                  {/* MODE DE COMMANDE PAR DÉFAUT */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-3">
                     <div className="flex items-center gap-3">
                       <ShoppingBag className="text-primary" size={24} />
@@ -393,13 +378,13 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                     </div>
                   </div>
 
-                  {/* CONFIGURATION MULTI-IMPRIMANTES ET RÔLES */}
+                  {/* AFFECTATION DES IMPRIMANTES */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <div className="flex items-center justify-between">
                       <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Affectation des Imprimantes</h3>
                       <button 
                         onClick={fetchPrinters}
-                        className="px-4 py-2 bg-white border border-gray-300 rounded-xl text-xs font-bold text-secondary flex items-center gap-2 hover:bg-gray-100 active:scale-95 transition-all shadow-sm"
+                        className="px-4 py-2 bg-white border border-gray-300 rounded-xl text-xs font-bold text-secondary flex items-center gap-2 hover:bg-gray-100 active:scale-95 transition-all shadow-sm cursor-pointer"
                       >
                         <RefreshCw size={14} /> Actualiser la liste
                       </button>
@@ -418,7 +403,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                             <option key={idx} value={p.name}>{p.name} {p.isDefault ? '(Système)' : ''}</option>
                           ))}
                         </select>
-                        <button onClick={() => handleTestPrint(caissePrinter)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1">
+                        <button onClick={() => handleTestPrint(caissePrinter)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1 cursor-pointer">
                           <Printer size={12} /> Test impression Client
                         </button>
                       </div>
@@ -435,7 +420,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                             <option key={idx} value={p.name}>{p.name}</option>
                           ))}
                         </select>
-                        <button onClick={() => handleTestPrint(kitchenPrinter)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1">
+                        <button onClick={() => handleTestPrint(kitchenPrinter)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1 cursor-pointer">
                           <Printer size={12} /> Test impression Cuisine
                         </button>
                       </div>
@@ -456,7 +441,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                     </div>
                   </div>
 
-                  {/* RÉGLAGES DE MISE EN PAGE */}
+                  {/* FORMAT ET MISE EN PAGE */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Mise en page & Format</h3>
 
@@ -520,7 +505,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                     </div>
                   </div>
 
-                  {/* 🟢 EN-TÊTE DU TICKET & LOGO (Stockage strict 'true' / 'false') */}
+                  {/* VISUELS ET LOGO */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Logo & Visuels</h3>
 
@@ -651,10 +636,10 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                     </div>
                   </div>
 
-                  {/* ROUTAGE DES ARTICLES PAR CATÉGORIE */}
+                  {/* ROUTAGE PAR CATÉGORIE */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Routage par Catégorie</h3>
-                    <p className="text-xs font-bold text-gray-400">Dirigez automatiquement les bons de préparation des articles de certaines catégories vers des imprimantes spécifiques.</p>
+                    <p className="text-xs font-bold text-gray-400">Dirigez automatiquement les articles de certaines catégories vers des imprimantes spécifiques.</p>
 
                     {currentCategories && currentCategories.length > 0 ? (
                       <div className="space-y-3 max-h-60 overflow-y-auto custom-scrollbar pr-2">
@@ -733,53 +718,11 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                   <button 
                     onClick={handleSavePin}
                     disabled={!currentPin || newPin.length !== 4 || confirmPin.length !== 4}
-                    className="px-10 py-4 bg-primary text-white rounded-xl font-black text-lg uppercase tracking-wider flex items-center justify-center gap-3 hover:bg-primary/90 active:scale-95 disabled:opacity-50 transition-all shadow-md"
+                    className="px-10 py-4 bg-primary text-white rounded-xl font-black text-lg uppercase tracking-wider flex items-center justify-center gap-3 hover:bg-primary/90 active:scale-95 disabled:opacity-50 transition-all shadow-md cursor-pointer"
                   >
                     <Save size={24} />
                     Mettre à jour le code
                   </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ZONE CACHÉE SYSTÈME : TRIPLE CLIC SUR LA ROUE DENTÉE */}
-          {activeTab === 'secret-system' && (
-            <div className="max-w-3xl animate-in fade-in duration-300">
-              <div className="mb-8">
-                <h2 className="text-3xl font-black text-secondary uppercase">Configuration Resto</h2>
-                <p className="text-gray-500 font-bold mt-2">Espace d'administration masqué.</p>
-              </div>
-
-              <div className="bg-white rounded-[2rem] shadow-sm border border-gray-200 overflow-hidden space-y-6 pb-6">
-                <div className="p-8">
-                  <div className="flex items-center gap-3 mb-6">
-                    <Store className="text-gray-400" size={28} />
-                    <div>
-                      <h3 className="text-lg font-black text-secondary uppercase tracking-wide">ID du Restaurant</h3>
-                      <p className="text-sm font-bold text-gray-400">Modifier l'identifiant pour synchroniser une autre base de données.</p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-end gap-4">
-                    <div className="flex-1">
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">ID unique de liaison</label>
-                      <input 
-                        type="text" 
-                        value={newRestoId} 
-                        onChange={(e) => setNewRestoId(e.target.value)}
-                        placeholder="Ex: 550e8400-e29b-41d4-a716-446655440000"
-                        className="w-full bg-gray-50 border-2 border-gray-200 rounded-2xl px-4 py-3 text-base font-bold tracking-wider focus:outline-none focus:border-primary transition-all"
-                      />
-                    </div>
-                    <button 
-                      onClick={handleVerifyAndSaveRestoId}
-                      disabled={isCheckingResto || newRestoId.length < 5}
-                      className="h-[52px] px-8 bg-secondary text-white rounded-xl font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-secondary/90 active:scale-95 disabled:opacity-50 transition-all shadow-md"
-                    >
-                      {isCheckingResto ? "Vérification..." : "Connecter"}
-                    </button>
-                  </div>
                 </div>
               </div>
             </div>

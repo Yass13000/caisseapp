@@ -506,6 +506,15 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
       toast.success(`Commande #${paymentOrder.order_number || paymentOrder.id.toString().slice(0, 4)} encaissée`);
 
+      const isCashPayment = String(method).toLowerCase().includes('espece') || 
+                            String(method).toLowerCase().includes('cash') || 
+                            String(method).toLowerCase() === 'counter' || 
+                            cashAmount > 0;
+      if (isCashPayment && (window as any).electronAPI?.openDrawer) {
+        const printerName = localStorage.getItem('imprimante_caisse') || undefined;
+        (window as any).electronAPI.openDrawer(printerName);
+      }
+
       const updatedOrder = { ...paymentOrder, ...updatePayload };
 
       const isAutoPrintReceiptEnabled = localStorage.getItem('auto_print_receipt') !== 'false';

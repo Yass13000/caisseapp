@@ -318,7 +318,9 @@ function buildKitchenHtml(orderData, widthMm = '72') {
       <head>
         <meta charset="utf-8">
         <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 4px; width: ${bodyWidth}; color: black; line-height: 1.2; }
+          @page { margin: 0; size: auto; }
+          * { box-sizing: border-box; }
+          html, body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 4px; width: ${bodyWidth}; height: auto; overflow: hidden; color: black; line-height: 1.2; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .center { text-align: center; }
         </style>
       </head>
@@ -376,14 +378,20 @@ function buildZReportHtml(reportData, widthMm = '72') {
       <head>
         <meta charset="utf-8">
         <style>
-          body { 
+          @page { margin: 0; size: auto; }
+          * { box-sizing: border-box; }
+          html, body { 
             font-family: monospace; 
             font-size: ${fontSize}; 
             margin: 0; 
             padding: 4px; 
             width: ${widthMm}mm; 
+            height: auto;
+            overflow: hidden;
             color: black; 
             line-height: 1.2; 
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
           }
           .center { text-align: center; width: 100%; }
           .bold { font-weight: bold; }
@@ -692,7 +700,9 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
       <head>
         <meta charset="utf-8">
         <style>
-          body { font-family: monospace; font-size: ${fontSize}; margin: 0; padding: ${bodyPadding}; width: ${bodyWidth}; color: black; line-height: 1.2; text-align: left; }
+          @page { margin: 0; size: auto; }
+          * { box-sizing: border-box; }
+          html, body { font-family: monospace; font-size: ${fontSize}; margin: 0; padding: ${bodyPadding}; width: ${bodyWidth}; height: auto; overflow: hidden; color: black; line-height: 1.2; text-align: left; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .center { text-align: center; width: 100%; }
           .bold { font-weight: bold; }
           hr { border: none; border-top: 1px solid black; margin: 6px 0; }
@@ -768,6 +778,10 @@ const PrinterManager = {
     } catch (e) {}
 
     if (isKitchen && routingConfig && Object.keys(routingConfig).length > 0 && Array.isArray(orderData.items)) {
+      if (orderData.items.length === 0) {
+        return { success: true, message: 'SKIPPED_EMPTY_KITCHEN_ORDER' };
+      }
+
       const itemsByPrinterName = {};
 
       for (const item of orderData.items) {
@@ -798,6 +812,8 @@ const PrinterManager = {
       const failedPrinters = [];
 
       for (const [physName, groupInfo] of Object.entries(itemsByPrinterName)) {
+        if (!groupInfo.items || groupInfo.items.length === 0) continue;
+
         const groupOrderData = {
           ...orderData,
           items: groupInfo.items
@@ -817,6 +833,10 @@ const PrinterManager = {
         printedGroups: printedPrinters,
         failedGroups: failedPrinters
       };
+    }
+
+    if (isKitchen && (!Array.isArray(orderData.items) || orderData.items.length === 0)) {
+      return { success: true, message: 'SKIPPED_EMPTY_KITCHEN_ORDER' };
     }
 
     return await PrinterManager._printSingleWindow(orderData, desiredPrinterName, mainWindow);
@@ -868,7 +888,7 @@ const PrinterManager = {
           printBackground: true,
           deviceName: deviceName,
           margins: { marginType: 'none' }
-        }, async (success, failureReason) => {
+        }, (success, failureReason) => {
           printWindow.destroy();
           printWindow = null;
 
@@ -876,9 +896,6 @@ const PrinterManager = {
             console.error("[PrinterManager] Erreur d'impression physique:", failureReason);
             resolve({ success: false, error: failureReason });
           } else {
-            if (targetPrinter && process.platform === 'win32') {
-              await sendRawCommandToPrinter(targetPrinter.name, "29, 86, 66, 0");
-            }
             resolve({ success: true });
           }
         });
@@ -895,29 +912,51 @@ const PrinterManager = {
       const targetPrinter = await getTargetPrinter(desiredPrinterName, mainWindow);
       if (!targetPrinter) return { success: false, error: "Aucune imprimante détectée." };
 
+      const settings = readSettingsFile();
+      const pinMode = settings.drawer_pin_mode || 'both';
+
+      // Séquence standard d'impulsion solénoïde ESC/POS (50ms pulse ON, 500ms delay OFF)
+      // Broche 2 : 27, 112, 0, 25, 250
+      // Broche 5 : 27, 112, 1, 25, 250
+      // DLE DC4 temps réel : 16, 20, 1, 1, 1
+      let kickBytes = [27, 112, 0, 25, 250, 27, 112, 1, 25, 250, 16, 20, 1, 1, 1];
+      if (pinMode === '0') kickBytes = [27, 112, 0, 25, 250];
+      else if (pinMode === '1') kickBytes = [27, 112, 1, 25, 250];
+      else if (pinMode === 'dle') kickBytes = [16, 20, 1, 1, 1];
+
       if (process.platform === 'win32') {
-        const settings = readSettingsFile();
-        const pinMode = settings.drawer_pin_mode || 'both';
-
-        let kickCode = "27, 112, 0, 25, 250, 27, 112, 1, 25, 250";
-        if (pinMode === '0') kickCode = "27, 112, 0, 25, 250";
-        else if (pinMode === '1') kickCode = "27, 112, 1, 25, 250";
-
+        const kickCode = kickBytes.join(', ');
         const isSuccess = await sendRawCommandToPrinter(targetPrinter.name, kickCode);
         return { success: isSuccess };
       } else {
-        let kickWindow = new BrowserWindow({ 
-          show: false, 
-          webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true } 
-        });
-        await kickWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent('<html><body>.</body></html>')}`);
-        
+        // macOS / Linux : envoi RAW direct via CUPS (lpr -o raw) sans avance papier
         return new Promise((resolve) => {
-          kickWindow.webContents.print({ silent: true, deviceName: targetPrinter.name }, (success) => {
-            kickWindow.destroy();
-            kickWindow = null;
-            resolve({ success });
-          });
+          const kickBuffer = Buffer.from(kickBytes);
+          const tempKickFile = path.join(os.tmpdir(), `kick_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+          
+          try {
+            fs.writeFileSync(tempKickFile, kickBuffer);
+            exec(`lpr -P "${targetPrinter.name}" -o raw "${tempKickFile}"`, (err) => {
+              try { fs.unlinkSync(tempKickFile); } catch (e) {}
+              if (!err) {
+                resolve({ success: true });
+              } else {
+                // Fallback silencieux sans aucun texte pour ne pas faire d'avance de papier
+                let kickWindow = new BrowserWindow({ 
+                  show: false, 
+                  webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true } 
+                });
+                kickWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent('<!DOCTYPE html><html><head><style>@page{margin:0;size:auto;}html,body{margin:0;padding:0;width:0;height:0;overflow:hidden;}</style></head><body></body></html>')}`);
+                kickWindow.webContents.print({ silent: true, deviceName: targetPrinter.name, margins: { marginType: 'none' } }, (success) => {
+                  kickWindow.destroy();
+                  kickWindow = null;
+                  resolve({ success });
+                });
+              }
+            });
+          } catch (e) {
+            resolve({ success: false, error: e.message });
+          }
         });
       }
     } catch (error) {

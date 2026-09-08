@@ -48,18 +48,26 @@ export default defineConfig({
       manifest: {
         name: 'Module Caisse',
         short_name: 'Caisse',
-        description: 'Caisse',
-        theme_color: '#E2E8F0',
+        description: 'Application de caisse enregistreuse tactile haute performance',
+        start_url: '/#/caisse',
+        scope: '/',
+        display: 'fullscreen',
+        display_override: ['fullscreen', 'standalone'],
+        orientation: 'landscape',
+        theme_color: '#0B0F19',
+        background_color: '#0B0F19',
         icons: [
           {
-            src: 'iconmob.png',
+            src: 'icon-192x192.png',
             sizes: '192x192',
-            type: 'image/png'
+            type: 'image/png',
+            purpose: 'any maskable'
           },
           {
-            src: 'iconmob.png',
+            src: 'icon-512x512.png',
             sizes: '512x512',
-            type: 'image/png'
+            type: 'image/png',
+            purpose: 'any maskable'
           }
         ]
       }

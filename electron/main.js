@@ -24,6 +24,9 @@ function createWindow() {
     width: 1080,
     height: 1920,
     show: false,
+    icon: process.platform === 'win32'
+      ? path.join(__dirname, '../build/icon.ico')
+      : path.join(__dirname, '../build/icon.png'),
     kiosk: process.env.NODE_ENV !== 'development',
     autoHideMenuBar: true,
     webPreferences: {

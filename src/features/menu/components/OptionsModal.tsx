@@ -45,7 +45,7 @@ interface StepData {
 
 const cleanId = (id: any) => {
   if (id === undefined || id === null) return '';
-  return String(id).replace(/^dyn_/, '');
+  return String(id).replace(/^dyn_/, '').trim();
 };
 
 const normalizeStr = (s: any) => String(s || '')
@@ -61,13 +61,50 @@ const formatProductName = (name: string, isSolo: boolean) => {
   return `${cleanName} Seul`;
 };
 
-// 🟢 EXTRACTEUR UNIVERSEL DE CHOIX (Sécurisé pour ignorer les ingrédients de base)
+// Parser universel pour excluded_product_ids (gère tableau, JSON stringifié ou chaîne séparée par virgules)
+const parseExcludedProductIds = (raw: any): Set<string> => {
+  const result = new Set<string>();
+  if (!raw) return result;
+  
+  if (Array.isArray(raw)) {
+    raw.forEach(x => {
+      if (x !== null && x !== undefined) {
+        result.add(String(x).trim().replace(/^dyn_/, ''));
+      }
+    });
+    return result;
+  }
+  
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        parsed.forEach(x => {
+          if (x !== null && x !== undefined) {
+            result.add(String(x).trim().replace(/^dyn_/, ''));
+          }
+        });
+        return result;
+      }
+    } catch {
+      // Pas du JSON, traitement texte
+    }
+    const cleaned = trimmed.replace(/^[{}\[\]]+|[{}\[\]]+$/g, '');
+    cleaned.split(',').forEach(x => {
+      const val = x.trim().replace(/^["']+|["']+$/g, '').replace(/^dyn_/, '');
+      if (val) result.add(val);
+    });
+  }
+  return result;
+};
+
+// EXTRACTEUR UNIVERSEL DE CHOIX (Sécurisé pour ignorer les ingrédients de base)
 const extractAllChoicesFromSource = (...sources: any[]): any[] => {
   const flat: any[] = [];
 
   const traverse = (val: any, key?: string) => {
     if (!val) return;
-    // Protection absolue : ne jamais extraire les listes d'ingrédients
     if (key === 'ingredients' || key === 'global_ingredients' || key === 'product_ingredients' || key === 'removedIngredients') {
       return;
     }
@@ -76,7 +113,6 @@ const extractAllChoicesFromSource = (...sources: any[]): any[] => {
       return;
     }
     if (typeof val === 'object') {
-      // Cas de la borne : { groupId: 0, groupName: "Option", options: [ { id: "107", name: "..." } ] }
       if (Array.isArray(val.options)) {
         val.options.forEach(opt => {
           flat.push({
@@ -86,11 +122,9 @@ const extractAllChoicesFromSource = (...sources: any[]): any[] => {
           });
         });
       } 
-      // Cas direct d'une option : { id: 107, name: "..." }
       else if (val.id !== undefined || val.name !== undefined) {
         flat.push(val);
       } 
-      // Cas d'un dictionnaire comme rawSelections { "base_117": [...] }
       else {
         Object.entries(val).forEach(([k, v]) => traverse(v, k));
       }
@@ -207,7 +241,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         const [baseRes, subProdRes, ingRes] = await Promise.all([
           supabase
             .from('product_option_groups')
-            .select(`id, min_choices, max_choices, step_order, free_choices_count, is_menu, option_groups (id, name, allow_multiple, free_choices_count, is_menu, target_category_name, target_subcategory_id, product_overrides, option_group_links ( sort_order, options ( id, name, price, image_url, is_available, description ) ))`)
+            .select(`id, min_choices, max_choices, step_order, free_choices_count, is_menu, option_groups (id, name, allow_multiple, free_choices_count, is_menu, target_category_name, target_subcategory_id, product_overrides, excluded_product_ids, option_group_links ( sort_order, options ( id, name, price, image_url, is_available, description ) ))`)
             .eq('product_id', realProductId)
             .order('step_order'),
           supabase
@@ -229,12 +263,23 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             const groupGroupId = rule.option_groups?.id;
             const isMenuGroup = rule.is_menu === true || rule.option_groups?.is_menu === true;
 
+            // Récupération et parsing sécurisé des produits exclus
+            const rawExcluded = rule.option_groups?.excluded_product_ids;
+            const excludedProductIds = parseExcludedProductIds(rawExcluded);
+
             const rawLinks = rule.option_groups?.option_group_links || [];
             const sortedLinks = rawLinks.sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0));
             
             const validOptions: CustomizationOption[] = sortedLinks
               .map((link: any) => link.options)
-              .filter((opt: any) => opt && opt.is_available !== false)
+              .filter((opt: any) => {
+                if (!opt || opt.is_available === false) return false;
+                const optIdStr = cleanId(opt.id);
+                if (optIdStr && excludedProductIds.has(optIdStr)) return false;
+                if (opt.product_id && excludedProductIds.has(cleanId(opt.product_id))) return false;
+                if (opt.original_product_id && excludedProductIds.has(cleanId(opt.original_product_id))) return false;
+                return true;
+              })
               .map((opt: any, idx: number) => {
                  optionIds.add(String(opt.id));
                  return { 
@@ -285,7 +330,13 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
             if (fetchedProds.length > 0) {
               dynamicOptions = fetchedProds
-                .filter((p: any) => p.is_available !== false)
+                .filter((p: any) => {
+                  if (!p || p.is_available === false) return false;
+                  // Filtrage strict basé sur excluded_product_ids
+                  const pIdStr = cleanId(p.id);
+                  if (excludedProductIds.has(pIdStr)) return false;
+                  return true;
+                })
                 .map((p: any, idx: number) => {
                   optionIds.add(String(p.id));
                   const entry = overrides[String(p.id)];
@@ -393,7 +444,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             ...subGroupsData.map(g => formatSubGroup(g))
           ];
 
-          // 🟢 Extraction sécurisée : seules les sélections réelles sont analysées (produit brut exclu)
           const flatCandidates = extractAllChoicesFromSource(
             initialSelections,
             product?.selectedSubOptions,
@@ -447,7 +497,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
           setStepSelections(reconstructed);
 
-          // 🟢 INGRÉDIENTS RETIRÉS
           const removedIds = new Set<number>();
           const removedSource = product?.removedIngredients || initialSelections?.removedIngredients || [];
           if (Array.isArray(removedSource)) {
@@ -768,10 +817,21 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   }, [currentStep, lastOptionStepIndex, activeSteps, canFinish, firstIncompleteStepIndex, compileFinalOptionsAndSubmit]);
 
   const handleSkipStep = useCallback(() => {
-    const stepId = activeStepsRef.current[currentStep].id;
-    setStepSelections(prev => ({ ...prev, [stepId]: [] })); 
+    const stepData = activeStepsRef.current[currentStep];
+    if (!stepData) return;
+    const stepId = stepData.id;
+    
+    setStepSelections(prev => {
+      const currentSels = prev[stepId] || [];
+      const newState = { ...prev, [stepId]: [] };
+      currentSels.forEach(opt => {
+        const cgs = allSubGroups.filter(g => cleanId(g.option_id) === cleanId(opt.id));
+        cgs.forEach(cg => { newState[`sub_${cg.id}`] = []; });
+      });
+      return newState;
+    }); 
     handleNextStep();
-  }, [currentStep, handleNextStep]);
+  }, [currentStep, handleNextStep, allSubGroups]);
 
   const handleRemoveOption = useCallback((option: CustomizationOption, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1013,7 +1073,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         {/* Header */}
         <div className="bg-white border-b border-gray-200 shadow-sm p-4 flex-shrink-0 flex items-center justify-between">
           <div className="flex items-center gap-6">
-            <button onClick={onClose} className="bg-red-500 text-white font-black px-6 py-3.5 rounded-xl uppercase tracking-wider active:scale-95 transition-transform text-sm">
+            <button onClick={onClose} className="bg-red-500 text-white font-black px-6 py-3.5 rounded-xl uppercase tracking-wider active:scale-95 transition-transform text-sm cursor-pointer">
               Annuler
             </button>
             <div className="h-10 w-px bg-gray-200"></div>
@@ -1038,7 +1098,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                 {isCategoryMenu && (
                   <button
                     onClick={() => handleToggleSoloMode(!isSoloMode)}
-                    className={`px-6 py-3.5 rounded-xl font-black text-base uppercase tracking-wider transition-all active:scale-95 shadow-md ${
+                    className={`px-6 py-3.5 rounded-xl font-black text-base uppercase tracking-wider transition-all active:scale-95 shadow-md cursor-pointer ${
                       isSoloMode
                         ? 'bg-amber-500 text-white shadow-amber-500/20'
                         : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
@@ -1051,7 +1111,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                 <button
                   disabled={!canFinish}
                   onClick={() => { if (canFinish) compileFinalOptionsAndSubmit(); }}
-                  className={`px-6 py-3.5 rounded-xl font-black text-base uppercase tracking-wider transition-all active:scale-95 ${
+                  className={`px-6 py-3.5 rounded-xl font-black text-base uppercase tracking-wider transition-all active:scale-95 cursor-pointer ${
                     canFinish
                       ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20'
                       : 'bg-gray-200 text-gray-400 cursor-not-allowed'
@@ -1064,7 +1124,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                 <button 
                   disabled={!isButtonEnabled}
                   onClick={() => { if (isButtonEnabled) handleNextStep(); }}
-                  className={`px-8 py-3.5 rounded-xl font-black text-base uppercase tracking-wider shadow-lg transition-all active:scale-95 ${
+                  className={`px-8 py-3.5 rounded-xl font-black text-base uppercase tracking-wider shadow-lg transition-all active:scale-95 cursor-pointer ${
                     isButtonEnabled ? 'bg-[#04B855] text-white shadow-[#04B855]/20' : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                   }`}
                 >
@@ -1108,7 +1168,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                   <button
                       key={s.id}
                       onClick={() => setCurrentStep(i)}
-                      className={`h-[60px] px-8 rounded-xl font-black text-sm uppercase tracking-wide transition-all border-4 flex flex-col items-center justify-center min-w-[200px] ${
+                      className={`h-[60px] px-8 rounded-xl font-black text-sm uppercase tracking-wide transition-all border-4 flex flex-col items-center justify-center min-w-[200px] cursor-pointer ${
                           currentStep === i
                           ? 'bg-secondary text-white border-secondary shadow-md'
                           : isMissingRequired
@@ -1237,7 +1297,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                         </div>
                         <button 
                           onClick={(e) => handleRemoveOption(opt, e)} 
-                          className="absolute -top-2 -left-2 bg-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center font-black text-lg shadow-md border-2 border-white z-20 hover:bg-red-600 transition-transform active:scale-90"
+                          className="absolute -top-2 -left-2 bg-red-500 text-white w-6 h-6 rounded-full flex items-center justify-center font-black text-lg shadow-md border-2 border-white z-20 hover:bg-red-600 transition-transform active:scale-90 cursor-pointer"
                         >
                           −
                         </button>
@@ -1270,7 +1330,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
           >
             <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
               <h3 className="text-2xl font-black text-secondary tracking-tight">Personnaliser : {bubbleOption.parentItem.name}</h3>
-              <button onClick={() => setBubbleOption(null)} className="bg-gray-200 hover:bg-gray-300 rounded-full p-2 text-gray-600 transition-colors">
+              <button onClick={() => setBubbleOption(null)} className="bg-gray-200 hover:bg-gray-300 rounded-full p-2 text-gray-600 transition-colors cursor-pointer">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="3"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"></path></svg>
               </button>
             </div>
@@ -1344,7 +1404,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                                               </div>
                                               <button 
                                                 onClick={(e) => handleBubbleRemove(stepId, choice, e)} 
-                                                className="absolute -top-2 -left-2 bg-red-500 text-white w-5 h-5 rounded-full flex items-center justify-center font-black text-[12px] shadow-sm border border-white z-20 hover:bg-red-600 transition-transform active:scale-90"
+                                                className="absolute -top-2 -left-2 bg-red-500 text-white w-5 h-5 rounded-full flex items-center justify-center font-black text-[12px] shadow-sm border border-white z-20 hover:bg-red-600 transition-transform active:scale-90 cursor-pointer"
                                               >
                                                 −
                                               </button>
@@ -1369,7 +1429,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                 <button
                     disabled={!isBubbleValid()}
                     onClick={validateBubble}
-                    className={`w-full py-5 rounded-2xl text-xl font-black uppercase tracking-wide transition-all shadow-lg ${isBubbleValid() ? 'bg-[#04B855] text-white hover:bg-[#039349]' : 'bg-gray-100 text-gray-400 cursor-not-allowed shadow-none'}`}
+                    className={`w-full py-5 rounded-2xl text-xl font-black uppercase tracking-wide transition-all shadow-lg cursor-pointer ${isBubbleValid() ? 'bg-[#04B855] text-white hover:bg-[#039349]' : 'bg-gray-100 text-gray-400 cursor-not-allowed shadow-none'}`}
                 >
                     Valider ce choix
                 </button>

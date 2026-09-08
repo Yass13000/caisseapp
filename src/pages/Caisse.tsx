@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
 import { useCart } from '@/context/CartContext';
-import { toast } from "sonner";
+import { toast } from 'sonner';
 import { 
   getFormattedOrderOptions, 
   fetchOptionGroupMapping, 
@@ -25,14 +25,15 @@ import {
 import ProductCard from '@/features/menu/components/ProductCard';
 import OptionsModal from '@/features/menu/components/OptionsModal';
 import ProductVariantsModal from '@/components/ProductVariantsModal';
-import OrderTrackerModal  from '@/components/OrderTrackerModal';
+import OrderTrackerModal from '@/components/OrderTrackerModal';
 import OrderHistoryModal from '@/components/OrderHistoryModal';
 import SettingsModal from '@/components/SettingsModal';
 import StockModal from '@/components/StockModal';
 import OrdersDashboardModal from '@/components/OrdersDashboardModal';
 import NewtonsCradleLoader from '@/components/NewtonsCradleLoader';
 import CashSessionModal from '@/components/CashSessionModal';
-import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse'; 
+import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
+import PosSetup from '@/components/PosSetup';
 
 export interface Product {
   id: number;
@@ -100,17 +101,26 @@ const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   return (basePrice + optsPrice) * (item.quantity || 1);
 };
 
-const getActiveRestaurantId = () => getSecureSetting('pos_restaurant_id', null);
+const getInitialRestaurantId = (): string | null => {
+  const val = getSecureSetting('pos_restaurant_id', null);
+  if (!val || val === 'null' || val === 'undefined' || String(val).trim() === '') return null;
+  return String(val).trim();
+};
 
-const openCashDrawer = async () => {
-  if (!(window as any).electronAPI?.openDrawer) { toast.error("Non disponible sur la version Web."); return; }
+const getActiveRestaurantId = () => getInitialRestaurantId();
+
+const openCashDrawer = async (silent: boolean = false) => {
+  if (!(window as any).electronAPI?.openDrawer) { 
+    if (!silent) toast.error("Non disponible sur la version Web."); 
+    return; 
+  }
   try {
     const printerName = getSecureSetting('imprimante_caisse', undefined) || undefined;
     const result = await (window as any).electronAPI.openDrawer(printerName);
     if (!result?.success) {
-      toast.error("Impossible de communiquer avec l'imprimante.");
+      if (!silent) toast.error("Impossible de communiquer avec l'imprimante.");
     } else {
-      toast.success("Tiroir ouvert", { duration: 800 });
+      if (!silent) toast.success("Tiroir ouvert", { duration: 800 });
     }
   } catch (error) { 
     console.error("Erreur ouverture tiroir :", error); 
@@ -312,7 +322,7 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
             </div>
             {changeDue > 0 && (
               <div className="bg-amber-500 text-white px-4 py-2 rounded-xl font-black text-sm">
-                Rendu: {changeDue.toFixed(2)} €
+                Rendu : {changeDue.toFixed(2)} €
               </div>
             )}
           </div>
@@ -355,8 +365,7 @@ const Caisse = () => {
   const { state: cartState, addToCart, removeFromCart, updateQuantity, clearCart } = useCart();
   const navigate = useNavigate();
 
-  const [posRestoId, setPosRestoId] = useState<string | null>(getSecureSetting('pos_restaurant_id', null));
-  const [tempRestoId, setTempRestoId] = useState("");
+  const [posRestoId, setPosRestoId] = useState<string | null>(getInitialRestaurantId);
   
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [pinCode, setPinCode] = useState("");
@@ -420,6 +429,21 @@ const Caisse = () => {
   const customToast = (msg: string, type: 'success' | 'error' = 'success', options = {}) => 
     toast[type](msg, { duration: 800, ...options });
 
+  // Écouteur réactif d'association ou dissociation via événement custom
+  useEffect(() => {
+    const handleRestoChanged = (e?: any) => {
+      const newId = e?.detail?.restaurantId || getInitialRestaurantId();
+      if (newId && newId !== 'null' && newId !== 'undefined' && String(newId).trim() !== '') {
+        setPosRestoId(String(newId).trim());
+      } else {
+        setPosRestoId(null);
+      }
+    };
+
+    window.addEventListener('restaurant_id_changed', handleRestoChanged);
+    return () => window.removeEventListener('restaurant_id_changed', handleRestoChanged);
+  }, []);
+
   useEffect(() => {
     const loadMapping = async () => {
       if (cartState.items && cartState.items.length > 0) {
@@ -436,7 +460,7 @@ const Caisse = () => {
   const activeDeliveryFee = orderType === 'LIVRAISON' ? (parseFloat(deliveryFee) || 0) : 0;
   const finalTotal = subtotal + activeDeliveryFee;
 
-  // 🟢 Détection de commande active (articles OU client enregistré OU commande chargée)
+  // Détection de commande active (articles OU client enregistré OU commande chargée)
   const hasActiveOrderData = cartItemCount > 0 || !!clientInfo || !!loadedOrderId || deliveryFee > 0;
 
   useEffect(() => {
@@ -479,7 +503,7 @@ const Caisse = () => {
       }
       customToast("Caisse synchronisée !", "success");
     } catch (err) {
-      console.error("Échec boucle sync:", err);
+      console.error("Échec boucle sync :", err);
     }
   };
 
@@ -512,6 +536,7 @@ const Caisse = () => {
     }
   }, [pinCode]);
 
+  // Vérification de la session de caisse strictement rattachée au restaurant actif
   useEffect(() => {
     if (isAuthenticated && posRestoId) {
       const checkCashSession = async () => {
@@ -519,6 +544,7 @@ const Caisse = () => {
           const { data } = await supabase
             .from('cash_sessions')
             .select('id')
+            .eq('restaurant_id', posRestoId)
             .eq('status', 'OPEN')
             .is('closed_at', null)
             .order('opened_at', { ascending: false })
@@ -875,6 +901,14 @@ const Caisse = () => {
       if ((window as any).electronAPI?.saveOfflineOrder) {
         await (window as any).electronAPI.saveOfflineOrder(orderPayload);
         customToast(`Encaissé (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
+
+        const isCashMethodOffline = String(method).toLowerCase().includes('espece') || 
+                                   String(method).toLowerCase().includes('cash') || 
+                                   String(method).toLowerCase() === 'counter' || 
+                                   cashAmount > 0;
+        if (isCashMethodOffline) {
+          openCashDrawer(true);
+        }
         
         const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
         if (isAutoPrintReceiptEnabled) {
@@ -926,7 +960,6 @@ const Caisse = () => {
       } else {
         const { offline_id, is_update, target_id, order_number, ...insertPayload } = orderPayload;
 
-        // 🟢 Insertion avec délégation atomique du order_number à Supabase
         const { data: insertedOrder, error } = await supabase
           .from('orders')
           .insert([insertPayload])
@@ -940,6 +973,14 @@ const Caisse = () => {
       }
 
       customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
+
+      const isCashMethodOnline = String(method).toLowerCase().includes('espece') || 
+                                String(method).toLowerCase().includes('cash') || 
+                                String(method).toLowerCase() === 'counter' || 
+                                cashAmount > 0;
+      if (isCashMethodOnline) {
+        openCashDrawer(true);
+      }
 
       const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
       if (isAutoPrintReceiptEnabled) {
@@ -1083,7 +1124,6 @@ const Caisse = () => {
       } else {
         const { offline_id, is_update, target_id, order_number, ...insertPayload } = orderPayload;
 
-        // 🟢 Insertion avec délégation atomique du order_number à Supabase
         const { data: insertedOrder, error } = await supabase
           .from('orders')
           .insert([insertPayload])
@@ -1133,50 +1173,21 @@ const Caisse = () => {
     }
   };
 
-  const rightBarBtnClass = "w-[56px] h-[56px] flex flex-col items-center justify-center text-primary rounded-xl hover:bg-white/10 active:scale-95 transition-all shadow-sm mx-auto";
+  const rightBarBtnClass = "w-[56px] h-[56px] flex flex-col items-center justify-center text-primary rounded-xl hover:bg-white/10 active:scale-95 transition-all shadow-sm mx-auto cursor-pointer";
 
-  if (!posRestoId) {
+  // Premier démarrage : écran QR code unifié si aucun identifiant n'est actif
+  if (!posRestoId || posRestoId === 'null' || posRestoId === 'undefined' || posRestoId.trim() === '') {
     return (
-      <div className="flex flex-col h-screen w-full bg-gray-100 items-center justify-center font-helvetica select-none relative overflow-hidden">
-        <div className="absolute top-[-20%] left-[-10%] w-[50vw] h-[50vw] bg-blue-500/10 blur-[100px] rounded-full pointer-events-none"></div>
-        <div className="relative z-10 bg-white/80 backdrop-blur-xl p-10 rounded-[2.5rem] shadow-[0_20px_80px_-15px_rgba(0,0,0,0.1)] flex flex-col items-center border border-white max-w-[450px] w-full mx-4">
-          <div className="w-20 h-20 bg-blue-50 text-blue-500 rounded-[2rem] flex items-center justify-center mb-6 shadow-inner border border-blue-100"><Store size={40} strokeWidth={2.5} /></div>
-          <h2 className="text-secondary text-2xl font-black uppercase tracking-widest mb-2 text-center">Configuration</h2>
-          <p className="text-gray-400 font-bold text-xs mb-8 uppercase tracking-wider text-center">Liaison de la caisse au restaurant</p>
-          
-          <input type="text" placeholder="Collez l'ID du restaurant ici..." className="w-full bg-gray-50 border-2 border-gray-200 rounded-2xl px-6 py-5 mb-6 text-gray-700 font-bold focus:outline-none focus:border-blue-500 focus:bg-white transition-all text-center shadow-sm" value={tempRestoId} onChange={(e) => setTempRestoId(e.target.value)} />
-          
-          <button onClick={async () => {
-            const trimmed = tempRestoId.trim();
-            if (trimmed.length > 5) {
-              setIsLoading(true);
-              try {
-                const { data, error } = await supabase.from('restaurants').select('id, name').eq('id', trimmed).single();
-                if (error || !data) {
-                  toast.error("Cet ID Restaurant n'existe pas en ligne ! Enregistrement annulé.");
-                } else {
-                  setSecureSetting('pos_restaurant_id', trimmed);
-                  setPosRestoId(trimmed);
-                  toast.success(`Caisse liée avec succès à ${data.name} !`);
-                }
-              } catch(e) {
-                toast.error("Erreur de connexion lors de la vérification");
-              } finally {
-                setIsLoading(false);
-              }
-            } else toast.error("Veuillez entrer un ID valide.");
-          }} className="w-full py-5 bg-blue-500 hover:bg-blue-600 text-white rounded-2xl font-black uppercase text-lg tracking-widest transition-all active:scale-95 shadow-lg shadow-blue-500/30">
-            Connecter la caisse
-          </button>
-        </div>
-      </div>
+      <PosSetup>
+        <></>
+      </PosSetup>
     );
   }
 
   if (isLoading) return <NewtonsCradleLoader />;
 
   if (!isAuthenticated) {
-    const pinBtnClass = "w-16 h-16 bg-white hover:bg-gray-100 rounded-2xl text-secondary font-black text-2xl active:scale-90 transition-all shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] border border-gray-100 flex items-center justify-center group";
+    const pinBtnClass = "w-16 h-16 bg-white hover:bg-gray-100 rounded-2xl text-secondary font-black text-2xl active:scale-90 transition-all shadow-[0_2px_10px_-3px_rgba(0,0,0,0.05)] border border-gray-100 flex items-center justify-center group cursor-pointer";
     
     return (
       <div className="flex flex-col h-screen w-full bg-background items-center justify-center font-helvetica select-none relative overflow-hidden">
@@ -1188,8 +1199,8 @@ const Caisse = () => {
         <div className="absolute top-[-20%] left-[-10%] w-[50vw] h-[50vw] bg-primary/10 blur-[100px] rounded-full pointer-events-none"></div>
 
         <div className="relative z-10 bg-white/80 backdrop-blur-xl p-6 rounded-[2rem] shadow-[0_20px_80px_-15px_rgba(0,0,0,0.1)] flex flex-col items-center border border-white max-w-[300px] w-full mx-4">
-          <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-primary/30 overflow-hidden bg-white border border-gray-100" style={{ backgroundColor: !restaurantLogo ? themeColors.primary : undefined }}>
-            {restaurantLogo ? <img src={restaurantLogo} alt="Logo" className="w-full h-full object-contain p-1.5" /> : <Lock className="text-white w-7 h-7" />}
+          <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4 shadow-lg overflow-hidden bg-[#0B0F19] border border-gray-800">
+            <img src={restaurantLogo || "/icon.png"} alt="Logo" className="w-full h-full object-contain p-1.5" />
           </div>
           
           <h2 className="text-secondary text-xl font-black uppercase tracking-widest mb-1">Caisse Sécurisée</h2>
@@ -1206,10 +1217,10 @@ const Caisse = () => {
               <button key={num} onClick={() => setPinCode(p => p.length < 4 ? p + num : p)} className={pinBtnClass}>{num}</button>
             ))}
             <button onClick={() => setPinCode(p => p.length < 4 ? p + '0' : p)} className={pinBtnClass}>0</button>
-            <button onClick={() => setPinCode(p => p.slice(0, -1))} className="w-16 h-16 bg-red-50 hover:bg-red-100 text-red-500 rounded-2xl font-black flex items-center justify-center active:scale-90 transition-all shadow-sm"><Delete size={24} /></button>
+            <button onClick={() => setPinCode(p => p.slice(0, -1))} className="w-16 h-16 bg-red-50 hover:bg-red-100 text-red-500 rounded-2xl font-black flex items-center justify-center active:scale-90 transition-all shadow-sm cursor-pointer"><Delete size={24} /></button>
           </div>
 
-          <button onClick={() => navigate('/')} className="mt-6 px-5 py-2 rounded-full bg-gray-100 text-gray-500 font-bold uppercase tracking-widest hover:bg-gray-200 transition-colors text-[9px]">Retour à l'accueil</button>
+          <button onClick={() => navigate('/')} className="mt-6 px-5 py-2 rounded-full bg-gray-100 text-gray-500 font-bold uppercase tracking-widest hover:bg-gray-200 transition-colors text-[9px] cursor-pointer">Retour à l'accueil</button>
         </div>
       </div>
     );
@@ -1222,7 +1233,10 @@ const Caisse = () => {
         <div className="flex items-center gap-4">
           <div className={isOnline ? 'text-green-400' : 'text-red-500 animate-pulse'}>{isOnline ? <Wifi size={16} /> : <WifiOff size={16} />}</div>
           <div className="w-px h-3 bg-white/20"></div>
-          <div className="flex items-center gap-1.5 text-white/80"><UserRound size={14} /> <span>Caisse Principale</span></div>
+          <div className="flex items-center gap-2 text-white/90">
+            <img src={restaurantLogo || "/icon.png"} alt="App Logo" className="w-4 h-4 rounded object-contain bg-black/40" />
+            <span>{restaurantInfo?.name || "Caisse Principale"}</span>
+          </div>
         </div>
         <div className="absolute left-1/2 -translate-x-1/2 text-white font-black text-[13px] tracking-[0.2em]">{currentTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</div>
         <div className="flex items-center gap-4">
@@ -1231,7 +1245,7 @@ const Caisse = () => {
           <button 
             onClick={handleRefreshData} 
             disabled={isRefreshing}
-            className="flex items-center gap-1.5 hover:text-white text-white/80 transition-colors active:scale-95 disabled:opacity-50"
+            className="flex items-center gap-1.5 hover:text-white text-white/80 transition-colors active:scale-95 disabled:opacity-50 cursor-pointer"
             title="Actualiser les données"
           >
             <RotateCw size={14} className={isRefreshing ? 'animate-spin text-primary' : ''} />
@@ -1248,7 +1262,7 @@ const Caisse = () => {
             {activeOrderTypes.length > 0 && (
               <div className="flex p-2 gap-2 bg-gray-100">
                 {activeOrderTypes.map(type => (
-                  <button key={type} onClick={() => handleOrderTypeChange(type as any)} className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all shadow-sm ${orderType === type ? 'text-white scale-[1.02]' : 'bg-white text-gray-500 hover:bg-gray-50'}`} style={orderType === type ? { backgroundColor: themeColors.secondary } : undefined}>
+                  <button key={type} onClick={() => handleOrderTypeChange(type as any)} className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all shadow-sm cursor-pointer ${orderType === type ? 'text-white scale-[1.02]' : 'bg-white text-gray-500 hover:bg-gray-50'}`} style={orderType === type ? { backgroundColor: themeColors.secondary } : undefined}>
                     {type === 'SUR PLACE' ? 'Sur Place' : type === 'EMPORTER' ? 'À Emporter' : 'Livraison'}
                   </button>
                 ))}
@@ -1257,7 +1271,7 @@ const Caisse = () => {
 
             <div className="p-4 grid grid-cols-5 gap-3 border-t border-gray-200">
               {categories.map(cat => (
-                <button key={cat.name} onClick={() => setSelectedCategory(cat.name)} className={`h-[70px] rounded-xl font-black text-[13px] xl:text-[15px] uppercase tracking-wide transition-all border-4`} style={{ backgroundColor: selectedCategory === cat.name ? themeColors.secondary : '#f9fafb', borderColor: selectedCategory === cat.name ? themeColors.secondary : '#f3f4f6', color: selectedCategory === cat.name ? '#ffffff' : themeColors.secondary }}>
+                <button key={cat.name} onClick={() => setSelectedCategory(cat.name)} className={`h-[70px] rounded-xl font-black text-[13px] xl:text-[15px] uppercase tracking-wide transition-all border-4 cursor-pointer`} style={{ backgroundColor: selectedCategory === cat.name ? themeColors.secondary : '#f9fafb', borderColor: selectedCategory === cat.name ? themeColors.secondary : '#f3f4f6', color: selectedCategory === cat.name ? '#ffffff' : themeColors.secondary }}>
                   {cat.name}
                 </button>
               ))}
@@ -1273,14 +1287,14 @@ const Caisse = () => {
           </div>
         </div>
 
-        {/* PANNEAU DU TICKET DE CAISSE DE DROITE */}
+        {/* Panneau du ticket de caisse à droite */}
         <div className="w-[260px] bg-white border-l border-gray-200 flex flex-col h-full z-30 shadow-xl flex-shrink-0">
           
           <div className="p-3 border-b border-gray-100 bg-gray-50 flex-shrink-0 flex justify-between items-center">
             <div className="flex flex-col">
               <span className="font-black text-sm uppercase" style={{ color: themeColors.secondary }}>Ticket {loadedOrderId && `Borne`}</span>
               {clientInfo?.name && (
-                <button onClick={() => setIsDeliveryModalOpen(true)} className="text-[10px] text-primary font-bold text-left hover:underline">
+                <button onClick={() => setIsDeliveryModalOpen(true)} className="text-[10px] text-primary font-bold text-left hover:underline cursor-pointer">
                   👤 {clientInfo.name}
                 </button>
               )}
@@ -1361,11 +1375,11 @@ const Caisse = () => {
                   </div>
                   
                   <div className="mt-1.5 flex items-center justify-between">
-                    <button onClick={(e) => { e.stopPropagation(); removeFromCart(itemKey); }} className="p-1 text-red-500 hover:bg-red-50 rounded-md transition-colors"><Trash2 size={14} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); removeFromCart(itemKey); }} className="p-1 text-red-500 hover:bg-red-50 rounded-md transition-colors cursor-pointer"><Trash2 size={14} /></button>
                     <div className="flex items-center gap-1.5 bg-gray-100 rounded-full px-1 py-0.5" onClick={(e) => e.stopPropagation()}>
-                      <button className="w-5 h-5 flex items-center justify-center bg-white rounded-full shadow-sm font-bold text-xs" onClick={() => updateQuantity(itemKey, (item.quantity || 1) - 1)}>-</button>
+                      <button className="w-5 h-5 flex items-center justify-center bg-white rounded-full shadow-sm font-bold text-xs cursor-pointer" onClick={() => updateQuantity(itemKey, (item.quantity || 1) - 1)}>-</button>
                       <span className="w-4 text-center font-bold text-xs">{item.quantity || 1}</span>
-                      <button className="w-5 h-5 flex items-center justify-center bg-white rounded-full shadow-sm font-bold text-xs" style={{ color: themeColors.primary }} onClick={() => updateQuantity(itemKey, (item.quantity || 1) + 1)}>+</button>
+                      <button className="w-5 h-5 flex items-center justify-center bg-white rounded-full shadow-sm font-bold text-xs cursor-pointer" style={{ color: themeColors.primary }} onClick={() => updateQuantity(itemKey, (item.quantity || 1) + 1)}>+</button>
                     </div>
                   </div>
                 </div>
@@ -1400,7 +1414,7 @@ const Caisse = () => {
               <button 
                 disabled={cartItemCount === 0 || isProcessing} 
                 onClick={processPendingOrder} 
-                className="w-16 bg-orange-50 text-orange-500 flex items-center justify-center rounded-xl hover:bg-orange-100 active:scale-95 disabled:opacity-50 transition-all border border-orange-100" 
+                className="w-16 bg-orange-50 text-orange-500 flex items-center justify-center rounded-xl hover:bg-orange-100 active:scale-95 disabled:opacity-50 transition-all border border-orange-100 cursor-pointer" 
                 title="Mettre en attente de paiement (Impression Cuisine uniquement)"
               >
                 <Hourglass size={24} />
@@ -1409,17 +1423,16 @@ const Caisse = () => {
               <button 
                 disabled={cartItemCount === 0 || isProcessing} 
                 onClick={() => setIsPaymentModalOpen(true)} 
-                className="flex-1 text-white font-black text-xl py-3 rounded-xl shadow-md active:scale-95 disabled:opacity-50 transition-transform uppercase tracking-wider" 
+                className="flex-1 text-white font-black text-xl py-3 rounded-xl shadow-md active:scale-95 disabled:opacity-50 transition-transform uppercase tracking-wider cursor-pointer" 
                 style={{ backgroundColor: themeColors.primary }}
               >
                 PAYER
               </button>
 
-              {/* 🟢 Bouton Corbeille : actif dès qu'il y a des articles OU un client enregistré */}
               <button 
                 disabled={!hasActiveOrderData || isProcessing} 
                 onClick={() => setShowClearConfirm(true)} 
-                className="w-16 bg-red-50 text-red-500 flex items-center justify-center rounded-xl hover:bg-red-100 active:scale-95 disabled:opacity-50 transition-all border border-red-100"
+                className="w-16 bg-red-50 text-red-500 flex items-center justify-center rounded-xl hover:bg-red-100 active:scale-95 disabled:opacity-50 transition-all border border-red-100 cursor-pointer"
                 title="Réinitialiser la commande"
               >
                 <Trash2 size={24} />
@@ -1431,7 +1444,7 @@ const Caisse = () => {
         <div className="w-[74px] flex flex-col items-center py-3 z-40 shadow-[-5px_0_15px_rgba(0,0,0,0.2)] flex-shrink-0 justify-between" style={{ backgroundColor: themeColors.secondary }}>
           <div className="flex flex-col gap-1.5 w-full px-2 items-center">
             
-            <button disabled={cartItemCount === 0 || isProcessing} onClick={() => finalizePayment('cb', 0)} className={`w-[56px] h-[56px] mx-auto flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} title="Paiement Rapide CB">
+            <button disabled={cartItemCount === 0 || isProcessing} onClick={() => finalizePayment('cb', 0)} className={`w-[56px] h-[56px] mx-auto flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95 cursor-pointer' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} title="Paiement Rapide CB">
               <CreditCard size={24} />
               <span className="text-[8px] font-black uppercase mt-0.5 tracking-wider">Rapide</span>
             </button>
@@ -1479,8 +1492,14 @@ const Caisse = () => {
             setIsCashSessionModalOpen(false);
           }} 
           currentSessionId={currentSessionId}
-          onSessionOpened={(id: string) => setCurrentSessionId(id)}
-          onSessionClosed={() => setCurrentSessionId(null)}
+          onSessionOpened={(id: string) => {
+            setCurrentSessionId(id);
+            setIsCashSessionModalOpen(false);
+          }}
+          onSessionClosed={() => {
+            setCurrentSessionId(null);
+            setIsCashSessionModalOpen(false);
+          }}
           themeColors={themeColors}
         />
       )}
@@ -1492,8 +1511,8 @@ const Caisse = () => {
             <h3 className="text-2xl font-black text-secondary uppercase tracking-wide mb-2">Annuler la commande ?</h3>
             <p className="text-gray-500 font-bold mb-8">Toutes les informations en cours (client, articles) seront réinitialisées.</p>
             <div className="flex gap-4 w-full">
-              <button onClick={() => setShowClearConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all">Retour</button>
-              <button onClick={() => { clearCart(); setLoadedOrderId(null); setDeliveryFee(0); setClientInfo(null); clientInfoRef.current = null; setOrderType(getDefaultOrderType()); setShowClearConfirm(false); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all">Oui, Annuler</button>
+              <button onClick={() => setShowClearConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all cursor-pointer">Retour</button>
+              <button onClick={() => { clearCart(); setLoadedOrderId(null); setDeliveryFee(0); setClientInfo(null); clientInfoRef.current = null; setOrderType(getDefaultOrderType()); setShowClearConfirm(false); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all cursor-pointer">Oui, Annuler</button>
             </div>
           </div>
         </div>
@@ -1506,8 +1525,8 @@ const Caisse = () => {
             <h3 className="text-2xl font-black text-secondary uppercase tracking-wide mb-2">Commande en cours</h3>
             <p className="text-gray-500 font-bold mb-8">Attention, une commande ou un client est en cours. Voulez-vous l'annuler et quitter ?</p>
             <div className="flex gap-4 w-full">
-              <button onClick={() => setShowLogoutConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all">Rester</button>
-              <button onClick={() => { clearCart(); setIsAuthenticated(false); setDeliveryFee(0); setClientInfo(null); clientInfoRef.current = null; setOrderType(getDefaultOrderType()); setShowLogoutConfirm(false); navigate('/'); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all leading-tight">Quitter et annuler</button>
+              <button onClick={() => setShowLogoutConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-500 rounded-xl font-black uppercase tracking-wider hover:bg-gray-200 active:scale-95 transition-all cursor-pointer">Rester</button>
+              <button onClick={() => { clearCart(); setIsAuthenticated(false); setDeliveryFee(0); setClientInfo(null); clientInfoRef.current = null; setOrderType(getDefaultOrderType()); setShowLogoutConfirm(false); navigate('/'); }} className="flex-1 py-4 bg-red-500 text-white rounded-xl font-black uppercase tracking-wider hover:bg-red-600 active:scale-95 transition-all leading-tight cursor-pointer">Quitter et annuler</button>
             </div>
           </div>
         </div>
@@ -1563,7 +1582,12 @@ const Caisse = () => {
           }} 
         />
       )}
-      {isSettingsOpen && <SettingsModal onClose={() => setIsSettingsOpen(false)} />}
+      {isSettingsOpen && (
+        <SettingsModal 
+          onClose={() => setIsSettingsOpen(false)} 
+          currentCategories={categories.map(c => c.name)}
+        />
+      )}
 
     </div>
   );
