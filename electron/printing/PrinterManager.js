@@ -1,3 +1,4 @@
+// @ts-nocheck
 import electron from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -262,12 +263,12 @@ $printerName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase
 }
 
 // ----------------------------------------------------------------------------
-// 👨‍🍳 TICKET CUISINE
+// 👨‍🍳 TICKET CUISINE (ALIGNÉ 100% SUR LES RÈGLES KDS : HIDE_IF_SOLO, NAME_KDS, SORT_ORDER_KDS)
 // ----------------------------------------------------------------------------
 function buildKitchenHtml(orderData, widthMm = '72') {
   const bodyWidth = `${widthMm}mm`;
   
-  let orderNumDisplay = String(orderData.orderNumber || orderData.number || '001')
+  let orderNumDisplay = String(orderData.orderNumber || orderData.order_number || orderData.number || '001')
     .toUpperCase()
     .replace(/^CMD\s*#?/i, '')
     .trim();
@@ -289,16 +290,52 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 
   const items = Array.isArray(orderData.items) ? orderData.items : [];
 
-  const itemsHtml = items.map(item => {
+  // 🟢 1. Double sécurité : Tri des produits selon kds_sort_order
+  const sortedItems = [...items].sort((a, b) => {
+    const orderA = Number(a.kds_sort_order ?? a.product?.kds_sort_order ?? a.sort_order ?? a.product?.sort_order ?? 999);
+    const orderB = Number(b.kds_sort_order ?? b.product?.kds_sort_order ?? b.sort_order ?? b.product?.sort_order ?? 999);
+    return orderA - orderB;
+  });
+
+  const itemsHtml = sortedItems.map(item => {
     const qty = Number(item.qty || item.quantity || 1);
-    const name = escapeHtml(item.name || item.product?.name || 'Article').toUpperCase();
+    
+    // Détection du mode solo
+    const isSolo = item.isSolo === true || item.is_solo === true || item.product?.isSolo === true || /\bseul\b/i.test(item.name || item.product?.name || '');
+
+    // 🟢 2. Double sécurité : Priorité au nom KDS + suffixe Seul
+    const rawKdsName = item.kds_name || item.product?.kds_name || item.name_kds || item.product?.name_kds;
+    const baseName = (rawKdsName && String(rawKdsName).trim()) ? String(rawKdsName).trim() : (item.name || item.product?.name || 'Article');
+    
+    let finalDisplayName = baseName;
+    if (isSolo && !/\bseul\b/i.test(finalDisplayName)) {
+      finalDisplayName = `${finalDisplayName.replace(/^menu\s+/i, '').trim()} Seul`;
+    }
+    const name = escapeHtml(finalDisplayName).toUpperCase();
 
     let notesHtml = '';
-    const notes = Array.isArray(item.notes) ? item.notes : (Array.isArray(item.options) ? item.options : []);
-    if (notes.length > 0) {
-      notesHtml = notes.map(n => {
-        const noteName = typeof n === 'string' ? n : (n.name || '');
-        return `<div style="font-size: 14px; font-weight: bold; text-transform: uppercase; margin-top: 3px; padding-left: 4px; color: black;">- ${escapeHtml(noteName)}</div>`;
+    const rawNotes = Array.isArray(item.notes) ? item.notes : (Array.isArray(item.options) ? item.options : (Array.isArray(item.selectedSubOptions) ? item.selectedSubOptions : []));
+    
+    // 🟢 3. Double sécurité : Filtrage strict des options hide_if_solo si l'article est en mode solo
+    const filteredNotes = rawNotes.filter(n => {
+      if (!n) return false;
+      if (isSolo && (n.hide_if_solo === true || n.is_hide_if_solo === true || n.group_hide_if_solo === true)) {
+        return false;
+      }
+      return true;
+    });
+
+    if (filteredNotes.length > 0) {
+      notesHtml = filteredNotes.map(n => {
+        const noteName = typeof n === 'string' ? n : (n.kds_name || n.name_kds || n.name || '');
+        const isSans = typeof n === 'object' && (n.isSans || n.is_sans) || String(noteName).trim().toUpperCase().startsWith('SANS ');
+        
+        // Mise en valeur marquée des ingrédients retirés pour la cuisine
+        const style = isSans 
+          ? 'font-size: 14px; font-weight: 900; text-transform: uppercase; margin-top: 3px; padding-left: 4px; color: black; text-decoration: underline;'
+          : 'font-size: 14px; font-weight: bold; text-transform: uppercase; margin-top: 3px; padding-left: 4px; color: black;';
+
+        return `<div style="${style}">- ${escapeHtml(noteName)}</div>`;
       }).join('');
     }
 
@@ -311,6 +348,20 @@ function buildKitchenHtml(orderData, widthMm = '72') {
       </div>
     `;
   }).join('');
+
+  // 🟢 4. Affichage du client ou de la note si renseignés
+  const customerName = escapeHtml(orderData.customer_name || orderData.customerName || (orderData.delivery && orderData.delivery.customerName) || '');
+  const comment = escapeHtml(orderData.comment || orderData.notes || (orderData.delivery && orderData.delivery.deliveryNotes) || '');
+
+  let footerHtml = '';
+  if (customerName || comment) {
+    footerHtml = `
+      <div style="border-top: 2px solid black; margin-top: 10px; padding-top: 6px; font-size: 13px; font-weight: 800;">
+        ${customerName ? `<div>CLIENT : ${customerName}</div>` : ''}
+        ${comment ? `<div style="margin-top: 2px;">NOTE : ${comment}</div>` : ''}
+      </div>
+    `;
+  }
 
   return `
     <!DOCTYPE html>
@@ -335,6 +386,8 @@ function buildKitchenHtml(orderData, widthMm = '72') {
         </div>
 
         <div>${itemsHtml}</div>
+
+        ${footerHtml}
       </body>
     </html>
   `;
