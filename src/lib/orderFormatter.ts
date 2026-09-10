@@ -139,6 +139,9 @@ export const fetchOptionGroupMapping = async (
           mapping[`grp_${grp.id}`] = grp.name;
           mapping[`_meta_grp_${grp.id}`] = meta;
           mapping[`_meta_${grp.id}`] = meta;
+          if (grp.name) {
+            mapping[`_meta_name_${String(grp.name).trim().toUpperCase()}`] = meta;
+          }
         });
       }
     }
@@ -164,14 +167,18 @@ export const fetchOptionGroupMapping = async (
             const groupMetaMap: Record<string | number, GroupMeta> = {};
             groupsData.forEach(g => {
               if (g.id && g.name) {
-                groupMetaMap[g.id] = {
+                const meta: GroupMeta = {
                   id: g.id,
                   name: g.name,
                   hide_if_solo: g.hide_if_solo === true,
                   show_on_kds: g.show_on_kds !== false,
-                  sort_kds: Number(g.sort_kds || 0),
+                  sort_kds: Number(g.sort_kds || 0), // ✅ Correction du bug : 'g' et non 'grp'
                   is_menu: g.is_menu === true
                 };
+                groupMetaMap[g.id] = meta;
+                mapping[`_meta_grp_${g.id}`] = meta;
+                mapping[`_meta_${g.id}`] = meta;
+                mapping[`_meta_name_${String(g.name).trim().toUpperCase()}`] = meta;
               }
             });
 
@@ -233,6 +240,9 @@ export const fetchOptionGroupMapping = async (
 
           mapping[`grp_${grp.id}`] = grp.name;
           mapping[`_meta_grp_${grp.id}`] = groupMeta;
+          if (grp.name) {
+            mapping[`_meta_name_${String(grp.name).trim().toUpperCase()}`] = groupMeta;
+          }
 
           const overrides = safeParseJSON(grp.product_overrides);
           const targetCat = grp.target_category_name ? String(grp.target_category_name).trim().toLowerCase() : null;
@@ -354,21 +364,35 @@ export const getFormattedOrderOptions = (
     const cleanOptId = strOptId.replace('dyn_', '');
     const explicitGrpId = opt.option_group_id || opt.group_id;
 
-    // Métadonnées du groupe
+    // Détermination du nom de groupe
+    const mappedByOptId = groupMapping[strOptId] || groupMapping[cleanOptId] || groupMapping[`dyn_${cleanOptId}`];
+    const mappedByGrpId = explicitGrpId ? groupMapping[`grp_${explicitGrpId}`] : null;
+
+    let candidateGroup = opt.group_name || opt.option_group_name || opt.groupName || opt.group || opt.step_name;
+    if (candidateGroup && (candidateGroup.toLowerCase() === 'option' || candidateGroup.toLowerCase() === 'options')) {
+      candidateGroup = null;
+    }
+
+    const fallbackType = opt.type && opt.type.toLowerCase() !== 'option' && opt.type.toLowerCase() !== 'options' ? opt.type : null;
+    const finalGroupName = mappedByGrpId || mappedByOptId || candidateGroup || fallbackType || 'OPTIONS';
+    const cleanCategoryKey = String(finalGroupName).trim().toUpperCase();
+
+    // Métadonnées du groupe (par ID d'option, ID de groupe ou nom de groupe)
     const groupMeta: GroupMeta | null = 
       (explicitGrpId ? (groupMapping[`_meta_grp_${explicitGrpId}`] || groupMapping[`_meta_${explicitGrpId}`]) : null) ||
       groupMapping[`_meta_${strOptId}`] ||
       groupMapping[`_meta_${cleanOptId}`] ||
       groupMapping[`_meta_dyn_${cleanOptId}`] ||
+      groupMapping[`_meta_name_${cleanCategoryKey}`] ||
       null;
 
-    // 🚨 RÈGLE KDS 1 : show_on_kds (si faux, exclusion du bon cuisine)
+    // 🚨 RÈGLE KDS 1 : show_on_kds
     const isShowOnKds = opt.show_on_kds !== false && groupMeta?.show_on_kds !== false;
     if (isKitchen && !isShowOnKds) {
       return;
     }
 
-    // 🚨 RÈGLE KDS 2 : hide_if_solo (si solo et hide_if_solo = true, exclusion)
+    // 🚨 RÈGLE KDS 2 : hide_if_solo
     const isHideIfSolo = 
       opt.hide_if_solo === true || 
       opt.is_hide_if_solo === true || 
@@ -405,21 +429,14 @@ export const getFormattedOrderOptions = (
       return;
     }
 
-    // Détermination du nom de groupe
-    const mappedByOptId = groupMapping[strOptId] || groupMapping[cleanOptId] || groupMapping[`dyn_${cleanOptId}`];
-    const mappedByGrpId = explicitGrpId ? groupMapping[`grp_${explicitGrpId}`] : null;
-
-    let candidateGroup = opt.group_name || opt.option_group_name || opt.groupName || opt.group || opt.step_name;
-    if (candidateGroup && (candidateGroup.toLowerCase() === 'option' || candidateGroup.toLowerCase() === 'options')) {
-      candidateGroup = null;
-    }
-
-    const fallbackType = opt.type && opt.type.toLowerCase() !== 'option' && opt.type.toLowerCase() !== 'options' ? opt.type : null;
-    const finalGroupName = mappedByGrpId || mappedByOptId || candidateGroup || fallbackType || 'OPTIONS';
-    const cleanCategoryKey = String(finalGroupName).trim().toUpperCase();
-
-    // 🚨 RÈGLE KDS 3 : Ordre sort_kds
-    const groupSortKds = Number(groupMeta?.sort_kds ?? opt.sort_kds ?? opt.step_order ?? 0);
+    // 🚨 RÈGLE KDS 3 : Récupération du sort_kds dynamique
+    const groupSortKds = Number(
+      groupMeta?.sort_kds !== undefined && groupMeta?.sort_kds !== null
+        ? groupMeta.sort_kds
+        : (opt.sort_kds !== undefined && opt.sort_kds !== null
+            ? opt.sort_kds
+            : (opt.step_order !== undefined && opt.step_order !== null ? opt.step_order : 0))
+    );
     const itemSortKds = Number(opt.sort_kds ?? opt.sort_order ?? opt._print_order ?? 0);
     const price = typeof opt === 'string' ? 0 : safeParseFloat(opt.price);
 
@@ -429,6 +446,11 @@ export const getFormattedOrderOptions = (
         sortKds: groupSortKds,
         items: []
       });
+    } else {
+      const existingGrp = optionsByCategory.get(cleanCategoryKey)!;
+      if (existingGrp.sortKds === 0 && groupSortKds !== 0) {
+        existingGrp.sortKds = groupSortKds;
+      }
     }
 
     const grpEntry = optionsByCategory.get(cleanCategoryKey)!;
@@ -448,10 +470,9 @@ export const getFormattedOrderOptions = (
     }
   });
 
+  // Construction de la liste des groupes et tri des articles internes
   const groupsList = Array.from(optionsByCategory.entries()).map(([groupKey, data]) => {
-    if (isKitchen) {
-      data.items.sort((a, b) => (a.kdsSortOrder ?? 0) - (b.kdsSortOrder ?? 0));
-    }
+    data.items.sort((a, b) => (a.kdsSortOrder ?? 0) - (b.kdsSortOrder ?? 0));
     return {
       groupName: '',
       originalGroupName: groupKey,
@@ -460,13 +481,13 @@ export const getFormattedOrderOptions = (
     };
   });
 
-  if (isKitchen) {
-    groupsList.sort((a, b) => {
-      const orderA = a.originalGroupName === 'INGRÉDIENTS' ? -1000 : (a.kdsSortOrder ?? 0);
-      const orderB = b.originalGroupName === 'INGRÉDIENTS' ? -1000 : (b.kdsSortOrder ?? 0);
-      return orderA - orderB;
-    });
-  }
+  // 🚨 TRI DYNAMIQUE SYSTEMATIQUE SELON SORT_KDS (CLIENT & CUISINE)
+  // 'INGRÉDIENTS' (SANS ...) reste à -1000 pour toujours figurer en alerte au tout début.
+  groupsList.sort((a, b) => {
+    const orderA = a.originalGroupName === 'INGRÉDIENTS' ? -1000 : (a.kdsSortOrder ?? 0);
+    const orderB = b.originalGroupName === 'INGRÉDIENTS' ? -1000 : (b.kdsSortOrder ?? 0);
+    return orderA - orderB;
+  });
 
   return groupsList;
 };
