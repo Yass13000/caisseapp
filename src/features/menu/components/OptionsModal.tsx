@@ -58,17 +58,28 @@ const normalizeStr = (s: any) => String(s || '')
 
 const formatProductName = (name: string, isSolo: boolean) => {
   if (!name) return '';
-  const cleanName = name.replace(/^menu\s+/i, '').replace(/\bseul\b/i, '').trim();
+  const cleanName = name.replace(/^menu\s+/i, '').replace(/\s+seul\b/i, '').replace(/\bseul\b/i, '').trim();
   if (!isSolo) return cleanName;
   return `${cleanName} Seul`;
 };
 
-// Détection centralisée des étapes masquées en mode Solo
+// 🟢 Détection centralisée des étapes masquées en mode Solo
 const isStepHiddenInSolo = (step: { is_menu?: boolean; hide_if_solo?: boolean; group_name?: string }) => {
   if (step.hide_if_solo === true || step.is_menu === true) return true;
   const name = String(step.group_name || '').toLowerCase();
   if (/\b(boissons?|accompagnements?|frites?)\b/i.test(name)) return true;
   return false;
+};
+
+// 🟢 Calcul réversible selon le default_type d'origine du produit
+const calculateBasePrice = (catalogPrice: number, isSolo: boolean, defType: 'menu' | 'solo', discount: number) => {
+  if (defType === 'solo') {
+    // Le prix de base est le prix SEUL : on ajoute la différence pour le menu
+    return (!isSolo && discount > 0) ? catalogPrice + discount : catalogPrice;
+  } else {
+    // Le prix de base est le prix MENU : on déduit la réduction solo pour le seul
+    return (isSolo && discount > 0) ? Math.max(0, catalogPrice - discount) : catalogPrice;
+  }
 };
 
 // Parser universel pour excluded_product_ids
@@ -151,6 +162,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   const [stepSelections, setStepSelections] = useState<Record<string, CustomizationOption[]>>({});
   
   const [isCategoryMenu, setIsCategoryMenu] = useState(false);
+  const [defaultType, setDefaultType] = useState<'menu' | 'solo'>('menu');
   const [isSoloMode, setIsSoloMode] = useState(() => {
     if (initialSelections?.isSolo !== undefined) return Boolean(initialSelections.isSolo);
     if (product?.isSolo === true || product?.is_solo === true || /\bseul\b/i.test(product?.name || '')) return true;
@@ -254,6 +266,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
         const isExplicitSolo = product?.isSolo === true || product?.is_solo === true || /\bseul\b/i.test(product?.name || '');
         const isDefaultSolo = categoryDefaultType === 'solo' || String(product?.default_type).toLowerCase().trim() === 'solo';
+        const effectiveDefType: 'menu' | 'solo' = isDefaultSolo ? 'solo' : 'menu';
 
         const shouldBeSolo = initialSelections?.isSolo !== undefined
           ? Boolean(initialSelections.isSolo)
@@ -262,10 +275,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         if (isMounted) {
           setIsCategoryMenu(categoryIsMenu);
           setSoloDiscount(categorySoloDiscount);
+          setDefaultType(effectiveDefType);
           setIsSoloMode(shouldBeSolo);
         }
 
-        // 🟢 hide_if_solo est sélectionné UNIQUEMENT dans option_groups (pas sur product_option_groups ni sub_option_groups)
+        // 🟢 Sélecteur Supabase propre : hide_if_solo est UNIQUEMENT sur option_groups
         const [baseRes, subProdRes, ingRes] = await Promise.all([
           supabase
             .from('product_option_groups')
@@ -499,7 +513,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                 const oName = normalizeStr(o.name || '');
 
                 if (candCleanId && (oCleanId === candCleanId || String(o.id) === String(candId))) return true;
-                if (o.original_product_id && candCleanId && (String(o.original_product_id) === candCleanId || String(o.original_product_id) === String(candId))) return true;
+                if (o.original_product_id && candCleanId && (String(o.original_product_id) === candCleanId || String(o.original_product_id) === String(opt.original_product_id))) return true;
                 if (typeof cand === 'object' && cand.original_product_id && oCleanId && (String(cand.original_product_id) === oCleanId || String(cand.original_product_id) === String(o.id))) return true;
                 if (oName && candName && (oName === candName || oName.includes(candName) || candName.includes(oName))) return true;
                 return false;
@@ -789,18 +803,16 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         }));
 
         const finalName = formatProductName(product.name, isSoloMode);
-        const originalBasePrice = Number(product.original_base_price ?? product.price ?? 0);
+        const originalCatalogPrice = Number(product.original_base_price ?? product.product?.price ?? product.price ?? 0);
 
-        // En solo : prix de base original / En menu : prix de base + supplément menu
-        const finalBasePrice = (!isSoloMode && soloDiscount > 0)
-          ? originalBasePrice + soloDiscount
-          : originalBasePrice;
+        // 🟢 Calcul exact selon le default_type
+        const finalBasePrice = calculateBasePrice(originalCatalogPrice, isSoloMode, defaultType, soloDiscount);
 
         const uniqueProduct = {
             ...product,
             name: finalName,
             price: finalBasePrice,
-            original_base_price: originalBasePrice,
+            original_base_price: originalCatalogPrice,
             isSolo: isSoloMode,
             cartItemId: cartItemId, 
             uniqueId: cartItemId,   
@@ -824,7 +836,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         setIsProcessing(false);
         onCloseRef.current();
     }, 150);
-  }, [isProcessing, allSubGroups, product, ingredients, removedIngredientIds, isSoloMode, soloDiscount]);
+  }, [isProcessing, allSubGroups, product, ingredients, removedIngredientIds, isSoloMode, defaultType, soloDiscount]);
 
   const handleNextStep = useCallback(() => {
     if (currentStep >= lastOptionStepIndex) {
@@ -1043,11 +1055,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   };
 
   const total = useMemo(() => {
-    const originalBasePrice = Number(product.original_base_price ?? product.price ?? 0);
-
-    let basePrice = (!isSoloMode && soloDiscount > 0)
-      ? originalBasePrice + soloDiscount
-      : originalBasePrice;
+    const originalCatalogPrice = Number(product.original_base_price ?? product.product?.price ?? product.price ?? 0);
+    const basePrice = calculateBasePrice(originalCatalogPrice, isSoloMode, defaultType, soloDiscount);
     
     let t = basePrice;
     const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
@@ -1082,7 +1091,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         t += remainingPaidPrices.reduce((sum, p) => sum + p, 0);
     });
     return t;
-  }, [product.price, product.original_base_price, stepSelections, allSubGroups, activeSteps, isSoloMode, soloDiscount]);
+  }, [product.price, product.original_base_price, stepSelections, allSubGroups, activeSteps, isSoloMode, defaultType, soloDiscount]);
 
   if (isLoading || activeSteps.length === 0 || !activeSteps[currentStep]) return null;
 
@@ -1130,6 +1139,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
              </div>
 
              <div className="flex items-center gap-3">
+                {/* 🟢 Bascule Seul / Menu */}
                 {isCategoryMenu && (
                   <div className="flex bg-gray-100 p-1 rounded-xl border border-gray-200">
                     <button
@@ -1152,7 +1162,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                           : 'text-gray-600 hover:text-secondary'
                       }`}
                     >
-                      Menu {soloDiscount > 0 ? `(+${soloDiscount.toFixed(2)}€)` : ''}
+                      Menu
                     </button>
                   </div>
                 )}
