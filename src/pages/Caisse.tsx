@@ -36,7 +36,7 @@ import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
 import PosSetup from '@/components/PosSetup';
 
 export interface Product {
-  id: number;
+  id: number | string;
   name: string;
   price: number;
   category: string;
@@ -45,6 +45,10 @@ export interface Product {
   solo_image_url?: string | null;
   is_available: boolean;
   hide_on_kiosk?: boolean;
+  variantId?: string | number;
+  variant_id?: string | number;
+  variantName?: string;
+  original_product_id?: number | string;
 }
 
 interface Category {
@@ -806,8 +810,8 @@ const Caisse = () => {
   const handleSelectProduct = async (product: Product) => {
     if (!product.is_available) { customToast("Produit indisponible", "error"); return; }
     try {
-      const { data: variants } = await supabase.from('product_variants').select('id').eq('product_id', product.id).eq('available', true).limit(1);
-      if (variants?.length) {
+      const { data: variants } = await supabase.from('product_variants').select('*').eq('product_id', product.id).eq('available', true);
+      if (variants && variants.length > 0) {
         setSelectedProductForVariants(product);
         setIsVariantsModalOpen(true);
         return;
@@ -857,10 +861,31 @@ const Caisse = () => {
       finalRawSelections = incomingData;
     }
 
+    // Récupération stricte de la variante active
+    const currentProduct = selectedProduct || p;
+    const effectiveVariantId = currentProduct?.variantId ?? currentProduct?.variant_id ?? p?.variantId ?? p?.variant_id;
+    const baseParentId = currentProduct?.original_product_id ?? p?.original_product_id ?? currentProduct?.id ?? p?.id;
+    
+    // 🟢 Identifiant composite distinct pour chaque variante (évite la fusion dans CartContext)
+    const effectiveProductId = effectiveVariantId ? `${baseParentId}-var_${effectiveVariantId}` : baseParentId;
+
+    const effectiveProduct: Product = {
+      ...p,
+      ...currentProduct,
+      id: effectiveProductId,
+      original_product_id: baseParentId,
+      name: currentProduct?.name || p?.name,
+      price: currentProduct?.price !== undefined ? currentProduct.price : p?.price,
+      variantId: effectiveVariantId,
+      variant_id: effectiveVariantId,
+      variantName: currentProduct?.variantName || p?.variantName
+    };
+
     const optionsString = finalFlatOptions.map(o => `${o.group_name || o.option_group_name || 'Opt'}:${o.name}`).join('-');
     const removedString = removedIngredientsList.map((i: any) => i.name || i.id).join('-');
-    const optionsHash = btoa(encodeURIComponent(`${optionsString}_${removedString}`)).substring(0, 15);
-    const uniqueCartKey = `${p.id}-${optionsHash}`;
+    const variantKey = effectiveVariantId ? `var-${effectiveVariantId}` : encodeURIComponent(effectiveProduct.name);
+    const optionsHash = btoa(encodeURIComponent(`${variantKey}_${optionsString}_${removedString}`)).substring(0, 15);
+    const uniqueCartKey = `${effectiveProductId}-${optionsHash}`;
 
     let originalQty = 1;
     if (editingItemKey) {
@@ -872,8 +897,8 @@ const Caisse = () => {
 
     addToCart({
       id: uniqueCartKey,
-      product: p,
-      isSolo: p.isSolo === true,
+      product: effectiveProduct,
+      isSolo: effectiveProduct.isSolo === true,
       selectedSubOptions: finalFlatOptions,
       rawSelections: finalRawSelections,
       removedIngredients: removedIngredientsList,
@@ -1306,7 +1331,7 @@ const Caisse = () => {
         <div className="flex-1 flex flex-col h-full bg-[#F3F4F6] relative min-w-0">
           
           <div className="bg-white border-b border-gray-200 shadow-sm flex-shrink-0 z-20">
-            {/* 🟢 Sélecteur Mode de Commande avec icônes personnalisées (/SVG/SP.svg, /SVG/EMP.svg, /SVG/liv.svg) */}
+            {/* 🟢 Sélecteur Mode de Commande */}
             {activeOrderTypes.length > 0 && (
               <div className="p-2 bg-gray-100/90 border-b border-gray-200">
                 <div className="flex gap-2 max-w-2xl">
@@ -1340,7 +1365,7 @@ const Caisse = () => {
               </div>
             )}
 
-            {/* 🟢 Catégories compactées (h-[48px] au lieu de 70px, bordures 2px au lieu de 4px) */}
+            {/* 🟢 Catégories compactées */}
             <div className="p-2.5 sm:p-3 grid grid-cols-5 gap-2 sm:gap-2.5">
               {categories.map(cat => {
                 const isSelected = selectedCategory === cat.name;
@@ -1362,7 +1387,7 @@ const Caisse = () => {
             </div>
           </div>
 
-          {/* 🟢 Grille de produits : 5 cartes par ligne sur Full HD (min 265px) */}
+          {/* 🟢 Grille de produits */}
           <div className="flex-1 p-3.5 sm:p-4 xl:p-5 overflow-y-auto custom-scrollbar">
             <div className="grid grid-cols-[repeat(auto-fill,minmax(265px,1fr))] gap-3 sm:gap-3.5 xl:gap-4 content-start">
               {menuData.filter(p => p.category === selectedCategory).map(product => (
@@ -1384,7 +1409,6 @@ const Caisse = () => {
                 </button>
               )}
             </div>
-            {/* 🟢 Remplacement ShoppingBag par /SVG/kraft.svg */}
             <span className="flex items-center gap-1.5 bg-gray-200 px-2.5 py-1 rounded-lg font-black text-xs" style={{ color: themeColors.secondary }}>
               <img src="/SVG/kraft.svg" alt="Panier" className="w-4 h-4 object-contain" /> 
               {cartItemCount}
@@ -1414,6 +1438,12 @@ const Caisse = () => {
 
                       const fullProduct = {
                         ...baseProduct,
+                        ...(item.product || {}),
+                        name: item.product?.name || item.name || baseProduct.name,
+                        price: item.product?.price !== undefined ? item.product.price : baseProduct.price,
+                        variantId: item.product?.variantId ?? item.product?.variant_id ?? item.variantId,
+                        variant_id: item.product?.variant_id ?? item.product?.variantId ?? item.variant_id,
+                        variantName: item.product?.variantName || item.variantName,
                         isSolo: item.isSolo === true || item.product?.isSolo === true,
                         rawSelections,
                         selectedSubOptions: flatOptions,
@@ -1646,20 +1676,56 @@ const Caisse = () => {
           product={selectedProductForVariants as any} 
           isOpen={isVariantsModalOpen} 
           onClose={() => { setIsVariantsModalOpen(false); setSelectedProductForVariants(null); }} 
-          onSelectVariant={(v: any) => { 
+          onSelectVariant={async (v: any) => { 
             const rawVariantName = v.variant_name || v.name || '';
             const cleanVariantName = rawVariantName.replace(/\s*pi[èe]ces?/gi, '').trim();
-            
             const finalName = cleanVariantName ? `${selectedProductForVariants.name} (${cleanVariantName})` : selectedProductForVariants.name;
+            const baseProductId = selectedProductForVariants.id;
+            const variantProductId = `${baseProductId}-var_${v.id}`;
+            const variantPrice = v.price || v.price_supplement || selectedProductForVariants.price;
+
+            const variantProduct: Product = { 
+              ...selectedProductForVariants, 
+              id: variantProductId,
+              original_product_id: baseProductId,
+              variantId: v.id,
+              variant_id: v.id,
+              variantName: cleanVariantName,
+              price: variantPrice, 
+              name: finalName 
+            };
 
             setSelectedProductForVariants(null); 
             setIsVariantsModalOpen(false); 
-            setSelectedProduct({ 
-              ...selectedProductForVariants, 
-              price: v.price || v.price_supplement || selectedProductForVariants.price, 
-              name: finalName 
-            }); 
-            setIsOptionsModalOpen(true); 
+
+            // Vérifie si ce produit a des groupes d'options (sauces, etc.)
+            try {
+              const { data: optionGroups } = await supabase
+                .from('product_option_groups')
+                .select('id')
+                .eq('product_id', baseProductId)
+                .limit(1);
+
+              if (optionGroups && optionGroups.length > 0) {
+                setSelectedProduct(variantProduct); 
+                setInitialSelections(null);
+                setIsOptionsModalOpen(true); 
+              } else {
+                // Aucun groupe d'options : ajout direct au panier avec clé unique
+                const uniqueKey = `${variantProductId}-no-opts`;
+                addToCart({ 
+                  id: uniqueKey, 
+                  product: variantProduct, 
+                  quantity: 1, 
+                  cartKey: uniqueKey, 
+                  customKey: uniqueKey 
+                } as any);
+              }
+            } catch (err) {
+              setSelectedProduct(variantProduct); 
+              setInitialSelections(null);
+              setIsOptionsModalOpen(true); 
+            }
           }} 
           directSubOptions={[]} 
         />

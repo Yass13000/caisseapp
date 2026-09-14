@@ -18,6 +18,7 @@ export interface CustomizationOption {
   groupName?: string;
   option_group_id?: number | string;
   is_menu?: boolean;
+  hide_if_solo?: boolean;
 }
 
 interface Ingredient { 
@@ -41,6 +42,7 @@ interface StepData {
   free_choices_count?: number; 
   option_group_id?: number | string;
   is_menu?: boolean;
+  hide_if_solo?: boolean;
 }
 
 const cleanId = (id: any) => {
@@ -56,12 +58,20 @@ const normalizeStr = (s: any) => String(s || '')
 
 const formatProductName = (name: string, isSolo: boolean) => {
   if (!name) return '';
-  if (!isSolo) return name;
-  const cleanName = name.replace(/^menu\s+/i, '').trim();
+  const cleanName = name.replace(/^menu\s+/i, '').replace(/\bseul\b/i, '').trim();
+  if (!isSolo) return cleanName;
   return `${cleanName} Seul`;
 };
 
-// Parser universel pour excluded_product_ids (gère tableau, JSON stringifié ou chaîne séparée par virgules)
+// Détection centralisée des étapes masquées en mode Solo
+const isStepHiddenInSolo = (step: { is_menu?: boolean; hide_if_solo?: boolean; group_name?: string }) => {
+  if (step.hide_if_solo === true || step.is_menu === true) return true;
+  const name = String(step.group_name || '').toLowerCase();
+  if (/\b(boissons?|accompagnements?|frites?)\b/i.test(name)) return true;
+  return false;
+};
+
+// Parser universel pour excluded_product_ids
 const parseExcludedProductIds = (raw: any): Set<string> => {
   const result = new Set<string>();
   if (!raw) return result;
@@ -87,9 +97,7 @@ const parseExcludedProductIds = (raw: any): Set<string> => {
         });
         return result;
       }
-    } catch {
-      // Pas du JSON, traitement texte
-    }
+    } catch {}
     const cleaned = trimmed.replace(/^[{}\[\]]+|[{}\[\]]+$/g, '');
     cleaned.split(',').forEach(x => {
       const val = x.trim().replace(/^["']+|["']+$/g, '').replace(/^dyn_/, '');
@@ -99,7 +107,7 @@ const parseExcludedProductIds = (raw: any): Set<string> => {
   return result;
 };
 
-// EXTRACTEUR UNIVERSEL DE CHOIX (Sécurisé pour ignorer les ingrédients de base)
+// Extracteur universel de choix
 const extractAllChoicesFromSource = (...sources: any[]): any[] => {
   const flat: any[] = [];
 
@@ -121,11 +129,9 @@ const extractAllChoicesFromSource = (...sources: any[]): any[] => {
             groupId: val.groupId ?? opt.groupId
           });
         });
-      } 
-      else if (val.id !== undefined || val.name !== undefined) {
+      } else if (val.id !== undefined || val.name !== undefined) {
         flat.push(val);
-      } 
-      else {
+      } else {
         Object.entries(val).forEach(([k, v]) => traverse(v, k));
       }
     }
@@ -145,7 +151,12 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   const [stepSelections, setStepSelections] = useState<Record<string, CustomizationOption[]>>({});
   
   const [isCategoryMenu, setIsCategoryMenu] = useState(false);
-  const [isSoloMode, setIsSoloMode] = useState(false);
+  const [isSoloMode, setIsSoloMode] = useState(() => {
+    if (initialSelections?.isSolo !== undefined) return Boolean(initialSelections.isSolo);
+    if (product?.isSolo === true || product?.is_solo === true || /\bseul\b/i.test(product?.name || '')) return true;
+    if (String(product?.default_type).toLowerCase().trim() === 'solo') return true;
+    return false;
+  });
   const [soloDiscount, setSoloDiscount] = useState<number>(0);
 
   const [isLoading, setIsLoading] = useState(true);
@@ -164,6 +175,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
   const formatSubGroup = useCallback((sg: any, parentOptName?: string): StepData => {
     const groupName = parentOptName ? `${sg.name} (${parentOptName})` : sg.name;
+    const isMenuGroup = sg.is_menu === true;
+
     const validChoices = (sg.sub_option_choices || [])
         .filter((c: any) => c.is_available !== false)
         .sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0))
@@ -176,7 +189,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             option_group_name: groupName,
             groupName: groupName,
             option_group_id: sg.id,
-            is_menu: sg.is_menu === true
+            is_menu: isMenuGroup,
+            hide_if_solo: false
         }));
 
     return {
@@ -190,7 +204,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         isSubOption: true,
         free_choices_count: sg.free_choices_count || 0,
         option_group_id: sg.id,
-        is_menu: sg.is_menu === true
+        is_menu: isMenuGroup,
+        hide_if_solo: false
     };
   }, []);
 
@@ -212,11 +227,12 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
       try {
         let categoryIsMenu = false;
         let categorySoloDiscount = 0;
+        let categoryDefaultType = 'menu';
 
         if (product?.category) {
           const { data: catRes } = await supabase
             .from('categories')
-            .select('is_menu, solo_discount_price')
+            .select('is_menu, solo_discount_price, default_type')
             .eq('restaurant_id', activeRestoId)
             .ilike('name', product.category.trim())
             .maybeSingle();
@@ -228,20 +244,32 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             if (catRes.solo_discount_price != null) {
               categorySoloDiscount = Number(catRes.solo_discount_price) || 0;
             }
+            if (catRes.default_type) {
+              categoryDefaultType = String(catRes.default_type).toLowerCase().trim();
+            }
           }
         } else if (product?.is_menu || product?.category_is_menu) {
           categoryIsMenu = true;
         }
 
+        const isExplicitSolo = product?.isSolo === true || product?.is_solo === true || /\bseul\b/i.test(product?.name || '');
+        const isDefaultSolo = categoryDefaultType === 'solo' || String(product?.default_type).toLowerCase().trim() === 'solo';
+
+        const shouldBeSolo = initialSelections?.isSolo !== undefined
+          ? Boolean(initialSelections.isSolo)
+          : (isExplicitSolo || isDefaultSolo);
+
         if (isMounted) {
           setIsCategoryMenu(categoryIsMenu);
           setSoloDiscount(categorySoloDiscount);
+          setIsSoloMode(shouldBeSolo);
         }
 
+        // 🟢 hide_if_solo est sélectionné UNIQUEMENT dans option_groups (pas sur product_option_groups ni sub_option_groups)
         const [baseRes, subProdRes, ingRes] = await Promise.all([
           supabase
             .from('product_option_groups')
-            .select(`id, min_choices, max_choices, step_order, free_choices_count, is_menu, option_groups (id, name, allow_multiple, free_choices_count, is_menu, target_category_name, target_subcategory_id, product_overrides, excluded_product_ids, option_group_links ( sort_order, options ( id, name, price, image_url, is_available, description ) ))`)
+            .select(`id, min_choices, max_choices, step_order, free_choices_count, is_menu, option_groups (id, name, allow_multiple, free_choices_count, is_menu, hide_if_solo, target_category_name, target_subcategory_id, product_overrides, excluded_product_ids, option_group_links ( sort_order, options ( id, name, price, image_url, is_available, description ) ))`)
             .eq('product_id', realProductId)
             .order('step_order'),
           supabase
@@ -262,8 +290,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             const groupName = rule.option_groups?.name || 'Options';
             const groupGroupId = rule.option_groups?.id;
             const isMenuGroup = rule.is_menu === true || rule.option_groups?.is_menu === true;
+            const isHideIfSolo = rule.option_groups?.hide_if_solo === true;
 
-            // Récupération et parsing sécurisé des produits exclus
             const rawExcluded = rule.option_groups?.excluded_product_ids;
             const excludedProductIds = parseExcludedProductIds(rawExcluded);
 
@@ -293,7 +321,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                    option_group_name: groupName,
                    groupName: groupName,
                    option_group_id: groupGroupId,
-                   is_menu: isMenuGroup
+                   is_menu: isMenuGroup,
+                   hide_if_solo: isHideIfSolo
                  };
               });
 
@@ -332,7 +361,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
               dynamicOptions = fetchedProds
                 .filter((p: any) => {
                   if (!p || p.is_available === false) return false;
-                  // Filtrage strict basé sur excluded_product_ids
                   const pIdStr = cleanId(p.id);
                   if (excludedProductIds.has(pIdStr)) return false;
                   return true;
@@ -360,7 +388,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                     option_group_name: groupName,
                     groupName: groupName,
                     option_group_id: groupGroupId,
-                    is_menu: isMenuGroup
+                    is_menu: isMenuGroup,
+                    hide_if_solo: isHideIfSolo
                   };
                 });
             }
@@ -393,14 +422,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
               free_choices_count: finalFreeChoices,
               options: allOptionsForStep,
               option_group_id: groupGroupId,
-              is_menu: isMenuGroup
+              is_menu: isMenuGroup,
+              hide_if_solo: isHideIfSolo
             };
           }));
 
-          if (product.isSolo) {
-            const motsAExclure = ['boisson', 'accompagnement', 'frite']; 
-            formattedBaseSteps = formattedBaseSteps.filter(step => !motsAExclure.some(mot => step.group_name.toLowerCase().includes(mot)));
-          }
           formattedBaseSteps = formattedBaseSteps.filter(step => step.options.length > 0);
         }
 
@@ -434,10 +460,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
           setBaseSteps(formattedBaseSteps);
           setAllSubGroups(subGroupsData);
           setIngredients(validIngredients);
-
-          if (product?.isSolo === true || product?.is_solo === true || /\bseul\b/i.test(product?.name || '')) {
-            setIsSoloMode(true);
-          }
 
           const allStepsToMatch = [
             ...formattedBaseSteps,
@@ -495,6 +517,15 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             }
           });
 
+          // Nettoyage des options masquées si le produit démarre en Solo
+          if (shouldBeSolo) {
+            allStepsToMatch.forEach(step => {
+              if (isStepHiddenInSolo(step)) {
+                delete reconstructed[step.id];
+              }
+            });
+          }
+
           setStepSelections(reconstructed);
 
           const removedIds = new Set<number>();
@@ -547,10 +578,10 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
       setStepSelections(prev => {
         const nextState = { ...prev };
         baseSteps.forEach(step => {
-          if (step.is_menu) delete nextState[step.id];
+          if (isStepHiddenInSolo(step)) delete nextState[step.id];
         });
         allSubGroups.forEach(sg => {
-          if (sg.is_menu) delete nextState[`sub_${sg.id}`];
+          if (isStepHiddenInSolo(sg)) delete nextState[`sub_${sg.id}`];
         });
         return nextState;
       });
@@ -567,13 +598,13 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     const prodGroups = allSubGroups.filter(g => String(g.product_id) === String(realProductId) || String(g.product_id) === String(product.id)).sort((a,b)=> (a.sort_order||0) - (b.sort_order||0));
     
     prodGroups.forEach(g => {
-        if (isSoloMode && g.is_menu) return;
+        if (isSoloMode && isStepHiddenInSolo(g)) return;
         const formatted = formatSubGroup(g);
         if (formatted.options.length > 0) optionSteps.push(formatted);
     });
     
     baseSteps.forEach(baseStep => {
-        if (isSoloMode && baseStep.is_menu) return;
+        if (isSoloMode && isStepHiddenInSolo(baseStep)) return;
         if (baseStep.options.length > 0) optionSteps.push(baseStep);
     });
 
@@ -625,7 +656,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     for (let i = 0; i < activeSteps.length; i++) {
       const step = activeSteps[i];
       if (step.isIngredientStep) continue;
-      if (isSoloMode && step.is_menu) continue;
+      if (isSoloMode && isStepHiddenInSolo(step)) continue;
 
       const sels = stepSelections[step.id] || [];
       if (sels.length < step.min_choices) {
@@ -637,7 +668,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         if (parentOptionIds.has(cleanOptId)) {
           const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
           for (const cg of childGroups) {
-            if (isSoloMode && cg.is_menu) continue;
+            if (isSoloMode && isStepHiddenInSolo(cg)) continue;
             const min = cg.min_choices != null ? Number(cg.min_choices) : 0;
             const childSels = stepSelections[`sub_${cg.id}`] || [];
             if (childSels.length < min) return i;
@@ -672,7 +703,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
         activeStepsRef.current.forEach((step, stepIdx) => {
             if (step.isIngredientStep) return;
-            if (isSoloMode && step.is_menu) return;
+            if (isSoloMode && isStepHiddenInSolo(step)) return;
 
             const sels = latestSelections[step.id] || [];
             const mappedSels = sels.map((opt, index) => ({ ...opt, originalIndex: index }));
@@ -691,7 +722,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                 if (parentOptionIds.has(cleanOptId)) {
                     const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
                     childGroups.forEach(cg => {
-                        if (isSoloMode && cg.is_menu) return;
+                        if (isSoloMode && isStepHiddenInSolo(cg)) return;
                         const childSels = latestSelections[`sub_${cg.id}`] || [];
                         if (childSels.length > 0) hasSelectedChildren = true;
                         
@@ -758,15 +789,18 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         }));
 
         const finalName = formatProductName(product.name, isSoloMode);
-        const originalPrice = Number(product.price || 0);
-        const finalBasePrice = isSoloMode && soloDiscount > 0
-          ? Math.max(0, originalPrice - soloDiscount)
-          : originalPrice;
+        const originalBasePrice = Number(product.original_base_price ?? product.price ?? 0);
+
+        // En solo : prix de base original / En menu : prix de base + supplément menu
+        const finalBasePrice = (!isSoloMode && soloDiscount > 0)
+          ? originalBasePrice + soloDiscount
+          : originalBasePrice;
 
         const uniqueProduct = {
             ...product,
             name: finalName,
             price: finalBasePrice,
+            original_base_price: originalBasePrice,
             isSolo: isSoloMode,
             cartItemId: cartItemId, 
             uniqueId: cartItemId,   
@@ -1009,10 +1043,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   };
 
   const total = useMemo(() => {
-    let basePrice = Number(product.price || 0);
-    if (isSoloMode && soloDiscount > 0) {
-      basePrice = Math.max(0, basePrice - soloDiscount);
-    }
+    const originalBasePrice = Number(product.original_base_price ?? product.price ?? 0);
+
+    let basePrice = (!isSoloMode && soloDiscount > 0)
+      ? originalBasePrice + soloDiscount
+      : originalBasePrice;
     
     let t = basePrice;
     const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
@@ -1047,7 +1082,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         t += remainingPaidPrices.reduce((sum, p) => sum + p, 0);
     });
     return t;
-  }, [product.price, stepSelections, allSubGroups, activeSteps, isSoloMode, soloDiscount]);
+  }, [product.price, product.original_base_price, stepSelections, allSubGroups, activeSteps, isSoloMode, soloDiscount]);
 
   if (isLoading || activeSteps.length === 0 || !activeSteps[currentStep]) return null;
 
@@ -1096,16 +1131,30 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
              <div className="flex items-center gap-3">
                 {isCategoryMenu && (
-                  <button
-                    onClick={() => handleToggleSoloMode(!isSoloMode)}
-                    className={`px-6 py-3.5 rounded-xl font-black text-base uppercase tracking-wider transition-all active:scale-95 shadow-md cursor-pointer ${
-                      isSoloMode
-                        ? 'bg-amber-500 text-white shadow-amber-500/20'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
-                  >
-                    Seul
-                  </button>
+                  <div className="flex bg-gray-100 p-1 rounded-xl border border-gray-200">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSoloMode(true)}
+                      className={`px-5 py-3 rounded-lg font-black text-sm uppercase tracking-wider transition-all cursor-pointer ${
+                        isSoloMode
+                          ? 'bg-amber-500 text-white shadow-md'
+                          : 'text-gray-600 hover:text-secondary'
+                      }`}
+                    >
+                      Seul
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSoloMode(false)}
+                      className={`px-5 py-3 rounded-lg font-black text-sm uppercase tracking-wider transition-all cursor-pointer ${
+                        !isSoloMode
+                          ? 'bg-[#04B855] text-white shadow-md'
+                          : 'text-gray-600 hover:text-secondary'
+                      }`}
+                    >
+                      Menu {soloDiscount > 0 ? `(+${soloDiscount.toFixed(2)}€)` : ''}
+                    </button>
+                  </div>
                 )}
 
                 <button
@@ -1147,7 +1196,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                     if (parentOptionIds.has(cleanOptId)) {
                       const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
                       for (const cg of childGroups) {
-                        if (isSoloMode && cg.is_menu) continue;
+                        if (isSoloMode && isStepHiddenInSolo(cg)) continue;
                         const min = cg.min_choices != null ? Number(cg.min_choices) : 0;
                         const childSels = stepSelections[`sub_${cg.id}`] || [];
                         if (childSels.length < min) {
@@ -1314,7 +1363,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                       )}
                     </div>
                   </div>
-                )
+                );
               })}
             </div>
           )}
@@ -1417,11 +1466,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                                             <span className="text-[10px] font-bold text-gray-400 uppercase mt-1">Inclus</span>
                                           )}
                                       </div>
-                                  )
+                                  );
                               })}
                           </div>
                       </div>
-                  )
+                  );
               })}
             </div>
 
