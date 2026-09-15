@@ -43,15 +43,28 @@ const safeParseFloat = (val: unknown): number => {
 };
 
 /**
- * 🟢 DÉTECTION DU MODE SOLO D'UN ARTICLE
+ * 🟢 DÉTECTION DU MODE SOLO D'UN ARTICLE (SÉCURISÉE SANS CONFLIT)
  */
 export const checkIsSolo = (item: any): boolean => {
   if (!item) return false;
+
+  const rawName = item.name || item.product?.name || '';
+
+  // 1. Si le nom commence expressément par "Menu", ce n'est jamais un solo
+  if (/^menu\s+/i.test(rawName)) return false;
+
+  // 2. Si le choix solo est explicitement désactivé (false), on s'arrête tout de suite
+  if (item.isSolo === false || item.is_solo === false) return false;
+  if (item.optionsPayload?.isSolo === false || item.rawSelections?.isSolo === false) return false;
+  if (item.product?.isSolo === false || item.product?.is_solo === false) return false;
+
+  // 3. Vérification positive directe
   if (item.isSolo === true || item.is_solo === true) return true;
+  if (item.optionsPayload?.isSolo === true || item.rawSelections?.isSolo === true) return true;
   if (item.product?.isSolo === true || item.product?.is_solo === true) return true;
-  if (item.rawSelections?.isSolo === true || item.optionsPayload?.isSolo === true) return true;
-  const name = item.product?.name || item.name || '';
-  return /\bseul\b/i.test(name);
+
+  // 4. Si le nom contient spécifiquement le mot "seul"
+  return /\bseul\b/i.test(rawName);
 };
 
 /**
@@ -59,9 +72,18 @@ export const checkIsSolo = (item: any): boolean => {
  */
 export const formatProductName = (name: string, isSolo: boolean): string => {
   if (!name) return '';
-  if (!isSolo) return name;
-  const cleanName = name.replace(/^menu\s+/i, '').trim();
-  if (/\bseul\b/i.test(cleanName)) return cleanName;
+
+  // Si c'est un menu, on conserve le nom original sans lui rajouter "Seul"
+  if (!isSolo) {
+    return name.replace(/\s+seul\b/i, '').trim();
+  }
+
+  // Si c'est un solo, on s'assure que le préfixe "Menu" est retiré et qu'il porte la mention "Seul"
+  const cleanName = name
+    .replace(/^menu\s+/i, '')
+    .replace(/\s+seul\b/i, '')
+    .trim();
+
   return `${cleanName} Seul`;
 };
 
@@ -172,7 +194,7 @@ export const fetchOptionGroupMapping = async (
                   name: g.name,
                   hide_if_solo: g.hide_if_solo === true,
                   show_on_kds: g.show_on_kds !== false,
-                  sort_kds: Number(g.sort_kds || 0), // ✅ Correction du bug : 'g' et non 'grp'
+                  sort_kds: Number(g.sort_kds || 0),
                   is_menu: g.is_menu === true
                 };
                 groupMetaMap[g.id] = meta;
@@ -377,7 +399,7 @@ export const getFormattedOrderOptions = (
     const finalGroupName = mappedByGrpId || mappedByOptId || candidateGroup || fallbackType || 'OPTIONS';
     const cleanCategoryKey = String(finalGroupName).trim().toUpperCase();
 
-    // Métadonnées du groupe (par ID d'option, ID de groupe ou nom de groupe)
+    // Métadonnées du groupe
     const groupMeta: GroupMeta | null = 
       (explicitGrpId ? (groupMapping[`_meta_grp_${explicitGrpId}`] || groupMapping[`_meta_${explicitGrpId}`]) : null) ||
       groupMapping[`_meta_${strOptId}`] ||
@@ -481,8 +503,6 @@ export const getFormattedOrderOptions = (
     };
   });
 
-  // 🚨 TRI DYNAMIQUE SYSTEMATIQUE SELON SORT_KDS (CLIENT & CUISINE)
-  // 'INGRÉDIENTS' (SANS ...) reste à -1000 pour toujours figurer en alerte au tout début.
   groupsList.sort((a, b) => {
     const orderA = a.originalGroupName === 'INGRÉDIENTS' ? -1000 : (a.kdsSortOrder ?? 0);
     const orderB = b.originalGroupName === 'INGRÉDIENTS' ? -1000 : (b.kdsSortOrder ?? 0);
@@ -547,13 +567,13 @@ export const buildClientReceiptPayload = (params: {
       isSans: opt.isSans
     })));
 
-    const rawName = item.product?.name || item.name || 'Produit';
+    const rawName = item.name || item.product?.name || 'Produit';
     const finalItemName = formatProductName(rawName, isSolo);
 
     return {
       qty: item.quantity || item.qty || 1,
       name: finalItemName,
-      unitPrice: item.price || item.product?.price || 0,
+      unitPrice: item.price !== undefined ? item.price : (item.product?.price || 0),
       notes,
       categoryName: item.product?.category_name || item.category || ''
     };
@@ -611,7 +631,7 @@ export const buildKitchenReceiptPayload = (params: {
       isSans: opt.isSans
     })));
 
-    const rawName = item.product?.name || item.name || 'Produit';
+    const rawName = item.name || item.product?.name || 'Produit';
     const finalItemName = formatProductName(rawName, isSolo);
 
     return {
