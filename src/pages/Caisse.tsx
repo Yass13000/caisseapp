@@ -861,24 +861,24 @@ const Caisse = () => {
       finalRawSelections = incomingData;
     }
 
-    // Récupération stricte de la variante active
-    const currentProduct = selectedProduct || p;
-    const effectiveVariantId = currentProduct?.variantId ?? currentProduct?.variant_id ?? p?.variantId ?? p?.variant_id;
-    const baseParentId = currentProduct?.original_product_id ?? p?.original_product_id ?? currentProduct?.id ?? p?.id;
+    // 🟢 PRIORITÉ ABSOLUE À 'p' (le produit personnalisé renvoyé par OptionsModal)
+    const currentProduct = p || selectedProduct;
+    const effectiveVariantId = currentProduct?.variantId ?? currentProduct?.variant_id ?? selectedProduct?.variantId;
+    const baseParentId = currentProduct?.original_product_id ?? currentProduct?.id ?? selectedProduct?.id;
     
-    // 🟢 Identifiant composite distinct pour chaque variante (évite la fusion dans CartContext)
     const effectiveProductId = effectiveVariantId ? `${baseParentId}-var_${effectiveVariantId}` : baseParentId;
 
     const effectiveProduct: Product = {
+      ...selectedProduct,
       ...p,
-      ...currentProduct,
       id: effectiveProductId,
       original_product_id: baseParentId,
-      name: currentProduct?.name || p?.name,
-      price: currentProduct?.price !== undefined ? currentProduct.price : p?.price,
+      name: p?.name || currentProduct?.name,
+      price: p?.price !== undefined ? p.price : currentProduct?.price,
+      isSolo: p?.isSolo ?? currentProduct?.isSolo ?? false,
       variantId: effectiveVariantId,
       variant_id: effectiveVariantId,
-      variantName: currentProduct?.variantName || p?.variantName
+      variantName: p?.variantName || currentProduct?.variantName
     };
 
     const optionsString = finalFlatOptions.map(o => `${o.group_name || o.option_group_name || 'Opt'}:${o.name}`).join('-');
