@@ -56,7 +56,7 @@ const normalizeStr = (s: any) => String(s || '')
   .toLowerCase()
   .trim();
 
-// 🟢 Formatage du nom : garantit "Menu ..." en mode menu et "... Seul" en mode seul
+// Formatage du nom : garantit "Menu ..." en mode menu et "... Seul" en mode seul
 const formatProductName = (name: string, isSolo: boolean, isCatMenu: boolean = true) => {
   if (!name) return '';
   if (!isCatMenu) return name;
@@ -73,7 +73,7 @@ const formatProductName = (name: string, isSolo: boolean, isCatMenu: boolean = t
   return `${cleanName} Seul`;
 };
 
-// 🟢 Détection centralisée des étapes masquées en mode Solo
+// Détection centralisée des étapes masquées en mode Solo
 const isStepHiddenInSolo = (step: { is_menu?: boolean; hide_if_solo?: boolean; group_name?: string }) => {
   if (step.hide_if_solo === true || step.is_menu === true) return true;
   const name = String(step.group_name || '').toLowerCase();
@@ -81,7 +81,7 @@ const isStepHiddenInSolo = (step: { is_menu?: boolean; hide_if_solo?: boolean; g
   return false;
 };
 
-// 🟢 Calcul réversible selon le default_type d'origine du produit
+// Calcul réversible selon le default_type d'origine du produit
 const calculateBasePrice = (catalogPrice: number, isSolo: boolean, defType: 'menu' | 'solo', discount: number) => {
   if (defType === 'solo') {
     return (!isSolo && discount > 0) ? catalogPrice + discount : catalogPrice;
@@ -126,7 +126,7 @@ const parseExcludedProductIds = (raw: any): Set<string> => {
   return result;
 };
 
-// Extracteur universel de choix
+// Extracteur universel de choix SANS DUPLICATION
 const extractAllChoicesFromSource = (...sources: any[]): any[] => {
   const flat: any[] = [];
 
@@ -258,7 +258,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         let categorySoloDiscount = 0;
         let categoryDefaultType = 'menu';
 
-        // 1. Recherche catégorie par category_id ou nom
         if (product?.category_id) {
           const { data: catRes } = await supabase
             .from('categories')
@@ -287,7 +286,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             categorySoloDiscount = Number(catRes.solo_discount_price) || 0;
             categoryDefaultType = String(catRes.default_type || 'menu').toLowerCase().trim();
           } else {
-            // Recherche de repli sans filtre de restaurant
             const { data: fallbackCat } = await supabase
               .from('categories')
               .select('is_menu, solo_discount_price, default_type')
@@ -525,13 +523,24 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             ...subGroupsData.map(g => formatSubGroup(g))
           ];
 
-          const flatCandidates = extractAllChoicesFromSource(
-            initialSelections,
-            product?.selectedSubOptions,
-            product?.rawSelections,
-            product?.options,
-            product?.flatOptions
-          );
+          // 🟢 SOURCE PROPRE SANS MULTIPLICATION
+          const sourceChoices = initialSelections || product?.rawSelections || product?.selectedSubOptions || product?.options || product?.flatOptions;
+          const rawCandidates = extractAllChoicesFromSource(sourceChoices);
+
+          // Déduplication par signature pour éviter les faux doublons
+          const flatCandidates: any[] = [];
+          const seenCandSignatures = new Set<string>();
+
+          rawCandidates.forEach(cand => {
+            if (!cand) return;
+            const cId = cleanId(cand.id ?? cand.option_id ?? cand.product_id ?? '');
+            const cName = normalizeStr(cand.name || cand.option_name || '');
+            const sig = `${cId}_${cName}`;
+            if (!seenCandSignatures.has(sig)) {
+              seenCandSignatures.add(sig);
+              flatCandidates.push(cand);
+            }
+          });
 
           const reconstructed: Record<string, CustomizationOption[]> = {};
 
@@ -546,6 +555,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             const candGroupId = typeof cand === 'object' ? (cand.option_group_id ?? cand.group_id ?? cand.groupId) : undefined;
             const candGroupName = typeof cand === 'object' ? normalizeStr(cand.groupName || cand.group_name || cand.option_group_name || '') : '';
 
+            // Tri pour prioriser l'étape la plus cohérente
             const sortedSteps = [...allStepsToMatch].sort((a, b) => {
               const matchA = (candGroupId !== undefined && String(a.option_group_id) === String(candGroupId)) || (candGroupName && normalizeStr(a.group_name) === candGroupName) ? 1 : 0;
               const matchB = (candGroupId !== undefined && String(b.option_group_id) === String(candGroupId)) || (candGroupName && normalizeStr(b.group_name) === candGroupName) ? 1 : 0;
@@ -557,10 +567,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                 const oCleanId = cleanId(o.id);
                 const oName = normalizeStr(o.name || '');
 
+                // 🟢 CORRECTION ABSOLUE : Suppression de la variable inexistante 'opt'
                 if (candCleanId && (oCleanId === candCleanId || String(o.id) === String(candId))) return true;
-                if (o.original_product_id && candCleanId && (String(o.original_product_id) === candCleanId || String(o.original_product_id) === String(opt.original_product_id))) return true;
-                if (typeof cand === 'object' && cand.original_product_id && oCleanId && (String(cand.original_product_id) === oCleanId || String(cand.original_product_id) === String(o.id))) return true;
-                if (oName && candName && (oName === candName || oName.includes(candName) || candName.includes(oName))) return true;
+                if (o.original_product_id && candCleanId && String(o.original_product_id) === candCleanId) return true;
+                if (typeof cand === 'object' && cand.original_product_id && oCleanId && String(cand.original_product_id) === oCleanId) return true;
+                if (oName && candName && oName === candName) return true;
                 return false;
               });
 
@@ -586,6 +597,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
           setStepSelections(reconstructed);
 
+          // Reconstitution des ingrédients retirés
           const removedIds = new Set<number>();
           const removedSource = product?.removedIngredients || initialSelections?.removedIngredients || [];
           if (Array.isArray(removedSource)) {
@@ -853,11 +865,13 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
         const finalName = formatProductName(product.name, currentSolo, currentCatMenu);
         const originalCatalogPrice = Number(product.original_base_price ?? product.product?.price ?? product.price ?? 0);
-
         const finalBasePrice = calculateBasePrice(originalCatalogPrice, currentSolo, currentDefType, currentDiscount);
 
+        // 🟢 ÉCRASEMENT TOTAL DES OPTIONS D'ORIGINE POUR ÉVITER TOUT DOUBLON
+        const { options: _oldOpt, selectedOptions: _oldSelOpt, flatOptions: _oldFlatOpt, selectedSubOptions: _oldSubOpt, ...cleanProductBase } = product;
+
         const uniqueProduct = {
-            ...product,
+            ...cleanProductBase,
             name: finalName,
             price: finalBasePrice,
             original_base_price: originalCatalogPrice,
@@ -1192,7 +1206,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
              </div>
 
              <div className="flex items-center gap-3">
-                {/* 🟢 Bascule Seul / Menu */}
                 {isCategoryMenu && (
                   <div className="flex bg-gray-100 p-1 rounded-xl border border-gray-200">
                     <button

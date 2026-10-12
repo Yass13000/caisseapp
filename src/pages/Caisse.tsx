@@ -34,6 +34,7 @@ import NewtonsCradleLoader from '@/components/NewtonsCradleLoader';
 import CashSessionModal from '@/components/CashSessionModal';
 import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
 import PosSetup from '@/components/PosSetup';
+import { DeliveryDispatchModal } from '@/features/delivery/components/DeliveryDispatchModal';
 
 export interface Product {
   id: number | string;
