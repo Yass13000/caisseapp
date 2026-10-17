@@ -20,7 +20,10 @@ import {
   Smartphone,
   Monitor,
   Layers,
-  ArrowUpDown
+  ArrowUpDown,
+  MessageSquare,
+  MapPin,
+  Info
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload } from '@/lib/orderFormatter';
@@ -259,8 +262,8 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
   const getPaymentMethodLabel = (method: string) => {
     if (!method) return 'N/A';
     const m = method.toLowerCase();
-    if (m === 'counter' || m === 'espèces') return 'Espèces';
-    if (m === 'card' || m === 'carte bancaire') return 'Carte Bancaire';
+    if (m === 'counter' || m === 'espèces' || m === 'especes') return 'Espèces';
+    if (m === 'card' || m === 'carte bancaire' || m === 'cb') return 'Carte Bancaire';
     return method;
   };
 
@@ -280,6 +283,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     return Store;
   };
 
+  // 🟢 IMPRESSION DUPLICATA TICKET CLIENT (AVEC COMMENTAIRE & COMPLÉMENT)
   const handlePrintPastOrder = async (order: any) => {
     if (!window.electronAPI) {
       toast.error("Impression non disponible sur la version Web.");
@@ -294,6 +298,14 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
       }
 
       const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping, 'DUPLICATA');
+      
+      // Injection garantie de toutes les métadonnées pour l'impression thermique
+      orderPayloadData.comment = order.comment || order.notes || '';
+      orderPayloadData.customer_address_complement = order.customer_address_complement || order.address_complement || '';
+      orderPayloadData.customer_address = order.customer_address || order.address || '';
+      orderPayloadData.customer_name = order.customer_name || '';
+      orderPayloadData.customer_phone = order.customer_phone || '';
+
       const result = await (window as any).electronAPI.printReceipt(orderPayloadData);
       if (!result.success) toast.error("Erreur avec l'imprimante !");
       else toast.success("Duplicata imprimé");
@@ -303,6 +315,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     }
   };
 
+  // 🟢 IMPRESSION BON CUISINE HISTORIQUE (AVEC COMMENTAIRE & COMPLÉMENT)
   const handlePrintKitchenOrder = async (order: any) => {
     if (!(window as any).electronAPI) return;
 
@@ -326,8 +339,18 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
         orderType,
         items,
         groupMapping: optionGroupMapping,
-        orderDate: date
+        orderDate: date,
+        comment: order.comment || order.notes || '',
+        customer_name: order.customer_name || '',
+        customer_address: order.customer_address || '',
+        customer_address_complement: order.customer_address_complement || order.address_complement || ''
       });
+
+      // Injection directe de sécurité sur le payload final
+      kitchenPayload.comment = order.comment || order.notes || '';
+      kitchenPayload.customer_name = order.customer_name || '';
+      kitchenPayload.customer_address = order.customer_address || '';
+      kitchenPayload.customer_address_complement = order.customer_address_complement || order.address_complement || '';
 
       const result = await (window as any).electronAPI.printReceipt(kitchenPayload, printerName);
       if (!result.success) toast.error("Erreur avec l'imprimante cuisine !");
@@ -338,59 +361,93 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     }
   };
 
-  const renderOrderDetails = (detailsRaw: any) => {
+  const renderOrderDetails = (detailsRaw: any, order?: any) => {
     try {
       const items = extractItemsSafely(detailsRaw);
       if (!items || items.length === 0) return <p className="text-gray-400 italic">Aucun détail disponible</p>;
 
+      const orderComment = order?.comment || order?.notes || '';
+      const orderAddress = order?.customer_address || '';
+      const orderComplement = order?.customer_address_complement || order?.address_complement || '';
+
       return (
-        <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mt-2">
-          <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-            <ShoppingBag size={14} /> Contenu de la commande
-          </h4>
-          <ul className="space-y-3">
-            {items.map((item: any, idx: number) => {
-              const productName = item.product?.name || item.name || 'Produit inconnu';
-              const qty = item.quantity || 1;
-              const itemTotal = getItemTotal(item, optionGroupMapping);
-              const optionGroups = getFormattedOrderOptions(item, optionGroupMapping); 
-              
-              return (
-                <li key={idx} className="flex flex-col border-b border-gray-100 last:border-0 pb-2 last:pb-0">
-                  <div className="flex justify-between items-start text-sm w-full">
-                    <div className="font-bold text-gray-700">
-                      <span className="text-primary mr-2">{qty}x</span>
-                      {productName}
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mt-2 space-y-3">
+          
+          {/* INFORMATIONS ADRESSE & COMPLÉMENT (SI LIVRAISON) */}
+          {(orderAddress || orderComplement) && (
+            <div className="bg-white border border-gray-200 p-2.5 rounded-lg text-xs space-y-1">
+              {orderAddress && (
+                <div className="font-bold text-gray-700 flex items-start gap-1.5">
+                  <MapPin size={13} className="text-red-500 shrink-0 mt-0.5" />
+                  <span>Adresse : {orderAddress}</span>
+                </div>
+              )}
+              {orderComplement && (
+                <div className="font-bold text-amber-700 flex items-start gap-1.5 pl-5">
+                  <Info size={12} className="text-amber-500 shrink-0 mt-0.5" />
+                  <span>Complément : {orderComplement}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* COMMENTAIRE / NOTE CLIENT */}
+          {orderComment && (
+            <div className="p-2.5 bg-amber-50 border-2 border-amber-300 rounded-lg text-slate-950 font-black text-xs uppercase flex items-start gap-1.5 shadow-sm">
+              <MessageSquare size={14} className="text-amber-700 shrink-0 mt-0.5" />
+              <span>NOTE CLIENT : {orderComment}</span>
+            </div>
+          )}
+
+          <div>
+            <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2.5 flex items-center gap-2">
+              <ShoppingBag size={14} /> Contenu de la commande
+            </h4>
+            <ul className="space-y-3">
+              {items.map((item: any, idx: number) => {
+                const productName = item.product?.name || item.name || 'Produit inconnu';
+                const qty = item.quantity || 1;
+                const itemTotal = getItemTotal(item, optionGroupMapping);
+                const optionGroups = getFormattedOrderOptions(item, optionGroupMapping); 
+                
+                return (
+                  <li key={idx} className="flex flex-col border-b border-gray-100 last:border-0 pb-2 last:pb-0">
+                    <div className="flex justify-between items-start text-sm w-full">
+                      <div className="font-bold text-gray-700">
+                        <span className="text-primary mr-2">{qty}x</span>
+                        {productName}
+                      </div>
+                      <div className="font-black text-secondary">
+                        {itemTotal.toFixed(2)} €
+                      </div>
                     </div>
-                    <div className="font-black text-secondary">
-                      {itemTotal.toFixed(2)} €
-                    </div>
-                  </div>
-                  
-                  {optionGroups.length > 0 && (
-                    <div className="pl-6 mt-1 space-y-1">
-                      {optionGroups.map((grp, gIdx) => (
-                        <div key={gIdx} className="flex flex-wrap items-baseline gap-1 text-xs text-gray-500">
-                          {grp.groupName ? (
-                            <span className="font-bold text-secondary uppercase text-[10px]">{grp.groupName} :</span>
-                          ) : null}
-                          {grp.items.map((opt, oIdx) => (
-                            <span key={oIdx} className="inline">
-                              <span className={opt.isSans ? "text-red-500 font-bold" : "font-medium"}>
-                                {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
+                    
+                    {optionGroups.length > 0 && (
+                      <div className="pl-6 mt-1 space-y-1">
+                        {optionGroups.map((grp, gIdx) => (
+                          <div key={gIdx} className="flex flex-wrap items-baseline gap-1 text-xs text-gray-500">
+                            {grp.groupName ? (
+                              <span className="font-bold text-secondary uppercase text-[10px]">{grp.groupName} :</span>
+                            ) : null}
+                            {grp.items.map((opt, oIdx) => (
+                              <span key={oIdx} className="inline">
+                                <span className={opt.isSans ? "text-red-500 font-bold" : "font-medium"}>
+                                  {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
+                                </span>
+                                {opt.price > 0 && <span> (+{opt.price.toFixed(2)} €)</span>}
+                                {oIdx < grp.items.length - 1 ? ', ' : ''}
                               </span>
-                              {opt.price > 0 && <span> (+{opt.price.toFixed(2)} €)</span>}
-                              {oIdx < grp.items.length - 1 ? ', ' : ''}
-                            </span>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
         </div>
       );
     } catch {
@@ -465,7 +522,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
             </button>
           </div>
 
-          {/* LIGNE INFÉRIEURE : BARRE DE NAVIGATION PAR ICÔNES (SEGMENTED PILLS) */}
+          {/* LIGNE INFÉRIEURE : BARRE DE NAVIGATION PAR ICÔNES */}
           <div className="flex items-center justify-between gap-4 flex-wrap pt-1 border-t border-gray-100">
             
             {/* SEGMENT 1 : TYPES DE COMMANDE */}
@@ -675,7 +732,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
                       {expandedOrderId === order.id && (
                         <tr className="bg-gray-50/30">
                           <td colSpan={7} className="p-4 border-t border-gray-100">
-                            {renderOrderDetails(order.order_details)}
+                            {renderOrderDetails(order.order_details, order)}
                           </td>
                         </tr>
                       )}

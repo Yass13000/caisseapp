@@ -3,7 +3,23 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
-import { Calendar, Clock, X, Search, ChevronDown, ChevronUp, ShoppingBag, ChevronLeft, ChevronRight, CreditCard, Trash2, Banknote } from 'lucide-react';
+import { 
+  Calendar, 
+  Clock, 
+  X, 
+  Search, 
+  ChevronDown, 
+  ChevronUp, 
+  ShoppingBag, 
+  ChevronLeft, 
+  ChevronRight, 
+  CreditCard, 
+  Trash2, 
+  Banknote,
+  MessageSquare,
+  MapPin,
+  Info
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload } from '@/lib/orderFormatter';
 import { addLoyaltyPointsThreadSafe, getActiveRestoId } from '@/lib/loyaltyPoints';
@@ -102,6 +118,15 @@ const extractProductPrice = (item: any, groupMapping: Record<string, string> = {
   }
 
   return rawPrice;
+};
+
+// 🟢 Détection des commandes créées depuis la caisse (numéro commençant par C)
+const isCaisseOrder = (order: any): boolean => {
+  if (!order) return false;
+  const num = String(order.order_number || '').trim().toUpperCase();
+  if (num.startsWith('C')) return true;
+  const origin = String(order.order_origin || '').trim().toLowerCase();
+  return origin === 'caisse';
 };
 
 const ORDER_TYPE_LABELS = {
@@ -338,10 +363,15 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
     const resolvedOrderType = ORDER_TYPE_LABELS[order.order_type_id] || 'SUR PLACE';
 
+    // 🟢 Transmission de toutes les informations client, du complément d'adresse et du commentaire
     const clientInfo = {
       name: order.customer_name || '',
       phone: order.customer_phone || '',
       address: order.customer_address || '',
+      address_complement: order.customer_address_complement || order.address_complement || '',
+      customer_address_complement: order.customer_address_complement || order.address_complement || '',
+      comment: order.comment || order.notes || '',
+      notes: order.comment || order.notes || '',
       fee: order.delivery_fee || 0
     };
 
@@ -349,6 +379,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     onClose();
   };
 
+  // 🟢 Impression ticket caisse avec injection explicite de comment et customer_address_complement
   const printOrder = async (order: any, isCash: boolean = false) => {
     if (!(window as any).electronAPI) return;
 
@@ -356,12 +387,19 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       const printerName = localStorage.getItem('imprimante_caisse') || undefined;
       const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping);
 
+      orderPayloadData.comment = order.comment || order.notes || '';
+      orderPayloadData.customer_address_complement = order.customer_address_complement || order.address_complement || '';
+      orderPayloadData.customer_address = order.customer_address || order.address || '';
+      orderPayloadData.customer_name = order.customer_name || '';
+      orderPayloadData.customer_phone = order.customer_phone || '';
+
       await (window as any).electronAPI.printReceipt(orderPayloadData, printerName);
     } catch (err) {
       console.error("Erreur lors de l'impression client :", err);
     }
   };
 
+  // 🟢 Impression ticket cuisine avec injection explicite de comment et customer_address_complement
   const printKitchenTicket = async (order: any) => {
     if (!(window as any).electronAPI) return;
 
@@ -381,8 +419,17 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         orderType,
         items,
         groupMapping: optionGroupMapping,
-        orderDate: date
+        orderDate: date,
+        comment: order.comment || order.notes || '',
+        customer_name: order.customer_name || '',
+        customer_address: order.customer_address || '',
+        customer_address_complement: order.customer_address_complement || order.address_complement || ''
       });
+
+      kitchenPayload.comment = order.comment || order.notes || '';
+      kitchenPayload.customer_name = order.customer_name || '';
+      kitchenPayload.customer_address = order.customer_address || '';
+      kitchenPayload.customer_address_complement = order.customer_address_complement || order.address_complement || '';
 
       await (window as any).electronAPI.printReceipt(kitchenPayload, printerName);
     } catch (err) {
@@ -440,10 +487,15 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         await printOrder({ ...order, ...updatePayload }, false);
       }
 
+      // 🟢 RÈGLE ANTI-DOUBLON CUISINE :
+      // Si la commande vient de la caisse (numéro commençant par C), le bon cuisine est DÉJÀ sorti.
+      // On n'imprime en cuisine ICI que si c'est une commande App (A) ou Borne (B).
+      const isFromCaisse = isCaisseOrder(order);
       const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
-      if (isKitchenTicketEnabled) {
+      
+      if (isKitchenTicketEnabled && !isFromCaisse) {
         setTimeout(async () => {
-          await printKitchenTicket(order);
+          await printKitchenTicket({ ...order, ...updatePayload });
         }, 500);
       }
 
@@ -522,8 +574,13 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         await printOrder(updatedOrder, false);
       }
 
+      // 🟢 RÈGLE ANTI-DOUBLON CUISINE :
+      // Si la commande commence par C (Caisse), le bon cuisine est DÉJÀ sorti lors du « Envoyer sans paiement ».
+      // On bloque l'impression cuisine pour la caisse, mais on la garde pour App (A) et Borne (B).
+      const isFromCaisse = isCaisseOrder(paymentOrder);
       const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
-      if (isKitchenTicketEnabled) {
+      
+      if (isKitchenTicketEnabled && !isFromCaisse) {
         setTimeout(async () => {
           await printKitchenTicket(updatedOrder);
         }, 500);
@@ -556,58 +613,91 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     }
   };
 
-  const renderOrderDetails = (detailsRaw: any) => {
+  const renderOrderDetails = (detailsRaw: any, order?: any) => {
     try {
       const items = extractItemsSafely(detailsRaw);
       if (!items || items.length === 0) return <p className="text-gray-400 italic">Aucun détail disponible</p>;
 
+      const orderComment = order?.comment || order?.notes || '';
+      const orderAddress = order?.customer_address || '';
+      const orderComplement = order?.customer_address_complement || order?.address_complement || '';
+
       return (
-        <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mt-2">
-          <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-            <ShoppingBag size={14} /> Contenu de la commande
-          </h4>
-          <ul className="space-y-3">
-            {items.map((item: any, idx: number) => {
-              const productName = extractProductName(item);
-              const qty = item.quantity || 1;
-              const itemTotal = getItemTotal(item, optionGroupMapping);
-              const optionGroups = getFormattedOrderOptions(item, optionGroupMapping);
-              
-              return (
-                <li key={idx} className="flex flex-col text-sm border-b border-gray-100 last:border-0 pb-2">
-                  <div className="flex justify-between items-start">
-                    <div className="font-bold text-gray-700">
-                      <span className="text-primary mr-2">{qty}x</span>
-                      {productName}
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mt-2 space-y-3">
+          
+          {/* INFORMATIONS ADRESSE & COMPLÉMENT (SI LIVRAISON) */}
+          {(orderAddress || orderComplement) && (
+            <div className="bg-white border border-gray-200 p-2.5 rounded-lg text-xs space-y-1">
+              {orderAddress && (
+                <div className="font-bold text-gray-700 flex items-start gap-1.5">
+                  <MapPin size={13} className="text-red-500 shrink-0 mt-0.5" />
+                  <span>Adresse : {orderAddress}</span>
+                </div>
+              )}
+              {orderComplement && (
+                <div className="font-bold text-amber-700 flex items-start gap-1.5 pl-5">
+                  <Info size={12} className="text-amber-500 shrink-0 mt-0.5" />
+                  <span>Complément : {orderComplement}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* COMMENTAIRE / NOTE CLIENT */}
+          {orderComment && (
+            <div className="p-2.5 bg-amber-50 border-2 border-amber-300 rounded-lg text-slate-950 font-black text-xs uppercase flex items-start gap-1.5 shadow-sm">
+              <MessageSquare size={14} className="text-amber-700 shrink-0 mt-0.5" />
+              <span>NOTE CLIENT : {orderComment}</span>
+            </div>
+          )}
+
+          <div>
+            <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+              <ShoppingBag size={14} /> Contenu de la commande
+            </h4>
+            <ul className="space-y-3">
+              {items.map((item: any, idx: number) => {
+                const productName = extractProductName(item);
+                const qty = item.quantity || 1;
+                const itemTotal = getItemTotal(item, optionGroupMapping);
+                const optionGroups = getFormattedOrderOptions(item, optionGroupMapping);
+                
+                return (
+                  <li key={idx} className="flex flex-col text-sm border-b border-gray-100 last:border-0 pb-2">
+                    <div className="flex justify-between items-start">
+                      <div className="font-bold text-gray-700">
+                        <span className="text-primary mr-2">{qty}x</span>
+                        {productName}
+                      </div>
+                      <div className="font-black text-secondary">
+                        {itemTotal.toFixed(2)} €
+                      </div>
                     </div>
-                    <div className="font-black text-secondary">
-                      {itemTotal.toFixed(2)} €
-                    </div>
-                  </div>
-                  {optionGroups.length > 0 && (
-                    <div className="mt-1 pl-6 space-y-1">
-                      {optionGroups.map((grp, gIdx) => (
-                        <div key={gIdx} className="flex flex-wrap items-baseline gap-1 text-xs text-gray-500">
-                          {grp.groupName ? (
-                            <span className="font-bold text-secondary uppercase text-[10px]">{grp.groupName} :</span>
-                          ) : null}
-                          {grp.items.map((opt, oIdx) => (
-                            <span key={oIdx} className="inline">
-                              <span className={opt.isSans ? "text-red-500 font-bold" : "font-medium"}>
-                                {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
+                    {optionGroups.length > 0 && (
+                      <div className="mt-1 pl-6 space-y-1">
+                        {optionGroups.map((grp, gIdx) => (
+                          <div key={gIdx} className="flex flex-wrap items-baseline gap-1 text-xs text-gray-500">
+                            {grp.groupName ? (
+                              <span className="font-bold text-secondary uppercase text-[10px]">{grp.groupName} :</span>
+                            ) : null}
+                            {grp.items.map((opt, oIdx) => (
+                              <span key={oIdx} className="inline">
+                                <span className={opt.isSans ? "text-red-500 font-bold" : "font-medium"}>
+                                  {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
+                                </span>
+                                {opt.price > 0 && <span> (+{opt.price.toFixed(2)} €)</span>}
+                                {oIdx < grp.items.length - 1 ? ', ' : ''}
                               </span>
-                              {opt.price > 0 && <span> (+{opt.price.toFixed(2)} €)</span>}
-                              {oIdx < grp.items.length - 1 ? ', ' : ''}
-                            </span>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         </div>
       );
     } catch (e) {
@@ -744,7 +834,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                         {expandedOrderId === order.id && (
                           <tr className="bg-gray-50/30">
                             <td colSpan={5} className="p-4 border-t border-gray-100">
-                              {renderOrderDetails(order.order_details)}
+                              {renderOrderDetails(order.order_details, order)}
                             </td>
                           </tr>
                         )}

@@ -44,6 +44,25 @@ function getSafePrintableWidth(rawWidthMm) {
   return '62mm';
 }
 
+/**
+ * Décode de façon sécurisée les articles, que ce soit un Array ou une chaîne JSON sérialisée
+ */
+function parseOrderItems(rawDetails) {
+  if (!rawDetails) return [];
+  if (Array.isArray(rawDetails)) return rawDetails;
+  if (typeof rawDetails === 'string') {
+    try {
+      const parsed = JSON.parse(rawDetails);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && Array.isArray(parsed.items)) return parsed.items;
+      return [parsed];
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
+}
+
 // ----------------------------------------------------------------------------
 // 🗂️ TABLES DE SÉCURITÉ KDS (BASÉES SUR OPTION_GROUPS & OPTIONS SUPABASE)
 // ----------------------------------------------------------------------------
@@ -463,7 +482,7 @@ $printerName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase
 }
 
 // ----------------------------------------------------------------------------
-// 👨‍🍳 TICKET CUISINE (AVEC COMPLÉMENT D'ADRESSE ET COMMENTAIRE DE COMMANDE)
+// 👨‍🍳 TICKET CUISINE (AVEC COMMENTAIRE ET COMPLÉMENT D'ADRESSE)
 // ----------------------------------------------------------------------------
 function buildKitchenHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
@@ -493,6 +512,9 @@ function buildKitchenHtml(orderData, widthMm = '72') {
   if (orderData.orderDate) {
     const parts = String(orderData.orderDate).split(' ');
     orderTime = parts.length > 1 ? parts[1].substring(0, 5) : parts[0].substring(0, 5);
+  } else if (orderData.created_at) {
+    const d = new Date(orderData.created_at);
+    orderTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   }
   if (!orderTime) {
     const d = new Date();
@@ -504,7 +526,8 @@ function buildKitchenHtml(orderData, widthMm = '72') {
   if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'À EMPORTER';
   if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
 
-  const items = Array.isArray(orderData.items) ? orderData.items : [];
+  // Décodage sécurisé de items (gère aussi bien les Array que les strings JSON)
+  const items = parseOrderItems(orderData.items || orderData.order_details);
 
   const sortedItems = [...items].sort((a, b) => {
     const orderA = Number(a.kds_sort_order ?? a.product?.kds_sort_order ?? a.sort_order ?? a.product?.sort_order ?? 999);
@@ -605,19 +628,20 @@ function buildKitchenHtml(orderData, widthMm = '72') {
     `;
   }).join('');
 
-  // Récupération des informations client, adresse, complément et commentaire
+  // 🟢 Extraction robuste de toutes les informations client & note
   const customerName = escapeHtml(orderData.customer_name || orderData.customerName || (orderData.delivery && (orderData.delivery.customerName || orderData.delivery.name)) || '');
   const customerAddress = escapeHtml(orderData.customer_address || orderData.address || (orderData.delivery && orderData.delivery.address) || '');
   const addressComplement = escapeHtml(
     orderData.customer_address_complement || 
     orderData.address_complement || 
-    (orderData.delivery && (orderData.delivery.address_complement || orderData.delivery.additionalInfo)) || 
+    (orderData.delivery && (orderData.delivery.customer_address_complement || orderData.delivery.address_complement || orderData.delivery.additionalInfo)) || 
     ''
   );
   const comment = escapeHtml(
     orderData.comment || 
     orderData.notes || 
     orderData.order_comment || 
+    orderData.deliveryNotes || 
     (orderData.delivery && (orderData.delivery.deliveryNotes || orderData.delivery.notes)) || 
     ''
   );
@@ -634,8 +658,8 @@ function buildKitchenHtml(orderData, widthMm = '72') {
       <div style="border: 2px solid #000; margin-top: 6px; padding: 5px; font-size: 13px; font-weight: 900; text-transform: uppercase; word-break: break-word;">
         ${customerName ? `<div style="margin-bottom: 2px;">👤 CLIENT : ${customerName}</div>` : ''}
         ${customerAddress ? `<div style="margin-top: 2px; font-size: 11px;">📍 ADR : ${customerAddress}</div>` : ''}
-        ${addressComplement ? `<div style="margin-top: 2px; font-size: 11px; padding-left: 6px; color: #000;">↳ COMPL : ${addressComplement}</div>` : ''}
-        ${comment ? `<div style="border-top: 1.5px dashed #000; margin-top: 4px; padding-top: 4px; font-size: 13px; font-weight: 900; background-color: #000; color: #fff; padding: 3px 5px; -webkit-print-color-adjust: exact;">⚠️ NOTE : ${comment}</div>` : ''}
+        ${addressComplement ? `<div style="margin-top: 2px; font-size: 11px; padding-left: 6px;">↳ COMPL : ${addressComplement}</div>` : ''}
+        ${comment ? `<div style="border-top: 1.5px dashed #000; margin-top: 4px; padding-top: 4px; font-size: 14px; font-weight: 900; background-color: #000; color: #fff; padding: 4px 6px; -webkit-print-color-adjust: exact;">⚠️ NOTE : ${comment}</div>` : ''}
       </div>
     `;
   }
@@ -851,7 +875,7 @@ function buildZReportHtml(reportData, widthMm = '72') {
 }
 
 // ----------------------------------------------------------------------------
-// 📜 TICKET CLIENT (AVEC COMPLÉMENT D'ADRESSE ET COMMENTAIRE DE COMMANDE)
+// 📜 TICKET CLIENT (AVEC COMMENTAIRE ET COMPLÉMENT D'ADRESSE)
 // ----------------------------------------------------------------------------
 async function buildReceiptHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
@@ -957,7 +981,9 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     paymentLabel = escapeHtml(rawPayment.toUpperCase());
   }
 
-  const items = Array.isArray(orderData.items) ? orderData.items : (Array.isArray(orderData.order_details) ? orderData.order_details : []);
+  // Décodage sécurisé de items (gère aussi bien les Array que les strings JSON)
+  const items = parseOrderItems(orderData.items || orderData.order_details);
+
   const totalNum = Number(orderData.total_price ?? orderData.total ?? 0);
   const total = totalNum.toFixed(2);
 
@@ -1016,6 +1042,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const custName = escapeHtml(d.customerName || d.name || orderData.customer_name || '');
   const custAddress = escapeHtml(d.address || orderData.customer_address || '');
   const custAddressComplement = escapeHtml(
+    d.customer_address_complement || 
     d.address_complement || 
     d.additionalInfo || 
     orderData.customer_address_complement || 
@@ -1043,11 +1070,12 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     `;
   }
 
-  // Commentaire global de la commande (visible sur TOUS les tickets caisse si présent)
+  // 🟢 Commentaire global de la commande (imprimé sur le ticket caisse)
   const orderComment = escapeHtml(
     orderData.comment || 
     orderData.notes || 
     orderData.order_comment || 
+    orderData.deliveryNotes || 
     (orderData.delivery && (orderData.delivery.deliveryNotes || orderData.delivery.notes)) || 
     ''
   );
@@ -1197,14 +1225,13 @@ const PrinterManager = {
       }
     } catch (e) {}
 
-    if (isKitchen && routingConfig && Object.keys(routingConfig).length > 0 && Array.isArray(orderData.items)) {
-      if (orderData.items.length === 0) {
-        return { success: true, message: 'SKIPPED_EMPTY_KITCHEN_ORDER' };
-      }
+    // Décodage des articles
+    const items = parseOrderItems(orderData.items || orderData.order_details);
 
+    if (isKitchen && routingConfig && Object.keys(routingConfig).length > 0 && items.length > 0) {
       const itemsByPrinterName = {};
 
-      for (const item of orderData.items) {
+      for (const item of items) {
         const cat = String(item.categoryName || item.category || '').trim();
         const assignedRole = cat && routingConfig[cat] ? routingConfig[cat] : 'cuisine';
         
@@ -1253,7 +1280,7 @@ const PrinterManager = {
       };
     }
 
-    if (isKitchen && (!Array.isArray(orderData.items) || orderData.items.length === 0)) {
+    if (isKitchen && items.length === 0) {
       return { success: true, message: 'SKIPPED_EMPTY_KITCHEN_ORDER' };
     }
 
