@@ -181,23 +181,28 @@ export const CartProvider = ({ children }: { children: React.ReactNode }) => {
         }
       }
 
-      // 2. Construction du payload (on ne force pas order_number, Supabase s'en charge)
+      // 2. Construction du payload complet avec gestion du complément d'adresse et des frais
       const orderPayload: any = {
         restaurant_id: activeRestoId,
         session_id: activeSessionId,
-        order_origin: 'caisse',
+        order_origin: orderDetails?.order_origin || 'caisse',
         status: orderDetails?.status || 'Fermé',
         is_paid: orderDetails?.is_paid ?? true,
         payment_method: orderDetails?.payment_method || 'especes',
         payment_status: orderDetails?.payment_status || 'paid',
         total_price: orderDetails?.total_price || 0,
-        delivery_fee: 0,
+        delivery_fee: orderDetails?.delivery_fee ?? orderDetails?.fee ?? 0,
         order_details: itemsToProcess,
-        customer_name: orderDetails?.customer_name || 'Client Caisse',
-        customer_phone: orderDetails?.customer_phone || null,
-        customer_address: orderDetails?.customer_address || null,
+        customer_name: orderDetails?.customer_name || orderDetails?.name || 'Client Caisse',
+        customer_phone: orderDetails?.customer_phone || orderDetails?.phone || null,
+        customer_address: orderDetails?.customer_address || orderDetails?.address || null,
+        
+        // 🟢 Complément d'adresse récupéré directement
+        customer_address_complement: orderDetails?.customer_address_complement || orderDetails?.address_complement || orderDetails?.additionalInfo || null,
+
+        profile_id: orderDetails?.profile_id || orderDetails?.client_id || null,
         order_type_id: orderDetails?.order_type_id || '633425b1-f86c-4c17-8cba-b258906ad317',
-        comment: orderDetails?.comment || null,
+        comment: orderDetails?.comment || orderDetails?.notes || null,
         created_at: new Date().toISOString()
       };
 

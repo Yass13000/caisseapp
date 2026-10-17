@@ -48,7 +48,6 @@ function getSafePrintableWidth(rawWidthMm) {
 // 🗂️ TABLES DE SÉCURITÉ KDS (BASÉES SUR OPTION_GROUPS & OPTIONS SUPABASE)
 // ----------------------------------------------------------------------------
 
-// Groupes d'options ayant show_on_kds = false dans option_groups
 const HIDDEN_KDS_GROUP_IDS = new Set([17, 19, 31, 33, 34, 36, 59, 68, 70]);
 const HIDDEN_KDS_GROUP_NAMES = new Set([
   'choisis ta boisson',
@@ -61,7 +60,6 @@ const HIDDEN_KDS_GROUP_NAMES = new Set([
   'choisis ta boisson etudiant'
 ]);
 
-// Correspondance directe ID option -> name_kds (si l'objet option n'a que son id)
 const OPTION_ID_TO_KDS_NAME = {
   77: 'FRITE FROMAGERE',
   79: 'Frites classique',
@@ -74,7 +72,6 @@ const OPTION_ID_TO_KDS_NAME = {
   376: 'Grat rape'
 };
 
-// Correspondance directe Nom option (sans ambigüité) -> name_kds (si l'option a été aplatie en string)
 const OPTION_NAME_TO_KDS_NAME = {
   'frite cheesy': 'FRITE FROMAGERE',
   'frites': 'Frites classique',
@@ -84,14 +81,9 @@ const OPTION_NAME_TO_KDS_NAME = {
   'chevre miel': 'Grat CHEVRE MIEL'
 };
 
-/**
- * Vérifie si une option (ou son groupe parent) doit être masquée sur le ticket cuisine
- * selon la règle : option_groups.show_on_kds === false
- */
 function isHiddenOnKdsByGroup(opt) {
   if (!opt || typeof opt !== 'object') return false;
 
-  // 1. Vérification directe des booléens show_on_kds sur l'option ou son sous-objet groupe
   const explicitFlags = [
     opt.show_on_kds,
     opt.showOnKds,
@@ -106,15 +98,10 @@ function isHiddenOnKdsByGroup(opt) {
   ];
 
   for (const flag of explicitFlags) {
-    if (flag === false || String(flag).toLowerCase() === 'false') {
-      return true;
-    }
-    if (flag === true || String(flag).toLowerCase() === 'true') {
-      return false;
-    }
+    if (flag === false || String(flag).toLowerCase() === 'false') return true;
+    if (flag === true || String(flag).toLowerCase() === 'true') return false;
   }
 
-  // 2. Vérification via l'ID du groupe d'options (option_group_id / group_id)
   const groupId = Number(
     opt.option_group_id ??
     opt.optionGroupId ??
@@ -129,7 +116,6 @@ function isHiddenOnKdsByGroup(opt) {
     return true;
   }
 
-  // 3. Vérification via le nom du groupe d'options
   const groupName = String(
     opt.group_name ??
     opt.groupName ??
@@ -147,17 +133,12 @@ function isHiddenOnKdsByGroup(opt) {
   return false;
 }
 
-/**
- * Extrait en priorité absolue le `name_kds` (s'il n'est pas vide), sinon retourne `name`.
- */
 function resolveKdsDisplayName(obj, fallback = '') {
   if (obj === null || obj === undefined) return fallback;
 
-  // Si l'option a été passée sous forme de simple texte (ex: "Frite Cheesy (+2.00 €)")
   if (typeof obj === 'string') {
     const rawStr = obj.trim();
     if (!rawStr) return fallback;
-    // Nettoyage d'un éventuel prix suffixé "(+2.00 €)" pour chercher le name_kds
     const cleanKey = rawStr.replace(/\s*\(\+\s*\d+(?:[.,]\d+)?\s*€?\)\s*$/i, '').trim().toLowerCase();
     if (OPTION_NAME_TO_KDS_NAME[cleanKey]) {
       return OPTION_NAME_TO_KDS_NAME[cleanKey];
@@ -165,7 +146,6 @@ function resolveKdsDisplayName(obj, fallback = '') {
     return rawStr;
   }
 
-  // 1. Recherche directe de name_kds / kds_name sur l'objet et ses sous-objets
   const kdsCandidates = [
     obj.name_kds,
     obj.kds_name,
@@ -192,16 +172,13 @@ function resolveKdsDisplayName(obj, fallback = '') {
     }
   }
 
-  // 2. Fallback par ID d'option si connu dans la table options
   const optId = Number(obj.option_id ?? obj.optionId ?? obj.id ?? obj.option?.id ?? NaN);
   if (!Number.isNaN(optId) && OPTION_ID_TO_KDS_NAME[optId]) {
-    // On s'assure que ce n'est pas un ID de produit principal en vérifiant l'absence de sous-tableau d'options
     if (!Array.isArray(obj.options) && !Array.isArray(obj.notes)) {
       return OPTION_ID_TO_KDS_NAME[optId];
     }
   }
 
-  // 3. Extraction du name standard et vérification dans la table de correspondance
   const nameCandidates = [
     obj.name,
     obj.option?.name,
@@ -217,7 +194,6 @@ function resolveKdsDisplayName(obj, fallback = '') {
       const trimmedName = String(nameCand).trim();
       if (trimmedName !== '') {
         const cleanKey = trimmedName.replace(/\s*\(\+\s*\d+(?:[.,]\d+)?\s*€?\)\s*$/i, '').trim().toLowerCase();
-        // Cas spécifique des gratinages (Raclette, Cheddar, Rapé) si le groupe est "Gratine ton tacos" (id 71)
         const grpName = String(obj.group_name ?? obj.option_group?.name ?? obj.group?.name ?? '').toLowerCase();
         const grpId = Number(obj.option_group_id ?? obj.group_id ?? obj.option_group?.id ?? NaN);
         if (grpId === 71 || grpName.includes('gratine')) {
@@ -487,7 +463,7 @@ $printerName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase
 }
 
 // ----------------------------------------------------------------------------
-// 👨‍🍳 TICKET CUISINE (FILTRAGE SHOW_ON_KDS: FALSE + REMPLACEMENT PAR NAME_KDS)
+// 👨‍🍳 TICKET CUISINE (AVEC COMPLÉMENT D'ADRESSE ET COMMENTAIRE DE COMMANDE)
 // ----------------------------------------------------------------------------
 function buildKitchenHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
@@ -530,7 +506,6 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 
   const items = Array.isArray(orderData.items) ? orderData.items : [];
 
-  // 🟢 1. Tri des produits selon kds_sort_order
   const sortedItems = [...items].sort((a, b) => {
     const orderA = Number(a.kds_sort_order ?? a.product?.kds_sort_order ?? a.sort_order ?? a.product?.sort_order ?? 999);
     const orderB = Number(b.kds_sort_order ?? b.product?.kds_sort_order ?? b.sort_order ?? b.product?.sort_order ?? 999);
@@ -545,9 +520,7 @@ function buildKitchenHtml(orderData, widthMm = '72') {
     
     const isSolo = item.isSolo === true || item.is_solo === true || item.product?.isSolo === true || /\bseul\b/i.test(item.name || item.product?.name || '');
 
-    // 🟢 2. Nom du produit : Priorité absolue au name_kds + suffixe Seul
     const baseName = resolveKdsDisplayName(item, 'Article');
-    
     let finalDisplayName = baseName;
     if (isSolo && !/\bseul\b/i.test(finalDisplayName)) {
       finalDisplayName = `${finalDisplayName.replace(/^menu\s+/i, '').trim()} Seul`;
@@ -556,23 +529,13 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 
     let notesHtml = '';
     
-    // 🟢 3. Sélection en priorité du tableau contenant les objets d'options complets
     const candidates = [item.options, item.selectedSubOptions, item.sub_options, item.selectedOptions, item.notes]
       .filter(arr => Array.isArray(arr) && arr.length > 0);
     const rawNotes = candidates.find(arr => typeof arr[0] === 'object' && arr[0] !== null) || candidates[0] || [];
     
-    // 🟢 4. Filtrage strict :
-    // - Exclusion immédiate si le groupe d'option a show_on_kds === false
-    // - Exclusion si l'article est en mode Solo et que l'option a hide_if_solo === true
     const filteredNotes = rawNotes.filter(n => {
       if (!n) return false;
-
-      // Règle 1 : Groupe d'options avec show_on_kds = false -> ne JAMAIS afficher en cuisine
-      if (isHiddenOnKdsByGroup(n)) {
-        return false;
-      }
-
-      // Règle 2 : Option masquée si le produit est vendu Seul (hide_if_solo)
+      if (isHiddenOnKdsByGroup(n)) return false;
       if (isSolo && (
         n.hide_if_solo === true || 
         n.is_hide_if_solo === true || 
@@ -582,11 +545,9 @@ function buildKitchenHtml(orderData, widthMm = '72') {
       )) {
         return false;
       }
-
       return true;
     });
 
-    // Tri optionnel des options selon sort_kds du groupe si présent
     const sortedNotes = [...filteredNotes].sort((a, b) => {
       const sortA = Number(a?.sort_kds ?? a?.group_sort_kds ?? a?.option_group?.sort_kds ?? 999);
       const sortB = Number(b?.sort_kds ?? b?.group_sort_kds ?? b?.option_group?.sort_kds ?? 999);
@@ -595,7 +556,6 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 
     if (sortedNotes.length > 0) {
       notesHtml = sortedNotes.map(n => {
-        // Règle : si name_kds n'est pas vide, on l'affiche à la place de name
         const noteName = resolveKdsDisplayName(n, '');
         if (!noteName) return '';
 
@@ -645,8 +605,22 @@ function buildKitchenHtml(orderData, widthMm = '72') {
     `;
   }).join('');
 
-  const customerName = escapeHtml(orderData.customer_name || orderData.customerName || (orderData.delivery && orderData.delivery.customerName) || '');
-  const comment = escapeHtml(orderData.comment || orderData.notes || (orderData.delivery && orderData.delivery.deliveryNotes) || '');
+  // Récupération des informations client, adresse, complément et commentaire
+  const customerName = escapeHtml(orderData.customer_name || orderData.customerName || (orderData.delivery && (orderData.delivery.customerName || orderData.delivery.name)) || '');
+  const customerAddress = escapeHtml(orderData.customer_address || orderData.address || (orderData.delivery && orderData.delivery.address) || '');
+  const addressComplement = escapeHtml(
+    orderData.customer_address_complement || 
+    orderData.address_complement || 
+    (orderData.delivery && (orderData.delivery.address_complement || orderData.delivery.additionalInfo)) || 
+    ''
+  );
+  const comment = escapeHtml(
+    orderData.comment || 
+    orderData.notes || 
+    orderData.order_comment || 
+    (orderData.delivery && (orderData.delivery.deliveryNotes || orderData.delivery.notes)) || 
+    ''
+  );
 
   let footerHtml = `
     <div style="border-top: 2.5px solid #000; margin-top: 6px; padding-top: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 900;">
@@ -655,11 +629,13 @@ function buildKitchenHtml(orderData, widthMm = '72') {
     </div>
   `;
 
-  if (customerName || comment) {
+  if (customerName || customerAddress || addressComplement || comment) {
     footerHtml += `
       <div style="border: 2px solid #000; margin-top: 6px; padding: 5px; font-size: 13px; font-weight: 900; text-transform: uppercase; word-break: break-word;">
-        ${customerName ? `<div style="margin-bottom: ${comment ? '3px' : '0'};">CLIENT : ${customerName}</div>` : ''}
-        ${comment ? `<div style="border-top: ${customerName ? '1px dashed #000' : 'none'}; padding-top: ${customerName ? '3px' : '0'};">NOTE : ${comment}</div>` : ''}
+        ${customerName ? `<div style="margin-bottom: 2px;">👤 CLIENT : ${customerName}</div>` : ''}
+        ${customerAddress ? `<div style="margin-top: 2px; font-size: 11px;">📍 ADR : ${customerAddress}</div>` : ''}
+        ${addressComplement ? `<div style="margin-top: 2px; font-size: 11px; padding-left: 6px; color: #000;">↳ COMPL : ${addressComplement}</div>` : ''}
+        ${comment ? `<div style="border-top: 1.5px dashed #000; margin-top: 4px; padding-top: 4px; font-size: 13px; font-weight: 900; background-color: #000; color: #fff; padding: 3px 5px; -webkit-print-color-adjust: exact;">⚠️ NOTE : ${comment}</div>` : ''}
       </div>
     `;
   }
@@ -875,7 +851,7 @@ function buildZReportHtml(reportData, widthMm = '72') {
 }
 
 // ----------------------------------------------------------------------------
-// 📜 TICKET CLIENT (LOGO HAUTE DENSITÉ THERMIQUE + ANTI-COUPURE DROITE)
+// 📜 TICKET CLIENT (AVEC COMPLÉMENT D'ADRESSE ET COMMENTAIRE DE COMMANDE)
 // ----------------------------------------------------------------------------
 async function buildReceiptHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
@@ -909,10 +885,6 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 
   const logoDataUrl = logoTargetUrl ? await getCachedLogoDataUrl(logoTargetUrl, currentRestaurantId) : '';
   
-  // 🟢 Correction impression Logo :
-  // - Taille augmentée (65% largeur / 75px hauteur max)
-  // - Fond blanc explicite (#fff) pour éviter que la transparence PNG ne bave
-  // - Filtre brightness(0.45) contrast(250%) pour forcer les couleurs/demi-teintes du logo en noir franc sur l'imprimante thermique
   const logoHtml = logoDataUrl 
     ? `
       <div style="text-align: center; width: 100%; margin: 0 auto 6px auto; background-color: #ffffff;">
@@ -1014,7 +986,6 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
         const style = isSans 
           ? 'color: #000; font-weight: 900; text-decoration: underline;' 
           : 'color: #000; font-weight: 600;';
-        // Évite de doubler le "(+2.00 €)" si la string de note le contient déjà
         const alreadyHasPrice = /\(\+\s*\d+(?:[.,]\d+)?\s*€?\)/.test(String(noteName));
         const priceLabel = (optPrice > 0 && !alreadyHasPrice) ? ` (+${optPrice.toFixed(2)} €)` : '';
         return `<div style="padding-left: 8px; font-size: 10px; margin-top: 1px; word-break: break-word; ${style}">- ${escapeHtml(noteName)}${priceLabel}</div>`;
@@ -1039,12 +1010,19 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     `;
   }).join('');
 
+  // Bloc Livraison avec complément d'adresse
   let deliveryBlockHtml = '';
   const d = orderData.delivery || {};
   const custName = escapeHtml(d.customerName || d.name || orderData.customer_name || '');
   const custAddress = escapeHtml(d.address || orderData.customer_address || '');
+  const custAddressComplement = escapeHtml(
+    d.address_complement || 
+    d.additionalInfo || 
+    orderData.customer_address_complement || 
+    orderData.address_complement || 
+    ''
+  );
   const custPhone = escapeHtml(d.phone || orderData.customer_phone || '');
-  const custNotes = escapeHtml(d.deliveryNotes || d.notes || orderData.comment || '');
 
   const isLivraison = orderTypeLabel.includes('LIVRAISON') || rawType.includes('livraison') || rawType.includes('delivery');
   const hasClientInfo = !!(custName || custAddress || custPhone);
@@ -1058,9 +1036,28 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
         </div>
         ${custName ? `<div style="font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">CLIENT :</span> ${custName}</div>` : ''}
         ${custAddress ? `<div style="margin-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">ADRESSE :</span> ${custAddress}</div>` : ''}
+        ${custAddressComplement ? `<div style="margin-top: 2px; font-size: 11px; padding-left: 6px;"><span style="font-size: 10px; font-weight: 900;">COMPLÉMENT :</span> ${custAddressComplement}</div>` : ''}
         ${custPhone ? `<div style="margin-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">TÉL :</span> ${custPhone}</div>` : ''}
-        ${custNotes ? `<div style="margin-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">NOTE :</span> ${custNotes}</div>` : ''}
         ${deliveryFeeNum > 0 ? `<div style="margin-top: 3px; border-top: 1px dashed #000; padding-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">FRAIS DE LIVRAISON :</span> ${deliveryFeeNum.toFixed(2)} €</div>` : ''}
+      </div>
+    `;
+  }
+
+  // Commentaire global de la commande (visible sur TOUS les tickets caisse si présent)
+  const orderComment = escapeHtml(
+    orderData.comment || 
+    orderData.notes || 
+    orderData.order_comment || 
+    (orderData.delivery && (orderData.delivery.deliveryNotes || orderData.delivery.notes)) || 
+    ''
+  );
+
+  let commentBlockHtml = '';
+  if (orderComment) {
+    commentBlockHtml = `
+      <div style="border: 2px dashed #000; padding: 4px 6px; margin: 6px 0; font-size: 11px; font-weight: 800; text-transform: uppercase; word-break: break-word;">
+        <span style="background-color: #000; color: #fff; padding: 1px 4px; font-size: 10px; margin-right: 4px; -webkit-print-color-adjust: exact;">NOTE</span>
+        ${orderComment}
       </div>
     `;
   }
@@ -1141,6 +1138,8 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
         <div>${itemsHtml}</div>
 
         ${deliveryBlockHtml}
+
+        ${commentBlockHtml}
 
         <hr />
 
@@ -1308,7 +1307,6 @@ const PrinterManager = {
 
         await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
 
-        // 🟢 Attente garantie du décodage complet des images (Logo / QR Code) avant d'imprimer
         try {
           await printWindow.webContents.executeJavaScript(`
             Promise.all(
