@@ -117,7 +117,6 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const [kdsHiddenGroupIds, setKdsHiddenGroupIds] = useState<Set<string>>(new Set());
   const [kdsHiddenGroupNames, setKdsHiddenGroupNames] = useState<Set<string>>(new Set());
 
-  // Nombre de colonnes responsive dynamique pour les onglets KDS
   const [colCount, setColCount] = useState(4);
 
   useEffect(() => {
@@ -491,6 +490,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                       const customerPhone = order.customer_phone || "";
                       const customerAddress = order.customer_address || "";
                       const addressComplement = order.customer_address_complement || order.address_complement || order.additionalInfo || "";
+                      const orderComment = order.comment || order.notes || "";
                       const isPaid = order.is_paid || order.payment_status === 'paid';
                       const items = parseOrderDetails(order.order_details);
                       const isFlipped = !!flippedOrders[order.id];
@@ -685,12 +685,12 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                                 </div>
                               </div>
 
-                              {order.comment && (
+                              {orderComment && (
                                 <div className="p-1.5 bg-slate-800 border border-slate-700 text-[9.5px]">
                                   <span className="text-amber-400 font-black block uppercase text-[8px] flex items-center gap-1 mb-0.5">
                                     <MessageSquare size={9} /> Note :
                                   </span>
-                                  <span className="text-slate-200 italic">{order.comment}</span>
+                                  <span className="text-slate-200 italic">{orderComment}</span>
                                 </div>
                               )}
                             </div>
@@ -767,6 +767,14 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                                   </div>
                                 );
                               })}
+
+                              {/* 🟢 BANDEAU NOTE / COMMENTAIRE VISIBLE DIRECTEMENT SOUS LES ARTICLES */}
+                              {orderComment && (
+                                <div className="mt-2 p-2 bg-amber-300 border-2 border-amber-600 text-slate-950 font-black text-[11px] uppercase flex items-start gap-1.5 shadow-sm">
+                                  <MessageSquare size={14} className="text-amber-900 shrink-0 mt-0.5" />
+                                  <span className="leading-tight">NOTE : {orderComment}</span>
+                                </div>
+                              )}
                             </div>
                           )}
 
