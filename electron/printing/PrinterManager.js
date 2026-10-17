@@ -32,6 +32,211 @@ function readSettingsFile() {
   return {};
 }
 
+/**
+ * Calcule une largeur imprimable 100% sécurisée pour éviter toute coupure à droite
+ * sur les pilotes POS-80, Saga et Epson TM-m30II.
+ */
+function getSafePrintableWidth(rawWidthMm) {
+  const num = Number(rawWidthMm) || 72;
+  if (num <= 60) {
+    return '46mm';
+  }
+  return '62mm';
+}
+
+// ----------------------------------------------------------------------------
+// 🗂️ TABLES DE SÉCURITÉ KDS (BASÉES SUR OPTION_GROUPS & OPTIONS SUPABASE)
+// ----------------------------------------------------------------------------
+
+// Groupes d'options ayant show_on_kds = false dans option_groups
+const HIDDEN_KDS_GROUP_IDS = new Set([17, 19, 31, 33, 34, 36, 59, 68, 70]);
+const HIDDEN_KDS_GROUP_NAMES = new Set([
+  'choisis ta boisson',
+  'choisis ta sauce',
+  'choisis ta boisson (kids)',
+  'boissson',
+  'boissons krousty',
+  'boissons formule',
+  'boissons kids',
+  'choisis ta boisson etudiant'
+]);
+
+// Correspondance directe ID option -> name_kds (si l'objet option n'a que son id)
+const OPTION_ID_TO_KDS_NAME = {
+  77: 'FRITE FROMAGERE',
+  79: 'Frites classique',
+  102: 'L',
+  173: 'Supp Tenders',
+  174: 'SAUCE K',
+  373: 'Grat CHEVRE MIEL',
+  374: 'Grat raclette',
+  375: 'GRAT CHEDDAR',
+  376: 'Grat rape'
+};
+
+// Correspondance directe Nom option (sans ambigüité) -> name_kds (si l'option a été aplatie en string)
+const OPTION_NAME_TO_KDS_NAME = {
+  'frite cheesy': 'FRITE FROMAGERE',
+  'frites': 'Frites classique',
+  'taille l': 'L',
+  "supp' poulet croustillant": 'Supp Tenders',
+  'kinder': 'SAUCE K',
+  'chevre miel': 'Grat CHEVRE MIEL'
+};
+
+/**
+ * Vérifie si une option (ou son groupe parent) doit être masquée sur le ticket cuisine
+ * selon la règle : option_groups.show_on_kds === false
+ */
+function isHiddenOnKdsByGroup(opt) {
+  if (!opt || typeof opt !== 'object') return false;
+
+  // 1. Vérification directe des booléens show_on_kds sur l'option ou son sous-objet groupe
+  const explicitFlags = [
+    opt.show_on_kds,
+    opt.showOnKds,
+    opt.group_show_on_kds,
+    opt.groupShowOnKds,
+    opt.option_group?.show_on_kds,
+    opt.option_group?.showOnKds,
+    opt.optionGroup?.show_on_kds,
+    opt.optionGroup?.showOnKds,
+    opt.group?.show_on_kds,
+    opt.group?.showOnKds
+  ];
+
+  for (const flag of explicitFlags) {
+    if (flag === false || String(flag).toLowerCase() === 'false') {
+      return true;
+    }
+    if (flag === true || String(flag).toLowerCase() === 'true') {
+      return false;
+    }
+  }
+
+  // 2. Vérification via l'ID du groupe d'options (option_group_id / group_id)
+  const groupId = Number(
+    opt.option_group_id ??
+    opt.optionGroupId ??
+    opt.group_id ??
+    opt.groupId ??
+    opt.option_group?.id ??
+    opt.optionGroup?.id ??
+    opt.group?.id ??
+    NaN
+  );
+  if (!Number.isNaN(groupId) && HIDDEN_KDS_GROUP_IDS.has(groupId)) {
+    return true;
+  }
+
+  // 3. Vérification via le nom du groupe d'options
+  const groupName = String(
+    opt.group_name ??
+    opt.groupName ??
+    opt.option_group_name ??
+    opt.option_group?.name ??
+    opt.optionGroup?.name ??
+    opt.group?.name ??
+    ''
+  ).trim().toLowerCase();
+
+  if (groupName && HIDDEN_KDS_GROUP_NAMES.has(groupName)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Extrait en priorité absolue le `name_kds` (s'il n'est pas vide), sinon retourne `name`.
+ */
+function resolveKdsDisplayName(obj, fallback = '') {
+  if (obj === null || obj === undefined) return fallback;
+
+  // Si l'option a été passée sous forme de simple texte (ex: "Frite Cheesy (+2.00 €)")
+  if (typeof obj === 'string') {
+    const rawStr = obj.trim();
+    if (!rawStr) return fallback;
+    // Nettoyage d'un éventuel prix suffixé "(+2.00 €)" pour chercher le name_kds
+    const cleanKey = rawStr.replace(/\s*\(\+\s*\d+(?:[.,]\d+)?\s*€?\)\s*$/i, '').trim().toLowerCase();
+    if (OPTION_NAME_TO_KDS_NAME[cleanKey]) {
+      return OPTION_NAME_TO_KDS_NAME[cleanKey];
+    }
+    return rawStr;
+  }
+
+  // 1. Recherche directe de name_kds / kds_name sur l'objet et ses sous-objets
+  const kdsCandidates = [
+    obj.name_kds,
+    obj.kds_name,
+    obj.nameKds,
+    obj.kdsName,
+    obj.option?.name_kds,
+    obj.option?.kds_name,
+    obj.sub_option?.name_kds,
+    obj.sub_option?.kds_name,
+    obj.subOption?.name_kds,
+    obj.subOption?.kds_name,
+    obj.product?.name_kds,
+    obj.product?.kds_name,
+    obj.item?.name_kds,
+    obj.item?.kds_name
+  ];
+
+  for (const candidate of kdsCandidates) {
+    if (candidate !== null && candidate !== undefined) {
+      const trimmed = String(candidate).trim();
+      if (trimmed !== '' && trimmed.toLowerCase() !== 'null' && trimmed.toLowerCase() !== 'undefined') {
+        return trimmed;
+      }
+    }
+  }
+
+  // 2. Fallback par ID d'option si connu dans la table options
+  const optId = Number(obj.option_id ?? obj.optionId ?? obj.id ?? obj.option?.id ?? NaN);
+  if (!Number.isNaN(optId) && OPTION_ID_TO_KDS_NAME[optId]) {
+    // On s'assure que ce n'est pas un ID de produit principal en vérifiant l'absence de sous-tableau d'options
+    if (!Array.isArray(obj.options) && !Array.isArray(obj.notes)) {
+      return OPTION_ID_TO_KDS_NAME[optId];
+    }
+  }
+
+  // 3. Extraction du name standard et vérification dans la table de correspondance
+  const nameCandidates = [
+    obj.name,
+    obj.option?.name,
+    obj.sub_option?.name,
+    obj.subOption?.name,
+    obj.product?.name,
+    obj.item?.name,
+    obj.label
+  ];
+
+  for (const nameCand of nameCandidates) {
+    if (nameCand !== null && nameCand !== undefined) {
+      const trimmedName = String(nameCand).trim();
+      if (trimmedName !== '') {
+        const cleanKey = trimmedName.replace(/\s*\(\+\s*\d+(?:[.,]\d+)?\s*€?\)\s*$/i, '').trim().toLowerCase();
+        // Cas spécifique des gratinages (Raclette, Cheddar, Rapé) si le groupe est "Gratine ton tacos" (id 71)
+        const grpName = String(obj.group_name ?? obj.option_group?.name ?? obj.group?.name ?? '').toLowerCase();
+        const grpId = Number(obj.option_group_id ?? obj.group_id ?? obj.option_group?.id ?? NaN);
+        if (grpId === 71 || grpName.includes('gratine')) {
+          if (cleanKey === 'raclette') return 'Grat raclette';
+          if (cleanKey === 'cheddar') return 'GRAT CHEDDAR';
+          if (cleanKey === 'rapé' || cleanKey === 'rape') return 'Grat rape';
+          if (cleanKey === 'chevre miel' || cleanKey === 'chèvre miel') return 'Grat CHEVRE MIEL';
+        }
+        if (OPTION_NAME_TO_KDS_NAME[cleanKey]) {
+          return OPTION_NAME_TO_KDS_NAME[cleanKey];
+        }
+        return trimmedName;
+      }
+    }
+  }
+
+  return fallback;
+}
+
 // ----------------------------------------------------------------------------
 // 🛡️ GESTION DU LOGO (CACHE BINAIRE LOCAL)
 // ----------------------------------------------------------------------------
@@ -163,26 +368,45 @@ async function getCachedLogoDataUrl(logoUrl, restaurantId) {
   });
 }
 
-async function getTargetPrinter(desiredPrinterName, mainWindow) {
+async function getTargetPrinter(desiredPrinterName, mainWindow, role = 'caisse') {
   const win = mainWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
   if (!win) return null;
   const printers = await win.webContents.getPrintersAsync();
-  
-  if (desiredPrinterName && typeof desiredPrinterName === 'string' && desiredPrinterName.trim() !== '') {
-    const specificPrinter = printers.find(p => p.name === desiredPrinterName);
-    if (specificPrinter) return specificPrinter;
-  }
+  if (!printers || printers.length === 0) return null;
+
+  const findPrinterByName = (nameToFind) => {
+    if (!nameToFind || typeof nameToFind !== 'string' || nameToFind.trim() === '') return null;
+    const clean = nameToFind.trim();
+    return printers.find(p => p.name === clean) || 
+           printers.find(p => p.name.toLowerCase() === clean.toLowerCase());
+  };
+
+  const explicitMatch = findPrinterByName(desiredPrinterName);
+  if (explicitMatch) return explicitMatch;
 
   const settings = readSettingsFile();
-  const configuredName = settings.imprimante_caisse || settings.imprimante_cuisine;
-  if (configuredName && typeof configuredName === 'string' && configuredName.trim() !== '') {
-    const configuredPrinter = printers.find(p => p.name === configuredName);
-    if (configuredPrinter) return configuredPrinter;
+  let rolePrinterName = '';
+  if (role === 'cuisine') {
+    rolePrinterName = settings.imprimante_cuisine || settings.imprimante_caisse;
+  } else if (role === 'rapports') {
+    rolePrinterName = settings.imprimante_rapports || settings.imprimante_caisse || settings.imprimante_cuisine;
+  } else {
+    rolePrinterName = settings.imprimante_caisse || settings.imprimante_cuisine;
   }
 
+  const configuredMatch = findPrinterByName(rolePrinterName);
+  if (configuredMatch) return configuredMatch;
+
   let targetPrinter = printers.find(p => p.isDefault);
-  if (!targetPrinter) targetPrinter = printers.find(p => p.name.toLowerCase().includes('tm') || p.name.toLowerCase().includes('epson'));
-  if (!targetPrinter && printers.length > 0) targetPrinter = printers[0];
+
+  if (!targetPrinter) {
+    targetPrinter = printers.find(p => {
+      const n = p.name.toLowerCase();
+      return n.includes('tm') || n.includes('epson') || n.includes('pos') || n.includes('saga') || n.includes('80');
+    });
+  }
+
+  if (!targetPrinter) targetPrinter = printers[0];
   
   return targetPrinter;
 }
@@ -263,25 +487,25 @@ $printerName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase
 }
 
 // ----------------------------------------------------------------------------
-// 👨‍🍳 TICKET CUISINE (OPTIMISÉ VISIBILITÉ + RÈGLES KDS 100%)
+// 👨‍🍳 TICKET CUISINE (FILTRAGE SHOW_ON_KDS: FALSE + REMPLACEMENT PAR NAME_KDS)
 // ----------------------------------------------------------------------------
 function buildKitchenHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
-  const bodyWidth = `${widthMm}mm`;
+  const bodyWidth = getSafePrintableWidth(widthMm);
 
-  // 🎛️ Nouveaux réglages de visibilité (avec valeurs par défaut optimales)
-  const fontScale = settings.kitchen_font_scale || 'normal'; // 'normal' | 'large' | 'xlarge'
+  const fontScale = settings.kitchen_font_scale || 'normal';
   const invertedHeader = settings.kitchen_inverted_header !== 'false' && settings.kitchen_inverted_header !== false;
   const highlightMultiQty = settings.highlight_multi_qty !== 'false' && settings.highlight_multi_qty !== false;
+  const showPrices = settings.kitchen_show_prices === 'true' || settings.kitchen_show_prices === true;
 
-  let itemFontSize = '16px';
-  let noteFontSize = '14px';
+  let itemFontSize = '15px';
+  let noteFontSize = '13px';
   if (fontScale === 'large') {
-    itemFontSize = '18px';
-    noteFontSize = '16px';
+    itemFontSize = '17px';
+    noteFontSize = '15px';
   } else if (fontScale === 'xlarge') {
-    itemFontSize = '20px';
-    noteFontSize = '18px';
+    itemFontSize = '19px';
+    noteFontSize = '17px';
   }
   
   let orderNumDisplay = String(orderData.orderNumber || orderData.order_number || orderData.number || '001')
@@ -313,53 +537,16 @@ function buildKitchenHtml(orderData, widthMm = '72') {
     return orderA - orderB;
   });
 
-  // Fonction utilitaire pour extraire name_kds en priorité absolue (sur produit ou option)
-  const getKdsOrDefaultName = (obj, fallback = '') => {
-    if (!obj) return fallback;
-    if (typeof obj === 'string') return obj.trim() || fallback;
-
-    const kdsCandidate = 
-      obj.name_kds ?? 
-      obj.kds_name ?? 
-      obj.option?.name_kds ?? 
-      obj.option?.kds_name ?? 
-      obj.sub_option?.name_kds ?? 
-      obj.subOption?.name_kds ?? 
-      obj.product?.name_kds ?? 
-      obj.product?.kds_name ??
-      obj.item?.name_kds;
-
-    if (kdsCandidate !== null && kdsCandidate !== undefined && String(kdsCandidate).trim() !== '') {
-      return String(kdsCandidate).trim();
-    }
-
-    const nameCandidate = 
-      obj.name ?? 
-      obj.option?.name ?? 
-      obj.sub_option?.name ?? 
-      obj.subOption?.name ?? 
-      obj.product?.name ?? 
-      obj.item?.name ?? 
-      obj.label;
-
-    if (nameCandidate !== null && nameCandidate !== undefined && String(nameCandidate).trim() !== '') {
-      return String(nameCandidate).trim();
-    }
-
-    return fallback;
-  };
-
   let totalItemsCount = 0;
 
   const itemsHtml = sortedItems.map((item, idx) => {
     const qty = Number(item.qty || item.quantity || 1);
     totalItemsCount += qty;
     
-    // Détection du mode solo
     const isSolo = item.isSolo === true || item.is_solo === true || item.product?.isSolo === true || /\bseul\b/i.test(item.name || item.product?.name || '');
 
-    // 🟢 2. Priorité au nom KDS + suffixe Seul
-    const baseName = getKdsOrDefaultName(item, 'Article');
+    // 🟢 2. Nom du produit : Priorité absolue au name_kds + suffixe Seul
+    const baseName = resolveKdsDisplayName(item, 'Article');
     
     let finalDisplayName = baseName;
     if (isSolo && !/\bseul\b/i.test(finalDisplayName)) {
@@ -369,86 +556,110 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 
     let notesHtml = '';
     
-    // 🟢 3. Priorité aux tableaux d'objets complets (options / selectedSubOptions) plutôt que des strings (notes)
-    const candidates = [item.options, item.selectedSubOptions, item.sub_options, item.notes].filter(arr => Array.isArray(arr) && arr.length > 0);
+    // 🟢 3. Sélection en priorité du tableau contenant les objets d'options complets
+    const candidates = [item.options, item.selectedSubOptions, item.sub_options, item.selectedOptions, item.notes]
+      .filter(arr => Array.isArray(arr) && arr.length > 0);
     const rawNotes = candidates.find(arr => typeof arr[0] === 'object' && arr[0] !== null) || candidates[0] || [];
     
-    // 🟢 4. Filtrage strict des options hide_if_solo si l'article est en mode solo
+    // 🟢 4. Filtrage strict :
+    // - Exclusion immédiate si le groupe d'option a show_on_kds === false
+    // - Exclusion si l'article est en mode Solo et que l'option a hide_if_solo === true
     const filteredNotes = rawNotes.filter(n => {
       if (!n) return false;
-      if (isSolo && (n.hide_if_solo === true || n.is_hide_if_solo === true || n.group_hide_if_solo === true || n.option?.hide_if_solo === true)) {
+
+      // Règle 1 : Groupe d'options avec show_on_kds = false -> ne JAMAIS afficher en cuisine
+      if (isHiddenOnKdsByGroup(n)) {
         return false;
       }
+
+      // Règle 2 : Option masquée si le produit est vendu Seul (hide_if_solo)
+      if (isSolo && (
+        n.hide_if_solo === true || 
+        n.is_hide_if_solo === true || 
+        n.group_hide_if_solo === true || 
+        n.option?.hide_if_solo === true ||
+        n.option_group?.hide_if_solo === true
+      )) {
+        return false;
+      }
+
       return true;
     });
 
-    if (filteredNotes.length > 0) {
-      notesHtml = filteredNotes.map(n => {
-        const noteName = getKdsOrDefaultName(n, '');
+    // Tri optionnel des options selon sort_kds du groupe si présent
+    const sortedNotes = [...filteredNotes].sort((a, b) => {
+      const sortA = Number(a?.sort_kds ?? a?.group_sort_kds ?? a?.option_group?.sort_kds ?? 999);
+      const sortB = Number(b?.sort_kds ?? b?.group_sort_kds ?? b?.option_group?.sort_kds ?? 999);
+      return sortA - sortB;
+    });
+
+    if (sortedNotes.length > 0) {
+      notesHtml = sortedNotes.map(n => {
+        // Règle : si name_kds n'est pas vide, on l'affiche à la place de name
+        const noteName = resolveKdsDisplayName(n, '');
         if (!noteName) return '';
 
         const isSans = (typeof n === 'object' && (n.isSans || n.is_sans)) || String(noteName).trim().toUpperCase().startsWith('SANS ');
         
-        // 🚨 Mise en valeur nette des "SANS" avec encadré pointillé + préfixe [X]
         if (isSans) {
           return `
-            <div style="font-size: ${noteFontSize}; font-weight: 900; text-transform: uppercase; margin-top: 4px; padding: 2px 6px; color: #000; border: 2px dashed #000; display: inline-block; width: 100%;">
+            <div style="font-size: ${noteFontSize}; font-weight: 900; text-transform: uppercase; margin-top: 3px; padding: 2px 4px; color: #000; border: 2px dashed #000; width: 100%; word-break: break-word;">
               [X] ${escapeHtml(noteName)}
             </div>
           `;
         }
 
         return `
-          <div style="font-size: ${noteFontSize}; font-weight: 800; text-transform: uppercase; margin-top: 3px; padding-left: 6px; color: #000;">
+          <div style="font-size: ${noteFontSize}; font-weight: 800; text-transform: uppercase; margin-top: 2px; padding-left: 4px; color: #000; word-break: break-word;">
             • ${escapeHtml(noteName)}
           </div>
         `;
       }).join('');
     }
 
-    // 🚨 Badge visuel fort si quantité > 1 pour éviter les oublis en plein rush
     let qtyBadgeHtml = `${qty}X`;
     if (highlightMultiQty && qty > 1) {
       if (invertedHeader) {
-        qtyBadgeHtml = `<span style="background-color: #fff; color: #000; padding: 1px 6px; margin-right: 4px; font-size: calc(${itemFontSize} + 2px); font-weight: 900; border-radius: 2px; -webkit-print-color-adjust: exact;">${qty}X</span>`;
+        qtyBadgeHtml = `<span style="background-color: #fff; color: #000; padding: 0px 5px; margin-right: 4px; font-weight: 900; border-radius: 2px; -webkit-print-color-adjust: exact;">${qty}X</span>`;
       } else {
-        qtyBadgeHtml = `<span style="background-color: #000; color: #fff; padding: 1px 6px; margin-right: 4px; font-size: calc(${itemFontSize} + 2px); font-weight: 900; border-radius: 2px; -webkit-print-color-adjust: exact;">${qty}X</span>`;
+        qtyBadgeHtml = `<span style="background-color: #000; color: #fff; padding: 0px 5px; margin-right: 4px; font-weight: 900; border-radius: 2px; -webkit-print-color-adjust: exact;">${qty}X</span>`;
       }
     }
 
-    const headerStyle = invertedHeader
-      ? `background-color: #000; color: #fff; font-weight: 900; font-size: ${itemFontSize}; padding: 6px 8px; text-transform: uppercase; letter-spacing: 0.5px; -webkit-print-color-adjust: exact;`
-      : `background-color: #fff; color: #000; border: 3px solid #000; font-weight: 900; font-size: ${itemFontSize}; padding: 5px 8px; text-transform: uppercase; letter-spacing: 0.5px;`;
+    const itemPriceNum = Number(item.unitPrice || item.price || 0) * qty;
+    const priceSuffix = (showPrices && itemPriceNum > 0) ? `<span style="float: right;">${itemPriceNum.toFixed(2)}€</span>` : '';
 
-    // Séparateur pointillé entre chaque produit pour bien isoler les sandwichs/menus
-    const separatorStyle = idx < sortedItems.length - 1 ? 'border-bottom: 2px dashed #000; padding-bottom: 10px; margin-bottom: 10px;' : 'margin-bottom: 6px;';
+    const headerStyle = invertedHeader
+      ? `background-color: #000; color: #fff; font-weight: 900; font-size: ${itemFontSize}; padding: 5px 6px; text-transform: uppercase; word-break: break-word; -webkit-print-color-adjust: exact;`
+      : `background-color: #fff; color: #000; border: 2.5px solid #000; font-weight: 900; font-size: ${itemFontSize}; padding: 4px 6px; text-transform: uppercase; word-break: break-word;`;
+
+    const separatorStyle = idx < sortedItems.length - 1 ? 'border-bottom: 2px dashed #000; padding-bottom: 8px; margin-bottom: 8px;' : 'margin-bottom: 6px;';
 
     return `
       <div style="${separatorStyle}">
         <div style="${headerStyle}">
-          ${qtyBadgeHtml} ${name}
+          ${qtyBadgeHtml} ${name} ${priceSuffix}
         </div>
         <div style="margin-top: 2px;">${notesHtml}</div>
       </div>
     `;
   }).join('');
 
-  // 🟢 5. Affichage du client, de la note encadrée et du compteur total d'articles
   const customerName = escapeHtml(orderData.customer_name || orderData.customerName || (orderData.delivery && orderData.delivery.customerName) || '');
   const comment = escapeHtml(orderData.comment || orderData.notes || (orderData.delivery && orderData.delivery.deliveryNotes) || '');
 
   let footerHtml = `
-    <div style="border-top: 3px solid #000; margin-top: 8px; padding-top: 6px; display: flex; justify-content: space-between; font-size: 15px; font-weight: 900;">
+    <div style="border-top: 2.5px solid #000; margin-top: 6px; padding-top: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 900;">
       <span>TOTAL ARTICLES :</span>
-      <span style="font-size: 18px;">${totalItemsCount}</span>
+      <span style="font-size: 16px;">${totalItemsCount}</span>
     </div>
   `;
 
   if (customerName || comment) {
     footerHtml += `
-      <div style="border: 2px solid #000; margin-top: 8px; padding: 6px; font-size: 14px; font-weight: 900; text-transform: uppercase;">
-        ${customerName ? `<div style="margin-bottom: ${comment ? '4px' : '0'};">👤 CLIENT : ${customerName}</div>` : ''}
-        ${comment ? `<div style="border-top: ${customerName ? '1px dashed #000' : 'none'}; padding-top: ${customerName ? '4px' : '0'};">⚠️ NOTE : ${comment}</div>` : ''}
+      <div style="border: 2px solid #000; margin-top: 6px; padding: 5px; font-size: 13px; font-weight: 900; text-transform: uppercase; word-break: break-word;">
+        ${customerName ? `<div style="margin-bottom: ${comment ? '3px' : '0'};">CLIENT : ${customerName}</div>` : ''}
+        ${comment ? `<div style="border-top: ${customerName ? '1px dashed #000' : 'none'}; padding-top: ${customerName ? '3px' : '0'};">NOTE : ${comment}</div>` : ''}
       </div>
     `;
   }
@@ -461,18 +672,29 @@ function buildKitchenHtml(orderData, widthMm = '72') {
         <style>
           @page { margin: 0; size: auto; }
           * { box-sizing: border-box; }
-          html, body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 4px; width: ${bodyWidth}; height: auto; overflow: hidden; color: #000; line-height: 1.25; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .center { text-align: center; }
+          html, body { 
+            font-family: Arial, Helvetica, sans-serif; 
+            margin: 0; 
+            padding: 2px 3mm 2px 1mm; 
+            width: ${bodyWidth}; 
+            max-width: ${bodyWidth}; 
+            height: auto; 
+            overflow: hidden; 
+            color: #000; 
+            line-height: 1.2; 
+            -webkit-print-color-adjust: exact; 
+            print-color-adjust: exact; 
+          }
         </style>
       </head>
       <body>
-        <div style="background-color: #000; color: #fff; text-align: center; font-size: 36px; font-weight: 900; padding: 6px 0; letter-spacing: 1px; -webkit-print-color-adjust: exact;">
+        <div style="background-color: #000; color: #fff; text-align: center; font-size: 32px; font-weight: 900; padding: 4px 0; letter-spacing: 1px; -webkit-print-color-adjust: exact;">
           ${orderNumDisplay}
         </div>
 
-        <div style="border: 3px solid #000; border-top: none; padding: 6px 8px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 15px; font-weight: 900;">${orderTime}</span>
-          <span style="font-size: 18px; font-weight: 900; text-transform: uppercase; text-decoration: underline;">${orderTypeLabel}</span>
+        <div style="border: 2.5px solid #000; border-top: none; padding: 5px 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 14px; font-weight: 900;">${orderTime}</span>
+          <span style="font-size: 16px; font-weight: 900; text-transform: uppercase; text-decoration: underline;">${orderTypeLabel}</span>
         </div>
 
         <div>${itemsHtml}</div>
@@ -490,7 +712,8 @@ function buildZReportHtml(reportData, widthMm = '72') {
   const isZ = reportData.type === 'Z' || String(reportData.orderType || '').toUpperCase().includes('Z');
   const title = isZ ? 'RAPPORT Z - CLÔTURE' : 'RAPPORT X - PROVISOIRE';
   const is58mm = Number(widthMm) <= 60;
-  const fontSize = is58mm ? '11px' : '12px';
+  const bodyWidth = getSafePrintableWidth(widthMm);
+  const fontSize = is58mm ? '10px' : '11px';
 
   const restoName = escapeHtml(reportData.name || reportData.restaurantName || reportData.restaurant_name || 'VOTRE RESTAURANT');
   const restoAddress = reportData.restaurantAddress || reportData.address ? escapeHtml(reportData.restaurantAddress || reportData.address) : null;
@@ -524,11 +747,12 @@ function buildZReportHtml(reportData, widthMm = '72') {
           @page { margin: 0; size: auto; }
           * { box-sizing: border-box; }
           html, body { 
-            font-family: 'Lucida Console', Consolas, Arial, sans-serif; 
+            font-family: Arial, Helvetica, sans-serif; 
             font-size: ${fontSize}; 
             margin: 0; 
-            padding: 4px; 
-            width: ${widthMm}mm; 
+            padding: 2px 3mm 2px 1mm; 
+            width: ${bodyWidth}; 
+            max-width: ${bodyWidth};
             height: auto;
             overflow: hidden;
             color: #000; 
@@ -537,22 +761,23 @@ function buildZReportHtml(reportData, widthMm = '72') {
             print-color-adjust: exact;
           }
           .center { text-align: center; width: 100%; }
-          .bold { font-weight: bold; }
-          .row { display: flex; justify-content: space-between; margin: 2px 0; }
-          hr { border: none; border-top: 1px dashed #000; margin: 6px 0; }
+          .bold { font-weight: 800; }
+          .row { display: flex; justify-content: space-between; align-items: baseline; margin: 2px 0; gap: 4px; }
+          .row span:last-child { white-space: nowrap; font-weight: 700; }
+          hr { border: none; border-top: 1.5px dashed #000; margin: 5px 0; }
         </style>
       </head>
       <body>
         <div class="center">
-          <div style="font-size: 15px; font-weight: 900; text-transform: uppercase;">${restoName}</div>
-          ${restoAddress ? `<div style="font-size: 11px;">${restoAddress}</div>` : ''}
-          ${restoPhone ? `<div style="font-size: 11px;">Tél: ${restoPhone}</div>` : ''}
+          <div style="font-size: 14px; font-weight: 900; text-transform: uppercase;">${restoName}</div>
+          ${restoAddress ? `<div style="font-size: 10px;">${restoAddress}</div>` : ''}
+          ${restoPhone ? `<div style="font-size: 10px;">Tél: ${restoPhone}</div>` : ''}
           
-          <div style="font-size: 13px; font-weight: 900; margin-top: 6px; border: 2px solid #000; padding: 4px;">
+          <div style="font-size: 12px; font-weight: 900; margin-top: 5px; border: 2px solid #000; padding: 3px;">
             *** ${title} ***
           </div>
-          <div style="margin-top: 4px; font-size: 11px;">Session N° : ${reportData.sessionId || 'N/A'}</div>
-          <div style="font-size: 11px;">Imprimé le : ${new Date().toLocaleString('fr-FR')}</div>
+          <div style="margin-top: 3px; font-size: 10px;">Session N° : ${reportData.sessionId || 'N/A'}</div>
+          <div style="font-size: 10px;">Imprimé le : ${new Date().toLocaleString('fr-FR')}</div>
         </div>
 
         <hr />
@@ -570,7 +795,7 @@ function buildZReportHtml(reportData, widthMm = '72') {
         <hr />
 
         <div class="bold">CHIFFRE D'AFFAIRES</div>
-        <div class="row" style="font-size: 14px; font-weight: 900;">
+        <div class="row" style="font-size: 13px; font-weight: 900;">
           <span>TOTAL TTC :</span>
           <span>${totalTtc.toFixed(2)} €</span>
         </div>
@@ -641,7 +866,7 @@ function buildZReportHtml(reportData, widthMm = '72') {
 
         <hr />
 
-        <div class="center bold" style="margin-top: 6px;">
+        <div class="center bold" style="margin-top: 5px; font-size: 10px;">
           --- FIN DU TICKET ${reportData.type || (isZ ? 'Z' : 'X')} ---
         </div>
       </body>
@@ -650,24 +875,24 @@ function buildZReportHtml(reportData, widthMm = '72') {
 }
 
 // ----------------------------------------------------------------------------
-// 📜 TICKET CLIENT (OPTIMISÉ CONTRASTE THERMIQUE NOIR PUR + CALL NUMBER)
+// 📜 TICKET CLIENT (LOGO HAUTE DENSITÉ THERMIQUE + ANTI-COUPURE DROITE)
 // ----------------------------------------------------------------------------
 async function buildReceiptHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
 
   const is58mm = Number(widthMm) <= 60;
-  const bodyWidth = `${widthMm}mm`;
+  const bodyWidth = getSafePrintableWidth(widthMm);
   const highlightMultiQty = settings.highlight_multi_qty !== 'false' && settings.highlight_multi_qty !== false;
   
-  let fontSize = is58mm ? '11px' : '13px';
-  let headerFontSize = is58mm ? '16px' : '19px';
+  let fontSize = is58mm ? '10px' : '12px';
+  let headerFontSize = is58mm ? '15px' : '17px';
   if (settings.receipt_font_size === 'small') {
-    fontSize = '11px'; headerFontSize = '15px';
+    fontSize = '10px'; headerFontSize = '14px';
   } else if (settings.receipt_font_size === 'large') {
-    fontSize = '14px'; headerFontSize = '21px';
+    fontSize = '13px'; headerFontSize = '19px';
   }
 
-  const bodyPadding = settings.receipt_margin_type === 'standard' ? '10px 6px' : '4px 2px';
+  const bodyPadding = settings.receipt_margin_type === 'standard' ? '6px 4mm 6px 2mm' : '2px 3mm 2px 1mm';
 
   const showHeaderInfo = settings.show_header_info !== 'false';
   const showLogo = settings.show_logo !== 'false';
@@ -678,14 +903,37 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 
   const currentRestaurantId = orderData.restaurant_id || orderData.restaurantId || settings.pos_restaurant_id;
 
-  const logoTargetUrl = (showLogo && (orderData.restaurantLogoUrl || orderData.logo_url)) 
-    ? String(orderData.restaurantLogoUrl || orderData.logo_url) 
+  const logoTargetUrl = (showLogo && (orderData.restaurantLogoUrl || orderData.logo_url || settings.restaurant_logo_url)) 
+    ? String(orderData.restaurantLogoUrl || orderData.logo_url || settings.restaurant_logo_url) 
     : '';
 
   const logoDataUrl = logoTargetUrl ? await getCachedLogoDataUrl(logoTargetUrl, currentRestaurantId) : '';
   
+  // 🟢 Correction impression Logo :
+  // - Taille augmentée (65% largeur / 75px hauteur max)
+  // - Fond blanc explicite (#fff) pour éviter que la transparence PNG ne bave
+  // - Filtre brightness(0.45) contrast(250%) pour forcer les couleurs/demi-teintes du logo en noir franc sur l'imprimante thermique
   const logoHtml = logoDataUrl 
-    ? `<div style="text-align: center; width: 100%; margin-bottom: 6px;"><img src="${logoDataUrl}" style="max-width: 40%; max-height: 45px; display: block; margin: 0 auto; filter: grayscale(100%) contrast(150%);" /></div>` 
+    ? `
+      <div style="text-align: center; width: 100%; margin: 0 auto 6px auto; background-color: #ffffff;">
+        <img 
+          src="${logoDataUrl}" 
+          style="
+            width: auto; 
+            max-width: 50%; 
+            max-height: 55px; 
+            object-fit: contain; 
+            display: block; 
+            margin: 0 auto; 
+            background-color: #ffffff;
+            filter: grayscale(100%);
+            image-rendering: pixelated;
+            -webkit-print-color-adjust: exact; 
+            print-color-adjust: exact;
+          " 
+        />
+      </div>
+    ` 
     : '';
 
   const restaurantName = escapeHtml(
@@ -730,7 +978,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   } else if (normalizedStr.includes('carte') || normalizedStr.includes('cb') || normalizedStr.includes('card') || normalizedStr.includes('sumup')) {
     paymentLabel = 'CARTE BANCAIRE';
   } else if (normalizedStr.includes('ticket') || normalizedStr.includes('resto')) {
-    paymentLabel = 'TICKET RESTAURANT';
+    paymentLabel = 'TICKET RESTO';
   } else if (normalizedStr.includes('attente') || normalizedStr.includes('pending')) {
     paymentLabel = 'EN ATTENTE';
   } else if (rawPayment !== '') {
@@ -748,7 +996,9 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     
     let optionsTotalPrice = 0;
     let notesHtml = '';
-    const notes = Array.isArray(item.notes) ? item.notes : (Array.isArray(item.options) ? item.options : (Array.isArray(item.selectedSubOptions) ? item.selectedSubOptions : []));
+    const notes = Array.isArray(item.options) && item.options.length > 0 
+      ? item.options 
+      : (Array.isArray(item.selectedSubOptions) && item.selectedSubOptions.length > 0 ? item.selectedSubOptions : (Array.isArray(item.notes) ? item.notes : []));
     
     if (notes.length > 0) {
       notesHtml = notes.map(n => {
@@ -761,12 +1011,13 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
           optionsTotalPrice += optPrice;
         }
 
-        // 🚨 Noir pur (#000) au lieu de rouge ou gris (#333) pour éviter le tramage flou sur thermique
         const style = isSans 
           ? 'color: #000; font-weight: 900; text-decoration: underline;' 
           : 'color: #000; font-weight: 600;';
-        const priceLabel = optPrice > 0 ? ` (+${optPrice.toFixed(2)} €)` : '';
-        return `<div style="padding-left: 10px; font-size: 11px; margin-top: 1px; ${style}">- ${escapeHtml(noteName)}${priceLabel}</div>`;
+        // Évite de doubler le "(+2.00 €)" si la string de note le contient déjà
+        const alreadyHasPrice = /\(\+\s*\d+(?:[.,]\d+)?\s*€?\)/.test(String(noteName));
+        const priceLabel = (optPrice > 0 && !alreadyHasPrice) ? ` (+${optPrice.toFixed(2)} €)` : '';
+        return `<div style="padding-left: 8px; font-size: 10px; margin-top: 1px; word-break: break-word; ${style}">- ${escapeHtml(noteName)}${priceLabel}</div>`;
       }).join('');
     }
 
@@ -778,10 +1029,10 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
       : `${qty}x`;
 
     return `
-      <div style="margin-bottom: 6px;">
-        <div style="display: flex; justify-content: space-between; font-weight: 800; font-size: ${fontSize}; color: #000;">
-          <span style="max-width: 75%; word-break: break-word;">${qtyDisplay} ${name}</span>
-          <span style="white-space: nowrap;">${itemTotal} €</span>
+      <div style="margin-bottom: 5px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; font-weight: 800; font-size: ${fontSize}; color: #000; gap: 4px;">
+          <span style="flex: 1; word-break: break-word;">${qtyDisplay} ${name}</span>
+          <span style="white-space: nowrap; flex-shrink: 0;">${itemTotal} €</span>
         </div>
         ${notesHtml}
       </div>
@@ -801,15 +1052,15 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   if (isLivraison && hasClientInfo) {
     const deliveryFeeNum = Number(d.fee || d.delivery_fee || orderData.delivery_fee || 0);
     deliveryBlockHtml = `
-      <div class="delivery-block" style="border: 2px solid #000; color: #000; font-weight: bold; padding: 6px 8px; margin: 8px 0;">
-        <div style="background-color: #000; color: #fff; text-align: center; padding: 3px; margin-bottom: 5px; font-size: 12px; font-weight: 900; text-transform: uppercase; -webkit-print-color-adjust: exact;">
+      <div class="delivery-block" style="border: 2px solid #000; color: #000; font-weight: bold; padding: 5px 6px; margin: 6px 0; word-break: break-word;">
+        <div style="background-color: #000; color: #fff; text-align: center; padding: 2px; margin-bottom: 4px; font-size: 11px; font-weight: 900; text-transform: uppercase; -webkit-print-color-adjust: exact;">
           *** FICHE LIVRAISON ***
         </div>
-        ${custName ? `<div><span style="font-size: 10px; font-weight: 900;">CLIENT :</span> ${custName}</div>` : ''}
-        ${custAddress ? `<div style="margin-top: 2px;"><span style="font-size: 10px; font-weight: 900;">ADRESSE :</span> ${custAddress}</div>` : ''}
-        ${custPhone ? `<div style="margin-top: 2px;"><span style="font-size: 10px; font-weight: 900;">TÉL :</span> ${custPhone}</div>` : ''}
-        ${custNotes ? `<div style="margin-top: 2px;"><span style="font-size: 10px; font-weight: 900;">NOTE :</span> ${custNotes}</div>` : ''}
-        ${deliveryFeeNum > 0 ? `<div style="margin-top: 4px; border-top: 1px dashed #000; padding-top: 3px;"><span style="font-size: 10px; font-weight: 900;">FRAIS DE LIVRAISON :</span> ${deliveryFeeNum.toFixed(2)} €</div>` : ''}
+        ${custName ? `<div style="font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">CLIENT :</span> ${custName}</div>` : ''}
+        ${custAddress ? `<div style="margin-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">ADRESSE :</span> ${custAddress}</div>` : ''}
+        ${custPhone ? `<div style="margin-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">TÉL :</span> ${custPhone}</div>` : ''}
+        ${custNotes ? `<div style="margin-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">NOTE :</span> ${custNotes}</div>` : ''}
+        ${deliveryFeeNum > 0 ? `<div style="margin-top: 3px; border-top: 1px dashed #000; padding-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">FRAIS DE LIVRAISON :</span> ${deliveryFeeNum.toFixed(2)} €</div>` : ''}
       </div>
     `;
   }
@@ -823,9 +1074,9 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     const ht = (totalNum / divisor).toFixed(2);
     const tvaAmount = (totalNum - totalNum / divisor).toFixed(2);
     taxDetailsHtml = `
-      <div style="font-size: 11px; font-weight: 600; margin-top: 4px; color: #000;">
-        <div style="display: flex; justify-content: space-between;"><span>Sous-total HT :</span><span>${ht} €</span></div>
-        <div style="display: flex; justify-content: space-between;"><span>TVA (${tvaRate}%) :</span><span>${tvaAmount} €</span></div>
+      <div style="font-size: 10px; font-weight: 700; margin-top: 3px; color: #000;">
+        <div style="display: flex; justify-content: space-between;"><span>Sous-total HT :</span><span style="white-space: nowrap;">${ht} €</span></div>
+        <div style="display: flex; justify-content: space-between;"><span>TVA (${tvaRate}%) :</span><span style="white-space: nowrap;">${tvaAmount} €</span></div>
       </div>
     `;
   }
@@ -835,10 +1086,10 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     let qrUrl = settings.qr_code_custom_url || 'https://google.com';
     if (settings.qr_code_type === 'tracking') qrUrl = `https://caisseapp.vercel.app/#/track/${cleanOrderNumber}`;
     try {
-      const qrDataUrl = await QRCode.toDataURL(qrUrl, { margin: 1, width: 110 });
+      const qrDataUrl = await QRCode.toDataURL(qrUrl, { margin: 1, width: 100 });
       qrCodeHtml = `
-        <div style="text-align: center; width: 100%; margin: 10px auto 0 auto;">
-          <img src="${qrDataUrl}" style="width: 100px; height: 100px; display: block; margin: 0 auto;" />
+        <div style="text-align: center; width: 100%; margin: 8px auto 0 auto;">
+          <img src="${qrDataUrl}" style="width: 90px; height: 90px; display: block; margin: 0 auto;" />
         </div>
       `;
     } catch (e) {
@@ -854,20 +1105,35 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
         <style>
           @page { margin: 0; size: auto; }
           * { box-sizing: border-box; }
-          html, body { font-family: Arial, Helvetica, sans-serif; font-size: ${fontSize}; margin: 0; padding: ${bodyPadding}; width: ${bodyWidth}; height: auto; overflow: hidden; color: #000; line-height: 1.25; text-align: left; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          html, body { 
+            font-family: Arial, Helvetica, sans-serif; 
+            font-size: ${fontSize}; 
+            margin: 0; 
+            padding: ${bodyPadding}; 
+            width: ${bodyWidth}; 
+            max-width: ${bodyWidth}; 
+            height: auto; 
+            overflow: hidden; 
+            color: #000; 
+            background-color: #fff;
+            line-height: 1.2; 
+            text-align: left; 
+            -webkit-print-color-adjust: exact; 
+            print-color-adjust: exact; 
+          }
           .center { text-align: center; width: 100%; }
           .bold { font-weight: bold; }
-          hr { border: none; border-top: 1.5px dashed #000; margin: 7px 0; }
+          hr { border: none; border-top: 1.5px dashed #000; margin: 6px 0; }
         </style>
       </head>
       <body>
         ${logoHtml}
 
         <div class="center">
-          <div style="font-size: ${headerFontSize}; font-weight: 900; text-transform: uppercase;">${restaurantName}</div>
-          ${showHeaderInfo && restaurantAddress ? `<div style="font-size: 11px; font-weight: 600;">${restaurantAddress}</div>` : ''}
-          ${showHeaderInfo && restaurantPhone ? `<div style="font-size: 11px; font-weight: 600;">Tél : ${restaurantPhone}</div>` : ''}
-          <div style="font-size: 11px; font-weight: 600; margin-top: 2px;">${orderDate}</div>
+          <div style="font-size: ${headerFontSize}; font-weight: 900; text-transform: uppercase; word-break: break-word;">${restaurantName}</div>
+          ${showHeaderInfo && restaurantAddress ? `<div style="font-size: 10px; font-weight: 700; word-break: break-word;">${restaurantAddress}</div>` : ''}
+          ${showHeaderInfo && restaurantPhone ? `<div style="font-size: 10px; font-weight: 700;">Tél : ${restaurantPhone}</div>` : ''}
+          <div style="font-size: 10px; font-weight: 700; margin-top: 2px;">${orderDate}</div>
         </div>
 
         <hr />
@@ -880,20 +1146,20 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 
         ${taxDetailsHtml}
 
-        <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; margin-top: 3px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 10px; font-weight: 800; margin-top: 2px; gap: 4px;">
           <span>Mode de règlement :</span>
-          <span>${paymentLabel}</span>
+          <span style="white-space: nowrap;">${paymentLabel}</span>
         </div>
 
-        <div style="display: flex; justify-content: space-between; font-size: 17px; font-weight: 900; margin-top: 6px; border-top: 2px solid #000; padding-top: 4px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 15px; font-weight: 900; margin-top: 5px; border-top: 2px solid #000; padding-top: 4px; gap: 4px;">
           <span>TOTAL TTC</span>
-          <span>${total} €</span>
+          <span style="white-space: nowrap;">${total} €</span>
         </div>
 
-        <div style="border: 3px solid #000; text-align: center; width: 100%; margin: 10px auto 4px auto; padding: 6px 4px;">
-          <div style="font-size: 11px; font-weight: 800; text-transform: uppercase;">VOTRE NUMÉRO DE COMMANDE</div>
-          <div style="font-size: 26px; font-weight: 900; letter-spacing: 1px; margin: 2px 0;">${cleanOrderNumber}</div>
-          <div style="background-color: #000; color: #fff; font-size: 13px; font-weight: 900; display: inline-block; padding: 2px 10px; margin-top: 2px; -webkit-print-color-adjust: exact;">
+        <div style="border: 2.5px solid #000; text-align: center; width: 100%; margin: 8px auto 4px auto; padding: 5px 3px;">
+          <div style="font-size: 10px; font-weight: 800; text-transform: uppercase;">VOTRE NUMÉRO DE COMMANDE</div>
+          <div style="font-size: 24px; font-weight: 900; letter-spacing: 1px; margin: 2px 0;">${cleanOrderNumber}</div>
+          <div style="background-color: #000; color: #fff; font-size: 12px; font-weight: 900; display: inline-block; padding: 2px 8px; margin-top: 2px; -webkit-print-color-adjust: exact;">
             ${orderTypeLabel}
           </div>
         </div>
@@ -901,8 +1167,8 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
         ${(showFooterMessage || showQrCode) ? '<hr />' : ''}
 
         ${showFooterMessage ? `
-          <div style="text-align: center; width: 100%; margin: 6px auto 4px auto;">
-            <div style="font-size: 11px; font-weight: 700; text-align: center; width: 100%; white-space: pre-wrap; word-break: break-word;">${footerMessage}</div>
+          <div style="text-align: center; width: 100%; margin: 5px auto 3px auto;">
+            <div style="font-size: 10px; font-weight: 700; text-align: center; width: 100%; white-space: pre-wrap; word-break: break-word;">${footerMessage}</div>
           </div>
         ` : ''}
 
@@ -920,7 +1186,9 @@ const PrinterManager = {
     }
 
     const settings = readSettingsFile();
-    const isKitchen = String(orderData.orderType || '').toUpperCase().includes('CUISINE');
+    const rawType = String(orderData.orderType || orderData.type || '').toUpperCase();
+    const isKitchen = rawType.includes('CUISINE');
+    
     let routingConfig = {};
     try {
       if (settings.category_printer_routing) {
@@ -939,22 +1207,20 @@ const PrinterManager = {
 
       for (const item of orderData.items) {
         const cat = String(item.categoryName || item.category || '').trim();
-        const assignedRole = cat && routingConfig[cat] ? routingConfig[cat] : null;
+        const assignedRole = cat && routingConfig[cat] ? routingConfig[cat] : 'cuisine';
         
-        let targetPrinterRoleName = undefined;
-        if (assignedRole) {
-          targetPrinterRoleName = settings[`imprimante_${assignedRole}`] || settings.imprimante_cuisine;
-        } else {
-          targetPrinterRoleName = desiredPrinterName || settings.imprimante_cuisine;
+        let targetPrinterRoleName = desiredPrinterName;
+        if (!targetPrinterRoleName) {
+          targetPrinterRoleName = settings[`imprimante_${assignedRole}`] || settings.imprimante_cuisine || settings.imprimante_caisse;
         }
 
-        const resolvedPrinter = await getTargetPrinter(targetPrinterRoleName, mainWindow);
+        const resolvedPrinter = await getTargetPrinter(targetPrinterRoleName, mainWindow, assignedRole);
         const physicalPrinterName = resolvedPrinter ? resolvedPrinter.name : 'DEFAULT_PRINTER';
 
         if (!itemsByPrinterName[physicalPrinterName]) {
           itemsByPrinterName[physicalPrinterName] = {
-            printerObj: resolvedPrinter,
-            printerName: targetPrinterRoleName,
+            printerName: resolvedPrinter ? resolvedPrinter.name : targetPrinterRoleName,
+            role: assignedRole,
             items: []
           };
         }
@@ -973,7 +1239,7 @@ const PrinterManager = {
         };
 
         try {
-          const res = await PrinterManager._printSingleWindow(groupOrderData, groupInfo.printerName, mainWindow);
+          const res = await PrinterManager._printSingleWindow(groupOrderData, groupInfo.printerName, mainWindow, groupInfo.role);
           if (res.success) printedPrinters.push(physName);
           else failedPrinters.push(physName);
         } catch (e) {
@@ -995,18 +1261,19 @@ const PrinterManager = {
     return await PrinterManager._printSingleWindow(orderData, desiredPrinterName, mainWindow);
   },
 
-  async _printSingleWindow(orderData, desiredPrinterName, mainWindow) {
+  async _printSingleWindow(orderData, desiredPrinterName, mainWindow, forcedRole = null) {
     const settings = readSettingsFile();
     const widthMm = settings.receipt_width || '72';
     const rawType = String(orderData.orderType || orderData.type || '').toUpperCase();
     const isKitchen = rawType.includes('CUISINE');
     
-    // 🟢 DÉTECTION SÉCURISÉE DES RAPPORTS X/Z
     const isReport = rawType.includes('RAPPORT') || 
                      rawType === 'Z' || 
                      rawType === 'X' || 
                      orderData.totalSales !== undefined || 
                      orderData.sessionId !== undefined;
+
+    const role = forcedRole || (isReport ? 'rapports' : (isKitchen ? 'cuisine' : 'caisse'));
 
     let htmlContent = '';
     if (isReport) {
@@ -1017,7 +1284,17 @@ const PrinterManager = {
       htmlContent = await buildReceiptHtml(orderData, widthMm);
     }
 
-    return new Promise(async (resolve) => {
+    const isTestOrder = String(orderData.orderNumber || '').toUpperCase().includes('TEST');
+    let copiesCount = 1;
+    if (!isReport && !isTestOrder) {
+      const rawCopies = isKitchen ? settings.receipt_copies_kitchen : settings.receipt_copies_client;
+      copiesCount = Math.max(1, Math.min(5, Number(rawCopies) || 1));
+    }
+
+    const targetPrinter = await getTargetPrinter(desiredPrinterName, mainWindow, role);
+    const deviceName = targetPrinter ? targetPrinter.name : '';
+
+    const runSinglePrintJob = () => new Promise(async (resolve) => {
       try {
         let printWindow = new BrowserWindow({ 
           show: false, 
@@ -1031,8 +1308,17 @@ const PrinterManager = {
 
         await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
 
-        const targetPrinter = await getTargetPrinter(desiredPrinterName, mainWindow);
-        const deviceName = targetPrinter ? targetPrinter.name : '';
+        // 🟢 Attente garantie du décodage complet des images (Logo / QR Code) avant d'imprimer
+        try {
+          await printWindow.webContents.executeJavaScript(`
+            Promise.all(
+              Array.from(document.images).map(img => {
+                if (img.complete) return img.decode ? img.decode().catch(() => {}) : Promise.resolve();
+                return new Promise(res => { img.onload = res; img.onerror = res; });
+              })
+            )
+          `);
+        } catch (e) {}
 
         printWindow.shadowWindow = printWindow;
 
@@ -1042,14 +1328,16 @@ const PrinterManager = {
           deviceName: deviceName,
           margins: { marginType: 'none' }
         }, (success, failureReason) => {
-          printWindow.destroy();
-          printWindow = null;
+          try {
+            printWindow.destroy();
+            printWindow = null;
+          } catch (e) {}
 
           if (!success) {
-            console.error("[PrinterManager] Erreur d'impression physique:", failureReason);
+            console.error(`[PrinterManager] Erreur d'impression physique sur "${deviceName}":`, failureReason);
             resolve({ success: false, error: failureReason });
           } else {
-            resolve({ success: true });
+            resolve({ success: true, printerName: deviceName });
           }
         });
 
@@ -1058,20 +1346,23 @@ const PrinterManager = {
         resolve({ success: false, error: error.message });
       }
     });
+
+    let lastResult = { success: false };
+    for (let i = 0; i < copiesCount; i++) {
+      lastResult = await runSinglePrintJob();
+      if (!lastResult.success) break;
+    }
+    return lastResult;
   },
 
   async openDrawer(desiredPrinterName, mainWindow) {
     try {
-      const targetPrinter = await getTargetPrinter(desiredPrinterName, mainWindow);
+      const targetPrinter = await getTargetPrinter(desiredPrinterName, mainWindow, 'caisse');
       if (!targetPrinter) return { success: false, error: "Aucune imprimante détectée." };
 
       const settings = readSettingsFile();
       const pinMode = settings.drawer_pin_mode || 'both';
 
-      // Séquence standard d'impulsion solénoïde ESC/POS (50ms pulse ON, 500ms delay OFF)
-      // Broche 2 : 27, 112, 0, 25, 250
-      // Broche 5 : 27, 112, 1, 25, 250
-      // DLE DC4 temps réel : 16, 20, 1, 1, 1
       let kickBytes = [27, 112, 0, 25, 250, 27, 112, 1, 25, 250, 16, 20, 1, 1, 1];
       if (pinMode === '0') kickBytes = [27, 112, 0, 25, 250];
       else if (pinMode === '1') kickBytes = [27, 112, 1, 25, 250];
@@ -1082,7 +1373,6 @@ const PrinterManager = {
         const isSuccess = await sendRawCommandToPrinter(targetPrinter.name, kickCode);
         return { success: isSuccess };
       } else {
-        // macOS / Linux : envoi RAW direct via CUPS (lpr -o raw) sans avance papier
         return new Promise((resolve) => {
           const kickBuffer = Buffer.from(kickBytes);
           const tempKickFile = path.join(os.tmpdir(), `kick_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
@@ -1094,7 +1384,6 @@ const PrinterManager = {
               if (!err) {
                 resolve({ success: true });
               } else {
-                // Fallback silencieux sans aucun texte pour ne pas faire d'avance de papier
                 let kickWindow = new BrowserWindow({ 
                   show: false, 
                   webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true } 
@@ -1119,7 +1408,7 @@ const PrinterManager = {
   },
 
   async cutPaper(desiredPrinterName, mainWindow) {
-    const targetPrinter = await getTargetPrinter(desiredPrinterName, mainWindow);
+    const targetPrinter = await getTargetPrinter(desiredPrinterName, mainWindow, 'caisse');
     if (!targetPrinter || process.platform !== 'win32') return { success: false };
     const isSuccess = await sendRawCommandToPrinter(targetPrinter.name, "29, 86, 66, 0");
     return { success: isSuccess };
@@ -1129,9 +1418,7 @@ const PrinterManager = {
     const win = mainWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
     if (!win) return { ready: false };
     const printers = await win.webContents.getPrintersAsync();
-    const settings = readSettingsFile();
-    const configuredName = settings.imprimante_caisse || settings.imprimante_cuisine;
-    const targetPrinter = printers.find(p => configuredName ? p.name === configuredName : (p.isDefault || p.name.toLowerCase().includes('tm') || p.name.toLowerCase().includes('epson')));
+    const targetPrinter = await getTargetPrinter(null, mainWindow, 'caisse');
     
     return {
       ready: !!targetPrinter && targetPrinter.status !== 1,

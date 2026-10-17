@@ -144,7 +144,7 @@ export const DeliveryModalCaisse = ({
       setName(initialData.name || '');
       setPhone(initialData.phone || '');
       setDialPadValue(initialData.phone || '');
-      setAdditionalInfo(initialData.additionalInfo || '');
+      setAdditionalInfo(initialData.additionalInfo || initialData.address_complement || '');
       setFee(initialData.fee || 0);
 
       if (initialData.address) {
@@ -179,13 +179,13 @@ export const DeliveryModalCaisse = ({
       const filtered = clients.filter(c => {
         const fullName = `${c.first_name || ''} ${c.last_name || ''} ${c.customer_name || ''}`.toLowerCase();
         const addressStr = (c.address || '').toLowerCase();
-        return fullName.includes(lower) || addressStr.includes(lower);
+        const compStr = (c.address_complement || '').toLowerCase();
+        return fullName.includes(lower) || addressStr.includes(lower) || compStr.includes(lower);
       });
       setFilteredClients(filtered);
     }
   }, [dialPadValue, textSearch, searchMode, clients]);
 
-  // Gestion des touches du Pavé Numérique Tactile
   const handleKeyPress = (num: string) => {
     if (dialPadValue.length < 10) {
       setDialPadValue(prev => prev + num);
@@ -200,7 +200,6 @@ export const DeliveryModalCaisse = ({
     setDialPadValue('');
   };
 
-  // Passage à la création d'un nouveau client avec le numéro tapé
   const handleStartNewClient = () => {
     setIsCreatingNew(true);
     setSelectedClientId(null);
@@ -215,7 +214,6 @@ export const DeliveryModalCaisse = ({
     setCalcStatus(null);
   };
 
-  // Sélection d'un client existant
   const handleSelectExistingClient = async (client: any) => {
     setIsCreatingNew(false);
     setSelectedClientId(client.id);
@@ -223,6 +221,7 @@ export const DeliveryModalCaisse = ({
     setName(fullName);
     setPhone(client.phone || '');
     setDialPadValue(client.phone || '');
+    setAdditionalInfo(client.address_complement || '');
 
     if (client.address) {
       const { num, street } = splitAddress(client.address);
@@ -260,7 +259,6 @@ export const DeliveryModalCaisse = ({
     }
   };
 
-  // API Recherche d'Adresse
   const handleSearchAPI = (text: string) => {
     setQuery(text);
     setStreetName(text);
@@ -370,24 +368,25 @@ export const DeliveryModalCaisse = ({
     } 
   };
 
-  // 🟢 SAUVEGARDE MANUELLE DE LA FICHE CLIENT DANS SUPABASE
+  // Sauvegarde manuelle de la fiche client
   const handleSaveClientProfile = async () => {
     if (!name.trim()) return toast.error("Le nom du client est requis.", { duration: 1000 });
 
     setIsSavingProfile(true);
     const fullAddress = `${streetNumber.trim()} ${streetName.trim()}`.trim();
     const cleanPhone = phone.replace(/\s+/g, '');
+    const cleanComplement = additionalInfo.trim();
     const activeRestoId = getActiveRestaurantId() || localStorage.getItem('pos_restaurant_id') || RESTAURANT_ID;
 
     try {
       if (selectedClientId) {
-        // MISE À JOUR D'UN CLIENT EXISTANT
         const { data: updatedProfile, error } = await supabase
           .from('profiles')
           .update({
             customer_name: name.trim(),
             phone: cleanPhone,
-            address: fullAddress
+            address: fullAddress,
+            address_complement: cleanComplement
           })
           .eq('id', selectedClientId)
           .select('*')
@@ -401,7 +400,6 @@ export const DeliveryModalCaisse = ({
           toast.success("Fiche client enregistrée avec succès !");
         }
       } else {
-        // CRÉATION D'UN NOUVEAU CLIENT AVEC EMAIL UNIQUE
         const newClientId = generateUUID();
         const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
         const fakeEmail = cleanPhone 
@@ -416,6 +414,7 @@ export const DeliveryModalCaisse = ({
             customer_name: name.trim(),
             phone: cleanPhone,
             address: fullAddress,
+            address_complement: cleanComplement,
             email: fakeEmail,
             role: 'client'
           }])
@@ -446,6 +445,7 @@ export const DeliveryModalCaisse = ({
 
     const fullAddress = `${streetNumber.trim()} ${streetName.trim()}`.trim();
     const cleanPhone = phone.replace(/\s+/g, '');
+    const cleanComplement = additionalInfo.trim();
     let finalClientId = selectedClientId;
     const activeRestoId = getActiveRestaurantId() || localStorage.getItem('pos_restaurant_id') || RESTAURANT_ID;
 
@@ -467,6 +467,7 @@ export const DeliveryModalCaisse = ({
             customer_name: name.trim(),
             phone: cleanPhone,
             address: fullAddress,
+            address_complement: cleanComplement,
             email: fakeEmail, 
             role: 'client'
           }])
@@ -485,14 +486,14 @@ export const DeliveryModalCaisse = ({
         console.error(err);
       }
     } else {
-      // 🟢 MISE À JOUR DE LA FICHE SI CLIENT EXISTANT DÉJÀ SÉLECTIONNÉ
       try {
         const { data: updatedProfile, error } = await supabase
           .from('profiles')
           .update({
             customer_name: name.trim(),
             phone: cleanPhone,
-            address: fullAddress
+            address: fullAddress,
+            address_complement: cleanComplement
           })
           .eq('id', finalClientId)
           .select('*')
@@ -513,7 +514,8 @@ export const DeliveryModalCaisse = ({
       name: name.trim(),
       phone: phone.trim(),
       address: fullAddress,
-      additionalInfo: additionalInfo.trim(),
+      additionalInfo: cleanComplement,
+      address_complement: cleanComplement,
       fee: fee
     });
     
@@ -548,10 +550,9 @@ export const DeliveryModalCaisse = ({
 
         <div className="flex-1 flex overflow-hidden">
           
-          {/* ================= COLONNE GAUCHE (PAVÉ NUMÉRIQUE TACTILE XXL - 45%) ================= */}
+          {/* COLONNE GAUCHE (PAVÉ NUMÉRIQUE TACTILE XXL - 45%) */}
           <div className="w-[45%] border-r border-gray-200 bg-gray-50 flex flex-col p-3 space-y-3 shrink-0">
             
-            {/* Commutateur de Mode */}
             <div className="flex bg-gray-200 p-1 rounded-xl gap-1 shrink-0">
               <button 
                 onClick={() => setSearchMode('phone')}
@@ -569,8 +570,6 @@ export const DeliveryModalCaisse = ({
 
             {searchMode === 'phone' ? (
               <div className="flex-1 flex flex-col justify-between space-y-2">
-                
-                {/* Afficheur du numéro tapé */}
                 <div className="bg-white border-2 border-primary/30 rounded-xl p-3 shadow-inner flex items-center justify-between">
                   <span className="text-gray-400 font-bold text-xs">TEL:</span>
                   <span className="font-black text-2xl text-secondary tracking-widest">
@@ -578,7 +577,6 @@ export const DeliveryModalCaisse = ({
                   </span>
                 </div>
 
-                {/* GRILLE DU PAVÉ NUMÉRIQUE TACTILE XXL */}
                 <div className="grid grid-cols-3 gap-2 flex-1">
                   {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(num => (
                     <button
@@ -608,10 +606,8 @@ export const DeliveryModalCaisse = ({
                     ⌫
                   </button>
                 </div>
-
               </div>
             ) : (
-              /* Mode Secours : Recherche Textuelle */
               <div className="space-y-3 pt-2">
                 <div className="space-y-1">
                   <label className="text-[10px] font-black text-gray-400 uppercase">Recherche par Nom ou Adresse</label>
@@ -628,16 +624,12 @@ export const DeliveryModalCaisse = ({
                 </div>
               </div>
             )}
-
           </div>
 
-          {/* ================= COLONNE DROITE (RÉSULTATS & FORMULAIRE FICHE - 55%) ================= */}
+          {/* COLONNE DROITE (RÉSULTATS & FORMULAIRE FICHE - 55%) */}
           <div className="flex-1 flex flex-col bg-white overflow-hidden">
-            
-            {/* Si un client est sélectionné ou en cours de création */}
             {(selectedClientId || isCreatingNew) ? (
               <div className="flex-1 flex flex-col justify-between p-4 overflow-y-auto custom-scrollbar">
-                
                 <div className="space-y-3">
                   <div className="flex justify-between items-center border-b border-gray-100 pb-2">
                     <span className="font-black uppercase text-xs text-primary flex items-center gap-1.5">
@@ -645,7 +637,6 @@ export const DeliveryModalCaisse = ({
                     </span>
                     
                     <div className="flex items-center gap-2">
-                      {/* 🟢 BOUTON D'ENREGISTREMENT MANUEL DU PROFIL DANS SUPABASE */}
                       <button
                         onClick={handleSaveClientProfile}
                         disabled={isSavingProfile}
@@ -741,7 +732,7 @@ export const DeliveryModalCaisse = ({
                       value={additionalInfo} 
                       onChange={e => setAdditionalInfo(e.target.value)} 
                       className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-primary focus:bg-white outline-none"
-                      placeholder="Code, étage, bâtiment..."
+                      placeholder="Code, étage, bâtiment, interphone..."
                     />
                   </div>
                 </div>
@@ -768,10 +759,8 @@ export const DeliveryModalCaisse = ({
                      <Check className="h-4 w-4"/> Valider Commande
                    </button>
                 </div>
-
               </div>
             ) : (
-              /* LISTE DE FILTRAGE DES CLIENTS EN TEMPS RÉEL */
               <div className="flex-1 flex flex-col p-3 overflow-hidden">
                 <div className="flex justify-between items-center mb-2 shrink-0">
                   <span className="font-black uppercase text-xs text-gray-400 flex items-center gap-1.5">
@@ -816,7 +805,11 @@ export const DeliveryModalCaisse = ({
                             <div className="space-y-1">
                               <div className="font-black text-sm text-secondary group-hover:text-primary transition-colors">{fullName}</div>
                               <div className="text-xs text-gray-500 font-bold flex items-center gap-1">
-                                <MapPin className="h-3 w-3 text-gray-400"/> {client.address || 'Aucune adresse renseignée'}
+                                <MapPin className="h-3 w-3 text-gray-400 shrink-0"/> 
+                                <span>
+                                  {client.address || 'Aucune adresse renseignée'}
+                                  {client.address_complement ? ` (${client.address_complement})` : ''}
+                                </span>
                               </div>
                             </div>
                             <div className="text-right">
@@ -832,7 +825,6 @@ export const DeliveryModalCaisse = ({
                 </div>
               </div>
             )}
-
           </div>
 
         </div>

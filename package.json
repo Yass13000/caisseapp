@@ -17,6 +17,7 @@
     "electron:build": "vite build && electron-builder",
     "electron:build:win": "vite build && electron-builder --win",
     "electron:build:mac": "vite build && electron-builder --mac",
+    "electron:build:pkg": "vite build && electron-builder --mac pkg",
     "electron:build:linux": "vite build && electron-builder --linux"
   },
   "dependencies": {
@@ -130,14 +131,20 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
         }
       ],
-      "icon": "build/icon.ico",
-      "artifactName": "${productName}-Setup-${version}.${ext}"
+      "icon": "build/icon.ico"
     },
     "mac": {
       "target": [
         "dmg",
+        "pkg",
         "zip"
       ],
       "icon": "build/icon.icns",
@@ -152,6 +159,7 @@
       "category": "Office"
     },
     "nsis": {
+      "artifactName": "${productName}-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "allowElevation": true,
@@ -164,6 +172,9 @@
       "license": "LICENSE.txt",
       "runAfterFinish": true,
       "shortcutName": "Borne Kiosk"
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}.${ext}"
     }
   }
 }
