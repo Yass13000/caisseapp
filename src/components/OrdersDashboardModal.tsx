@@ -21,7 +21,8 @@ import {
   Bell,
   Search,
   ShoppingBag,
-  ChevronRight
+  ChevronRight,
+  Info
 } from 'lucide-react';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { getFormattedOrderOptions, fetchOptionGroupMapping } from '@/lib/orderFormatter';
@@ -42,6 +43,9 @@ interface Order {
   customer_name?: string;
   customer_phone?: string;
   customer_address?: string;
+  customer_address_complement?: string;
+  address_complement?: string;
+  additionalInfo?: string;
   comment?: string;
   delivery_fee?: number;
   order_origin?: string;
@@ -462,10 +466,8 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
       {/* ZONE PRINCIPALE */}
       <div className="flex-1 overflow-hidden bg-[#0f172a] relative">
         {activeTab === 'livraisons' ? (
-          /* 🛵 REMPLACEMENT TOTAL DE L'ONGLET LIVRAISONS PAR LE COMPOSANT DÉDIÉ */
           <DeliveryDispatchModal searchQuery={searchQuery} />
         ) : (
-          /* 🍔 COLONNES KDS CLASSIQUES POUR "EN COURS" ET "TERMINÉES" */
           <div className="h-full overflow-y-auto p-2 custom-scrollbar">
             {isLoading ? (
               <div className="flex items-center justify-center h-full">
@@ -488,6 +490,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                       const customerName = order.customer_name || "Client Caisse";
                       const customerPhone = order.customer_phone || "";
                       const customerAddress = order.customer_address || "";
+                      const addressComplement = order.customer_address_complement || order.address_complement || order.additionalInfo || "";
                       const isPaid = order.is_paid || order.payment_status === 'paid';
                       const items = parseOrderDetails(order.order_details);
                       const isFlipped = !!flippedOrders[order.id];
@@ -634,17 +637,31 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                               </div>
 
                               {customerAddress && (
-                                <div>
-                                  <div className="text-[8.5px] font-bold uppercase text-slate-400">Adresse de livraison</div>
-                                  <a 
-                                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(customerAddress)}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-[10.5px] font-bold text-blue-300 flex items-start gap-1 hover:underline leading-tight"
-                                  >
-                                    <MapPin size={12} className="text-red-400 shrink-0 mt-0.5" />
-                                    <span>{customerAddress}</span>
-                                  </a>
+                                <div className="space-y-1">
+                                  <div>
+                                    <div className="text-[8.5px] font-bold uppercase text-slate-400">Adresse de livraison</div>
+                                    <a 
+                                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(customerAddress)}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-[10.5px] font-bold text-blue-300 flex items-start gap-1 hover:underline leading-tight"
+                                    >
+                                      <MapPin size={12} className="text-red-400 shrink-0 mt-0.5" />
+                                      <span>{customerAddress}</span>
+                                    </a>
+                                  </div>
+
+                                  {/* COMPLÉMENT D'ADRESSE */}
+                                  {addressComplement && (
+                                    <div className="pl-4 pt-0.5">
+                                      <div className="text-[8px] font-bold uppercase text-slate-400 flex items-center gap-1">
+                                        <Info size={9} className="text-amber-400" /> Complément
+                                      </div>
+                                      <div className="text-[10px] font-black text-amber-300 bg-slate-800/80 px-1.5 py-0.5 border border-slate-700 mt-0.5">
+                                        {addressComplement}
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               )}
 
