@@ -263,10 +263,26 @@ $printerName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase
 }
 
 // ----------------------------------------------------------------------------
-// 👨‍🍳 TICKET CUISINE (ALIGNÉ 100% SUR LES RÈGLES KDS : HIDE_IF_SOLO, NAME_KDS, SORT_ORDER_KDS)
+// 👨‍🍳 TICKET CUISINE (OPTIMISÉ VISIBILITÉ + RÈGLES KDS 100%)
 // ----------------------------------------------------------------------------
 function buildKitchenHtml(orderData, widthMm = '72') {
+  const settings = readSettingsFile();
   const bodyWidth = `${widthMm}mm`;
+
+  // 🎛️ Nouveaux réglages de visibilité (avec valeurs par défaut optimales)
+  const fontScale = settings.kitchen_font_scale || 'normal'; // 'normal' | 'large' | 'xlarge'
+  const invertedHeader = settings.kitchen_inverted_header !== 'false' && settings.kitchen_inverted_header !== false;
+  const highlightMultiQty = settings.highlight_multi_qty !== 'false' && settings.highlight_multi_qty !== false;
+
+  let itemFontSize = '16px';
+  let noteFontSize = '14px';
+  if (fontScale === 'large') {
+    itemFontSize = '18px';
+    noteFontSize = '16px';
+  } else if (fontScale === 'xlarge') {
+    itemFontSize = '20px';
+    noteFontSize = '18px';
+  }
   
   let orderNumDisplay = String(orderData.orderNumber || orderData.order_number || orderData.number || '001')
     .toUpperCase()
@@ -285,27 +301,65 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 
   let orderTypeLabel = 'SUR PLACE';
   const rawType = String(orderData.orderType || '').toLowerCase();
-  if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'A EMPORTER';
+  if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'À EMPORTER';
   if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
 
   const items = Array.isArray(orderData.items) ? orderData.items : [];
 
-  // 🟢 1. Double sécurité : Tri des produits selon kds_sort_order
+  // 🟢 1. Tri des produits selon kds_sort_order
   const sortedItems = [...items].sort((a, b) => {
     const orderA = Number(a.kds_sort_order ?? a.product?.kds_sort_order ?? a.sort_order ?? a.product?.sort_order ?? 999);
     const orderB = Number(b.kds_sort_order ?? b.product?.kds_sort_order ?? b.sort_order ?? b.product?.sort_order ?? 999);
     return orderA - orderB;
   });
 
-  const itemsHtml = sortedItems.map(item => {
+  // Fonction utilitaire pour extraire name_kds en priorité absolue (sur produit ou option)
+  const getKdsOrDefaultName = (obj, fallback = '') => {
+    if (!obj) return fallback;
+    if (typeof obj === 'string') return obj.trim() || fallback;
+
+    const kdsCandidate = 
+      obj.name_kds ?? 
+      obj.kds_name ?? 
+      obj.option?.name_kds ?? 
+      obj.option?.kds_name ?? 
+      obj.sub_option?.name_kds ?? 
+      obj.subOption?.name_kds ?? 
+      obj.product?.name_kds ?? 
+      obj.product?.kds_name ??
+      obj.item?.name_kds;
+
+    if (kdsCandidate !== null && kdsCandidate !== undefined && String(kdsCandidate).trim() !== '') {
+      return String(kdsCandidate).trim();
+    }
+
+    const nameCandidate = 
+      obj.name ?? 
+      obj.option?.name ?? 
+      obj.sub_option?.name ?? 
+      obj.subOption?.name ?? 
+      obj.product?.name ?? 
+      obj.item?.name ?? 
+      obj.label;
+
+    if (nameCandidate !== null && nameCandidate !== undefined && String(nameCandidate).trim() !== '') {
+      return String(nameCandidate).trim();
+    }
+
+    return fallback;
+  };
+
+  let totalItemsCount = 0;
+
+  const itemsHtml = sortedItems.map((item, idx) => {
     const qty = Number(item.qty || item.quantity || 1);
+    totalItemsCount += qty;
     
     // Détection du mode solo
     const isSolo = item.isSolo === true || item.is_solo === true || item.product?.isSolo === true || /\bseul\b/i.test(item.name || item.product?.name || '');
 
-    // 🟢 2. Double sécurité : Priorité au nom KDS + suffixe Seul
-    const rawKdsName = item.kds_name || item.product?.kds_name || item.name_kds || item.product?.name_kds;
-    const baseName = (rawKdsName && String(rawKdsName).trim()) ? String(rawKdsName).trim() : (item.name || item.product?.name || 'Article');
+    // 🟢 2. Priorité au nom KDS + suffixe Seul
+    const baseName = getKdsOrDefaultName(item, 'Article');
     
     let finalDisplayName = baseName;
     if (isSolo && !/\bseul\b/i.test(finalDisplayName)) {
@@ -314,12 +368,15 @@ function buildKitchenHtml(orderData, widthMm = '72') {
     const name = escapeHtml(finalDisplayName).toUpperCase();
 
     let notesHtml = '';
-    const rawNotes = Array.isArray(item.notes) ? item.notes : (Array.isArray(item.options) ? item.options : (Array.isArray(item.selectedSubOptions) ? item.selectedSubOptions : []));
     
-    // 🟢 3. Double sécurité : Filtrage strict des options hide_if_solo si l'article est en mode solo
+    // 🟢 3. Priorité aux tableaux d'objets complets (options / selectedSubOptions) plutôt que des strings (notes)
+    const candidates = [item.options, item.selectedSubOptions, item.sub_options, item.notes].filter(arr => Array.isArray(arr) && arr.length > 0);
+    const rawNotes = candidates.find(arr => typeof arr[0] === 'object' && arr[0] !== null) || candidates[0] || [];
+    
+    // 🟢 4. Filtrage strict des options hide_if_solo si l'article est en mode solo
     const filteredNotes = rawNotes.filter(n => {
       if (!n) return false;
-      if (isSolo && (n.hide_if_solo === true || n.is_hide_if_solo === true || n.group_hide_if_solo === true)) {
+      if (isSolo && (n.hide_if_solo === true || n.is_hide_if_solo === true || n.group_hide_if_solo === true || n.option?.hide_if_solo === true)) {
         return false;
       }
       return true;
@@ -327,38 +384,71 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 
     if (filteredNotes.length > 0) {
       notesHtml = filteredNotes.map(n => {
-        const noteName = typeof n === 'string' ? n : (n.kds_name || n.name_kds || n.name || '');
-        const isSans = typeof n === 'object' && (n.isSans || n.is_sans) || String(noteName).trim().toUpperCase().startsWith('SANS ');
-        
-        // Mise en valeur marquée des ingrédients retirés pour la cuisine
-        const style = isSans 
-          ? 'font-size: 14px; font-weight: 900; text-transform: uppercase; margin-top: 3px; padding-left: 4px; color: black; text-decoration: underline;'
-          : 'font-size: 14px; font-weight: bold; text-transform: uppercase; margin-top: 3px; padding-left: 4px; color: black;';
+        const noteName = getKdsOrDefaultName(n, '');
+        if (!noteName) return '';
 
-        return `<div style="${style}">- ${escapeHtml(noteName)}</div>`;
+        const isSans = (typeof n === 'object' && (n.isSans || n.is_sans)) || String(noteName).trim().toUpperCase().startsWith('SANS ');
+        
+        // 🚨 Mise en valeur nette des "SANS" avec encadré pointillé + préfixe [X]
+        if (isSans) {
+          return `
+            <div style="font-size: ${noteFontSize}; font-weight: 900; text-transform: uppercase; margin-top: 4px; padding: 2px 6px; color: #000; border: 2px dashed #000; display: inline-block; width: 100%;">
+              [X] ${escapeHtml(noteName)}
+            </div>
+          `;
+        }
+
+        return `
+          <div style="font-size: ${noteFontSize}; font-weight: 800; text-transform: uppercase; margin-top: 3px; padding-left: 6px; color: #000;">
+            • ${escapeHtml(noteName)}
+          </div>
+        `;
       }).join('');
     }
 
+    // 🚨 Badge visuel fort si quantité > 1 pour éviter les oublis en plein rush
+    let qtyBadgeHtml = `${qty}X`;
+    if (highlightMultiQty && qty > 1) {
+      if (invertedHeader) {
+        qtyBadgeHtml = `<span style="background-color: #fff; color: #000; padding: 1px 6px; margin-right: 4px; font-size: calc(${itemFontSize} + 2px); font-weight: 900; border-radius: 2px; -webkit-print-color-adjust: exact;">${qty}X</span>`;
+      } else {
+        qtyBadgeHtml = `<span style="background-color: #000; color: #fff; padding: 1px 6px; margin-right: 4px; font-size: calc(${itemFontSize} + 2px); font-weight: 900; border-radius: 2px; -webkit-print-color-adjust: exact;">${qty}X</span>`;
+      }
+    }
+
+    const headerStyle = invertedHeader
+      ? `background-color: #000; color: #fff; font-weight: 900; font-size: ${itemFontSize}; padding: 6px 8px; text-transform: uppercase; letter-spacing: 0.5px; -webkit-print-color-adjust: exact;`
+      : `background-color: #fff; color: #000; border: 3px solid #000; font-weight: 900; font-size: ${itemFontSize}; padding: 5px 8px; text-transform: uppercase; letter-spacing: 0.5px;`;
+
+    // Séparateur pointillé entre chaque produit pour bien isoler les sandwichs/menus
+    const separatorStyle = idx < sortedItems.length - 1 ? 'border-bottom: 2px dashed #000; padding-bottom: 10px; margin-bottom: 10px;' : 'margin-bottom: 6px;';
+
     return `
-      <div style="margin-bottom: 12px;">
-        <div style="background-color: black; color: white; font-weight: 900; font-size: 16px; padding: 6px 8px; text-transform: uppercase; letter-spacing: 0.5px; -webkit-print-color-adjust: exact;">
-          ${qty}X ${name}
+      <div style="${separatorStyle}">
+        <div style="${headerStyle}">
+          ${qtyBadgeHtml} ${name}
         </div>
-        ${notesHtml}
+        <div style="margin-top: 2px;">${notesHtml}</div>
       </div>
     `;
   }).join('');
 
-  // 🟢 4. Affichage du client ou de la note si renseignés
+  // 🟢 5. Affichage du client, de la note encadrée et du compteur total d'articles
   const customerName = escapeHtml(orderData.customer_name || orderData.customerName || (orderData.delivery && orderData.delivery.customerName) || '');
   const comment = escapeHtml(orderData.comment || orderData.notes || (orderData.delivery && orderData.delivery.deliveryNotes) || '');
 
-  let footerHtml = '';
+  let footerHtml = `
+    <div style="border-top: 3px solid #000; margin-top: 8px; padding-top: 6px; display: flex; justify-content: space-between; font-size: 15px; font-weight: 900;">
+      <span>TOTAL ARTICLES :</span>
+      <span style="font-size: 18px;">${totalItemsCount}</span>
+    </div>
+  `;
+
   if (customerName || comment) {
-    footerHtml = `
-      <div style="border-top: 2px solid black; margin-top: 10px; padding-top: 6px; font-size: 13px; font-weight: 800;">
-        ${customerName ? `<div>CLIENT : ${customerName}</div>` : ''}
-        ${comment ? `<div style="margin-top: 2px;">NOTE : ${comment}</div>` : ''}
+    footerHtml += `
+      <div style="border: 2px solid #000; margin-top: 8px; padding: 6px; font-size: 14px; font-weight: 900; text-transform: uppercase;">
+        ${customerName ? `<div style="margin-bottom: ${comment ? '4px' : '0'};">👤 CLIENT : ${customerName}</div>` : ''}
+        ${comment ? `<div style="border-top: ${customerName ? '1px dashed #000' : 'none'}; padding-top: ${customerName ? '4px' : '0'};">⚠️ NOTE : ${comment}</div>` : ''}
       </div>
     `;
   }
@@ -371,18 +461,18 @@ function buildKitchenHtml(orderData, widthMm = '72') {
         <style>
           @page { margin: 0; size: auto; }
           * { box-sizing: border-box; }
-          html, body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 4px; width: ${bodyWidth}; height: auto; overflow: hidden; color: black; line-height: 1.2; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          html, body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 4px; width: ${bodyWidth}; height: auto; overflow: hidden; color: #000; line-height: 1.25; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .center { text-align: center; }
         </style>
       </head>
       <body>
-        <div style="background-color: black; color: white; text-align: center; font-size: 32px; font-weight: 900; padding: 8px 0; font-family: sans-serif; letter-spacing: 1px; -webkit-print-color-adjust: exact;">
+        <div style="background-color: #000; color: #fff; text-align: center; font-size: 36px; font-weight: 900; padding: 6px 0; letter-spacing: 1px; -webkit-print-color-adjust: exact;">
           ${orderNumDisplay}
         </div>
 
-        <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 2px; font-weight: 800; font-size: 13px; border-bottom: 2px solid black; margin-bottom: 10px;">
-          <span>${orderTime}</span>
-          <span style="text-transform: uppercase;">${orderTypeLabel}</span>
+        <div style="border: 3px solid #000; border-top: none; padding: 6px 8px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 15px; font-weight: 900;">${orderTime}</span>
+          <span style="font-size: 18px; font-weight: 900; text-transform: uppercase; text-decoration: underline;">${orderTypeLabel}</span>
         </div>
 
         <div>${itemsHtml}</div>
@@ -400,7 +490,7 @@ function buildZReportHtml(reportData, widthMm = '72') {
   const isZ = reportData.type === 'Z' || String(reportData.orderType || '').toUpperCase().includes('Z');
   const title = isZ ? 'RAPPORT Z - CLÔTURE' : 'RAPPORT X - PROVISOIRE';
   const is58mm = Number(widthMm) <= 60;
-  const fontSize = is58mm ? '10px' : '12px';
+  const fontSize = is58mm ? '11px' : '12px';
 
   const restoName = escapeHtml(reportData.name || reportData.restaurantName || reportData.restaurant_name || 'VOTRE RESTAURANT');
   const restoAddress = reportData.restaurantAddress || reportData.address ? escapeHtml(reportData.restaurantAddress || reportData.address) : null;
@@ -434,35 +524,35 @@ function buildZReportHtml(reportData, widthMm = '72') {
           @page { margin: 0; size: auto; }
           * { box-sizing: border-box; }
           html, body { 
-            font-family: monospace; 
+            font-family: 'Lucida Console', Consolas, Arial, sans-serif; 
             font-size: ${fontSize}; 
             margin: 0; 
             padding: 4px; 
             width: ${widthMm}mm; 
             height: auto;
             overflow: hidden;
-            color: black; 
-            line-height: 1.2; 
+            color: #000; 
+            line-height: 1.25; 
             -webkit-print-color-adjust: exact;
             print-color-adjust: exact;
           }
           .center { text-align: center; width: 100%; }
           .bold { font-weight: bold; }
           .row { display: flex; justify-content: space-between; margin: 2px 0; }
-          hr { border: none; border-top: 1px dashed black; margin: 6px 0; }
+          hr { border: none; border-top: 1px dashed #000; margin: 6px 0; }
         </style>
       </head>
       <body>
         <div class="center">
           <div style="font-size: 15px; font-weight: 900; text-transform: uppercase;">${restoName}</div>
-          ${restoAddress ? `<div style="font-size: 10px;">${restoAddress}</div>` : ''}
-          ${restoPhone ? `<div style="font-size: 10px;">Tél: ${restoPhone}</div>` : ''}
+          ${restoAddress ? `<div style="font-size: 11px;">${restoAddress}</div>` : ''}
+          ${restoPhone ? `<div style="font-size: 11px;">Tél: ${restoPhone}</div>` : ''}
           
-          <div style="font-size: 13px; font-weight: 900; margin-top: 6px; border: 1px solid black; padding: 4px;">
+          <div style="font-size: 13px; font-weight: 900; margin-top: 6px; border: 2px solid #000; padding: 4px;">
             *** ${title} ***
           </div>
-          <div style="margin-top: 4px; font-size: 10px;">Session N° : ${reportData.sessionId || 'N/A'}</div>
-          <div style="font-size: 10px;">Imprimé le : ${new Date().toLocaleString('fr-FR')}</div>
+          <div style="margin-top: 4px; font-size: 11px;">Session N° : ${reportData.sessionId || 'N/A'}</div>
+          <div style="font-size: 11px;">Imprimé le : ${new Date().toLocaleString('fr-FR')}</div>
         </div>
 
         <hr />
@@ -480,7 +570,7 @@ function buildZReportHtml(reportData, widthMm = '72') {
         <hr />
 
         <div class="bold">CHIFFRE D'AFFAIRES</div>
-        <div class="row" style="font-size: 13px; font-weight: 900;">
+        <div class="row" style="font-size: 14px; font-weight: 900;">
           <span>TOTAL TTC :</span>
           <span>${totalTtc.toFixed(2)} €</span>
         </div>
@@ -560,29 +650,30 @@ function buildZReportHtml(reportData, widthMm = '72') {
 }
 
 // ----------------------------------------------------------------------------
-// 📜 TICKET CLIENT
+// 📜 TICKET CLIENT (OPTIMISÉ CONTRASTE THERMIQUE NOIR PUR + CALL NUMBER)
 // ----------------------------------------------------------------------------
 async function buildReceiptHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
 
   const is58mm = Number(widthMm) <= 60;
   const bodyWidth = `${widthMm}mm`;
+  const highlightMultiQty = settings.highlight_multi_qty !== 'false' && settings.highlight_multi_qty !== false;
   
   let fontSize = is58mm ? '11px' : '13px';
-  let headerFontSize = is58mm ? '16px' : '18px';
+  let headerFontSize = is58mm ? '16px' : '19px';
   if (settings.receipt_font_size === 'small') {
-    fontSize = '10px'; headerFontSize = '14px';
+    fontSize = '11px'; headerFontSize = '15px';
   } else if (settings.receipt_font_size === 'large') {
-    fontSize = '14px'; headerFontSize = '20px';
+    fontSize = '14px'; headerFontSize = '21px';
   }
 
-  const bodyPadding = settings.receipt_margin_type === 'standard' ? '12px 8px' : '4px 2px';
+  const bodyPadding = settings.receipt_margin_type === 'standard' ? '10px 6px' : '4px 2px';
 
   const showHeaderInfo = settings.show_header_info !== 'false';
   const showLogo = settings.show_logo !== 'false';
   const showTaxDetails = settings.show_tax_details !== 'false';
   const showFooterMessage = settings.show_footer_message !== 'false';
-  const footerMessage = escapeHtml(settings.footer_custom_message || 'Merci de votre visite !\nA bientôt.');
+  const footerMessage = escapeHtml(settings.footer_custom_message || 'Merci de votre visite !\nÀ bientôt.');
   const showQrCode = settings.show_qr_code === 'true';
 
   const currentRestaurantId = orderData.restaurant_id || orderData.restaurantId || settings.pos_restaurant_id;
@@ -594,7 +685,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const logoDataUrl = logoTargetUrl ? await getCachedLogoDataUrl(logoTargetUrl, currentRestaurantId) : '';
   
   const logoHtml = logoDataUrl 
-    ? `<div style="text-align: center; width: 100%; margin-bottom: 6px;"><img src="${logoDataUrl}" style="max-width: 30%; max-height: 40px; display: block; margin: 0 auto; filter: grayscale(100%);" /></div>` 
+    ? `<div style="text-align: center; width: 100%; margin-bottom: 6px;"><img src="${logoDataUrl}" style="max-width: 40%; max-height: 45px; display: block; margin: 0 auto; filter: grayscale(100%) contrast(150%);" /></div>` 
     : '';
 
   const restaurantName = escapeHtml(
@@ -617,7 +708,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   
   let orderTypeLabel = 'SUR PLACE';
   const rawType = String(orderData.orderType || '').toLowerCase();
-  if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'A EMPORTER';
+  if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'À EMPORTER';
   if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
 
   const rawPayment = String(
@@ -657,32 +748,40 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     
     let optionsTotalPrice = 0;
     let notesHtml = '';
-    const notes = Array.isArray(item.notes) ? item.notes : (Array.isArray(item.options) ? item.options : []);
+    const notes = Array.isArray(item.notes) ? item.notes : (Array.isArray(item.options) ? item.options : (Array.isArray(item.selectedSubOptions) ? item.selectedSubOptions : []));
     
     if (notes.length > 0) {
       notesHtml = notes.map(n => {
-        const noteName = typeof n === 'string' ? n : (n.name || '');
-        const isSans = typeof n === 'object' && n.isSans;
+        const noteName = typeof n === 'string' ? n : (n.name || n.name_kds || n.kds_name || '');
+        if (!noteName) return '';
+        const isSans = (typeof n === 'object' && (n.isSans || n.is_sans)) || String(noteName).trim().toUpperCase().startsWith('SANS ');
         const optPrice = typeof n === 'object' ? Number(n.price || n.effective_price || 0) : 0;
         
         if (optPrice > 0) {
           optionsTotalPrice += optPrice;
         }
 
-        const style = isSans ? 'color: red; font-weight: bold;' : 'color: #333;';
+        // 🚨 Noir pur (#000) au lieu de rouge ou gris (#333) pour éviter le tramage flou sur thermique
+        const style = isSans 
+          ? 'color: #000; font-weight: 900; text-decoration: underline;' 
+          : 'color: #000; font-weight: 600;';
         const priceLabel = optPrice > 0 ? ` (+${optPrice.toFixed(2)} €)` : '';
-        return `<div style="padding-left: 12px; font-size: 11px; ${style}">- ${escapeHtml(noteName)}${priceLabel}</div>`;
+        return `<div style="padding-left: 10px; font-size: 11px; margin-top: 1px; ${style}">- ${escapeHtml(noteName)}${priceLabel}</div>`;
       }).join('');
     }
 
     const effectiveLineUnitPrice = baseUnitPrice + optionsTotalPrice;
     const itemTotal = (qty * effectiveLineUnitPrice).toFixed(2);
 
+    const qtyDisplay = (highlightMultiQty && qty > 1)
+      ? `<span style="border: 1.5px solid #000; padding: 0 3px; font-weight: 900;">${qty}x</span>`
+      : `${qty}x`;
+
     return `
-      <div style="margin-bottom: 4px;">
-        <div style="display: flex; justify-content: space-between; font-weight: bold;">
-          <span style="max-width: 75%; word-break: break-word;">${qty}x ${name}</span>
-          <span>${itemTotal} €</span>
+      <div style="margin-bottom: 6px;">
+        <div style="display: flex; justify-content: space-between; font-weight: 800; font-size: ${fontSize}; color: #000;">
+          <span style="max-width: 75%; word-break: break-word;">${qtyDisplay} ${name}</span>
+          <span style="white-space: nowrap;">${itemTotal} €</span>
         </div>
         ${notesHtml}
       </div>
@@ -702,15 +801,15 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   if (isLivraison && hasClientInfo) {
     const deliveryFeeNum = Number(d.fee || d.delivery_fee || orderData.delivery_fee || 0);
     deliveryBlockHtml = `
-      <div class="delivery-block" style="background-color: black; color: white; font-weight: bold; padding: 6px 8px; margin: 8px 0; border-radius: 2px; -webkit-print-color-adjust: exact;">
-        <div style="text-align: center; border-bottom: 1px solid white; padding-bottom: 3px; margin-bottom: 4px; font-size: 12px; text-transform: uppercase;">
+      <div class="delivery-block" style="border: 2px solid #000; color: #000; font-weight: bold; padding: 6px 8px; margin: 8px 0;">
+        <div style="background-color: #000; color: #fff; text-align: center; padding: 3px; margin-bottom: 5px; font-size: 12px; font-weight: 900; text-transform: uppercase; -webkit-print-color-adjust: exact;">
           *** FICHE LIVRAISON ***
         </div>
-        ${custName ? `<div><span style="font-size: 9px; opacity: 0.8;">CLIENT:</span> ${custName}</div>` : ''}
-        ${custAddress ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">ADRESSE:</span> ${custAddress}</div>` : ''}
-        ${custPhone ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">TÉL:</span> ${custPhone}</div>` : ''}
-        ${custNotes ? `<div style="margin-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">NOTE:</span> ${custNotes}</div>` : ''}
-        ${deliveryFeeNum > 0 ? `<div style="margin-top: 2px; border-top: 1px solid rgba(255,255,255,0.4); padding-top: 2px;"><span style="font-size: 9px; opacity: 0.8;">FRAIS DE LIVRAISON:</span> ${deliveryFeeNum.toFixed(2)} €</div>` : ''}
+        ${custName ? `<div><span style="font-size: 10px; font-weight: 900;">CLIENT :</span> ${custName}</div>` : ''}
+        ${custAddress ? `<div style="margin-top: 2px;"><span style="font-size: 10px; font-weight: 900;">ADRESSE :</span> ${custAddress}</div>` : ''}
+        ${custPhone ? `<div style="margin-top: 2px;"><span style="font-size: 10px; font-weight: 900;">TÉL :</span> ${custPhone}</div>` : ''}
+        ${custNotes ? `<div style="margin-top: 2px;"><span style="font-size: 10px; font-weight: 900;">NOTE :</span> ${custNotes}</div>` : ''}
+        ${deliveryFeeNum > 0 ? `<div style="margin-top: 4px; border-top: 1px dashed #000; padding-top: 3px;"><span style="font-size: 10px; font-weight: 900;">FRAIS DE LIVRAISON :</span> ${deliveryFeeNum.toFixed(2)} €</div>` : ''}
       </div>
     `;
   }
@@ -724,9 +823,9 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     const ht = (totalNum / divisor).toFixed(2);
     const tvaAmount = (totalNum - totalNum / divisor).toFixed(2);
     taxDetailsHtml = `
-      <div style="font-size: 10px; font-weight: normal; margin-top: 4px;">
-        <div style="display: flex; justify-content: space-between;"><span>Sous-total HT:</span><span>${ht} €</span></div>
-        <div style="display: flex; justify-content: space-between;"><span>TVA (${tvaRate}%):</span><span>${tvaAmount} €</span></div>
+      <div style="font-size: 11px; font-weight: 600; margin-top: 4px; color: #000;">
+        <div style="display: flex; justify-content: space-between;"><span>Sous-total HT :</span><span>${ht} €</span></div>
+        <div style="display: flex; justify-content: space-between;"><span>TVA (${tvaRate}%) :</span><span>${tvaAmount} €</span></div>
       </div>
     `;
   }
@@ -755,10 +854,10 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
         <style>
           @page { margin: 0; size: auto; }
           * { box-sizing: border-box; }
-          html, body { font-family: monospace; font-size: ${fontSize}; margin: 0; padding: ${bodyPadding}; width: ${bodyWidth}; height: auto; overflow: hidden; color: black; line-height: 1.2; text-align: left; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          html, body { font-family: Arial, Helvetica, sans-serif; font-size: ${fontSize}; margin: 0; padding: ${bodyPadding}; width: ${bodyWidth}; height: auto; overflow: hidden; color: #000; line-height: 1.25; text-align: left; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .center { text-align: center; width: 100%; }
           .bold { font-weight: bold; }
-          hr { border: none; border-top: 1px solid black; margin: 6px 0; }
+          hr { border: none; border-top: 1.5px dashed #000; margin: 7px 0; }
         </style>
       </head>
       <body>
@@ -766,9 +865,9 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 
         <div class="center">
           <div style="font-size: ${headerFontSize}; font-weight: 900; text-transform: uppercase;">${restaurantName}</div>
-          ${showHeaderInfo && restaurantAddress ? `<div style="font-size: 11px;">${restaurantAddress}</div>` : ''}
-          ${showHeaderInfo && restaurantPhone ? `<div style="font-size: 11px;">Tél: ${restaurantPhone}</div>` : ''}
-          <div style="font-size: 11px; margin-top: 2px;">${orderDate}</div>
+          ${showHeaderInfo && restaurantAddress ? `<div style="font-size: 11px; font-weight: 600;">${restaurantAddress}</div>` : ''}
+          ${showHeaderInfo && restaurantPhone ? `<div style="font-size: 11px; font-weight: 600;">Tél : ${restaurantPhone}</div>` : ''}
+          <div style="font-size: 11px; font-weight: 600; margin-top: 2px;">${orderDate}</div>
         </div>
 
         <hr />
@@ -781,28 +880,29 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 
         ${taxDetailsHtml}
 
-        <div style="display: flex; justify-content: space-between; font-size: 10px; font-weight: normal; margin-top: 2px;">
-          <span>Mode de règlement:</span>
+        <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; margin-top: 3px;">
+          <span>Mode de règlement :</span>
           <span>${paymentLabel}</span>
         </div>
 
-        <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 900; margin-top: 6px;">
+        <div style="display: flex; justify-content: space-between; font-size: 17px; font-weight: 900; margin-top: 6px; border-top: 2px solid #000; padding-top: 4px;">
           <span>TOTAL TTC</span>
           <span>${total} €</span>
         </div>
 
-        <hr />
-
-        <div style="text-align: center; width: 100%; margin: 8px auto 4px auto;">
-          <div style="font-size: 15px; font-weight: 900; text-align: center; width: 100%;">Commande : ${cleanOrderNumber}</div>
-          <div style="font-size: 13px; font-weight: bold; text-align: center; width: 100%; margin-top: 2px;">*** ${orderTypeLabel} ***</div>
+        <div style="border: 3px solid #000; text-align: center; width: 100%; margin: 10px auto 4px auto; padding: 6px 4px;">
+          <div style="font-size: 11px; font-weight: 800; text-transform: uppercase;">VOTRE NUMÉRO DE COMMANDE</div>
+          <div style="font-size: 26px; font-weight: 900; letter-spacing: 1px; margin: 2px 0;">${cleanOrderNumber}</div>
+          <div style="background-color: #000; color: #fff; font-size: 13px; font-weight: 900; display: inline-block; padding: 2px 10px; margin-top: 2px; -webkit-print-color-adjust: exact;">
+            ${orderTypeLabel}
+          </div>
         </div>
 
         ${(showFooterMessage || showQrCode) ? '<hr />' : ''}
 
         ${showFooterMessage ? `
-          <div style="text-align: center; width: 100%; margin: 8px auto 4px auto;">
-            <div style="font-size: 11px; font-weight: normal; text-align: center; width: 100%; white-space: pre-wrap; word-break: break-word;">${footerMessage}</div>
+          <div style="text-align: center; width: 100%; margin: 6px auto 4px auto;">
+            <div style="font-size: 11px; font-weight: 700; text-align: center; width: 100%; white-space: pre-wrap; word-break: break-word;">${footerMessage}</div>
           </div>
         ` : ''}
 

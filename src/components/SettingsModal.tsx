@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { 
-  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft
+  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft, Eye
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PosSetup from '@/components/PosSetup';
@@ -58,6 +58,11 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
   const [copiesClient, setCopiesClient] = useState(() => getSecureSetting('receipt_copies_client', '1'));
   const [copiesKitchen, setCopiesKitchen] = useState(() => getSecureSetting('receipt_copies_kitchen', '1'));
 
+  // --- NOUVEAUX ÉTATS DE VISIBILITÉ CUISINE & TICKET ---
+  const [kitchenFontScale, setKitchenFontScale] = useState(() => getSecureSetting('kitchen_font_scale', 'normal'));
+  const [kitchenInvertedHeader, setKitchenInvertedHeader] = useState(() => getSecureSetting('kitchen_inverted_header', 'true') !== 'false');
+  const [highlightMultiQty, setHighlightMultiQty] = useState(() => getSecureSetting('highlight_multi_qty', 'true') !== 'false');
+
   const [showLogo, setShowLogo] = useState(() => getSecureSetting('show_logo', 'true') !== 'false');
   const [showHeaderInfo, setShowHeaderInfo] = useState(() => getSecureSetting('show_header_info', 'true') !== 'false');
   const [showTaxDetails, setShowTaxDetails] = useState(() => getSecureSetting('show_tax_details', 'false') === 'true');
@@ -93,23 +98,56 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     fetchPrinters();
   }, []);
 
-  const handleTestPrint = async (targetPrinter?: string) => {
+  const handleTestPrint = async (targetPrinter?: string, isKitchenTest: boolean = false) => {
     if (!(window as any).electronAPI) {
       return toast.error("Impression de test non disponible sur navigateur web");
     }
 
-    toast.info("Envoi du ticket de test...");
-    const testData = {
+    toast.info(isKitchenTest ? "Envoi du bon cuisine de test..." : "Envoi du ticket client de test...");
+    
+    const testData = isKitchenTest ? {
+      orderType: 'CUISINE - A EMPORTER',
+      orderNumber: 'TEST-88',
+      orderDate: new Date().toLocaleString('fr-FR'),
+      customer_name: 'CLIENT TEST',
+      comment: 'BIEN CUIT SVP',
+      items: [
+        { 
+          qty: 2, 
+          name: 'Menu Tacos L', 
+          name_kds: 'TACOS L',
+          options: [
+            { name: 'Frite Cheesy', name_kds: 'FRITE FROMAGERE' },
+            { name: 'Sauce Algérienne', name_kds: 'ALGERIENNE' },
+            { name: 'Sans Oignon', isSans: true }
+          ] 
+        },
+        {
+          qty: 1,
+          name: 'Tenders x5',
+          name_kds: 'TENDERS X5',
+          isSolo: true
+        }
+      ]
+    } : {
       orderType: 'SUR PLACE',
       orderNumber: 'TEST-01',
       orderDate: new Date().toLocaleString('fr-FR'),
       restaurantName: 'TEST CALIBRATION POS',
-      restaurantAddress: '123 Rue de la Caisse, Paris',
+      restaurantAddress: '123 Rue de la Caisse, France',
       restaurantPhone: '01 02 03 04 05',
       items: [
-        { qty: 1, name: 'TICKET DE CALIBRATION', unitPrice: 10.00, notes: ['Vérification largeur', 'Vérification coupe'] }
+        { 
+          qty: 2, 
+          name: 'ARTICLE DE CALIBRATION', 
+          unitPrice: 10.00, 
+          options: [
+            { name: 'Supplément Test', price: 1.50 },
+            { name: 'Sans Oignon', isSans: true }
+          ] 
+        }
       ],
-      total: 10.00
+      total: 23.00
     };
 
     try {
@@ -403,7 +441,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                             <option key={idx} value={p.name}>{p.name} {p.isDefault ? '(Système)' : ''}</option>
                           ))}
                         </select>
-                        <button onClick={() => handleTestPrint(caissePrinter)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1 cursor-pointer">
+                        <button onClick={() => handleTestPrint(caissePrinter, false)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1 cursor-pointer">
                           <Printer size={12} /> Test impression Client
                         </button>
                       </div>
@@ -420,7 +458,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                             <option key={idx} value={p.name}>{p.name}</option>
                           ))}
                         </select>
-                        <button onClick={() => handleTestPrint(kitchenPrinter)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1 cursor-pointer">
+                        <button onClick={() => handleTestPrint(kitchenPrinter, true)} className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1 cursor-pointer">
                           <Printer size={12} /> Test impression Cuisine
                         </button>
                       </div>
@@ -460,7 +498,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                       </div>
 
                       <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Taille Police</label>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Taille Police (Ticket Client)</label>
                         <select 
                           value={fontSize}
                           onChange={(e) => { setFontSize(e.target.value); setSecureSetting('receipt_font_size', e.target.value); }}
@@ -468,7 +506,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                         >
                           <option value="small">Petite</option>
                           <option value="normal">Normale (Auto)</option>
-                          <option value="large">Grande (Lisibilité Cuisine)</option>
+                          <option value="large">Grande</option>
                         </select>
                       </div>
 
@@ -502,6 +540,71 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                           className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
                         />
                       </div>
+                    </div>
+                  </div>
+
+                  {/* 🟢 NOUVEAU BLOC : LISIBILITÉ CUISINE & ALERTES VISUELLES */}
+                  <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
+                    <div className="flex items-center gap-3">
+                      <Eye className="text-primary" size={24} />
+                      <div>
+                        <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Lisibilité Cuisine & Alertes Visuelles</h3>
+                        <p className="text-xs font-bold text-gray-400">Optimisez la lecture à distance des bons de préparation en cuisine.</p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-6 pt-2">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Taille du Texte Cuisine (Produits & Options)</label>
+                        <select 
+                          value={kitchenFontScale}
+                          onChange={(e) => { 
+                            setKitchenFontScale(e.target.value); 
+                            setSecureSetting('kitchen_font_scale', e.target.value); 
+                            toast.success("Taille du texte cuisine mise à jour !");
+                          }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        >
+                          <option value="normal">Normale (16px / 14px)</option>
+                          <option value="large">Grande - Lecture à 1m (18px / 16px)</option>
+                          <option value="xlarge">Très Grande - Lecture de loin (20px / 18px)</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Style Bandeau Produit (Cuisine)</label>
+                        <select 
+                          value={kitchenInvertedHeader ? 'true' : 'false'}
+                          onChange={(e) => { 
+                            const isInverted = e.target.value === 'true';
+                            setKitchenInvertedHeader(isInverted); 
+                            setSecureSetting('kitchen_inverted_header', isInverted ? 'true' : 'false'); 
+                          }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        >
+                          <option value="true">Bandeau Noir Plein (Contraste Maximal)</option>
+                          <option value="false">Encadré Blanc Bordure Épaisse (Économie chauffe)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="pt-4 border-t border-gray-200">
+                      <label className="flex items-center gap-3 cursor-pointer p-3 bg-white rounded-xl border border-gray-200 shadow-sm">
+                        <input 
+                          type="checkbox" 
+                          checked={highlightMultiQty} 
+                          onChange={(e) => { 
+                            const val = e.target.checked;
+                            setHighlightMultiQty(val); 
+                            setSecureSetting('highlight_multi_qty', val ? 'true' : 'false'); 
+                          }} 
+                          className="w-5 h-5 accent-primary" 
+                        />
+                        <div>
+                          <span className="text-sm font-bold text-secondary block">Mettre en évidence les quantités multiples (2X, 3X...)</span>
+                          <span className="text-xs font-bold text-gray-400">Affiche un badge contrasté quand un article est commandé en plusieurs exemplaires pour éviter les oublis.</span>
+                        </div>
+                      </label>
                     </div>
                   </div>
 
