@@ -195,11 +195,13 @@ const generateAndPrintReceipt = async (
   }
 };
 
+// 🟢 Impression ticket cuisine épurée (sans aucune information client)
 const generateAndPrintKitchenTicket = async (
   orderNumber: string, 
   orderType: string, 
   items: any[], 
-  groupMapping: Record<string, string> = {}
+  groupMapping: Record<string, string> = {},
+  comment: string = ''
 ) => {
   if (!(window as any).electronAPI) return;
   const printerName = getSecureSetting('imprimante_cuisine', undefined) || undefined;
@@ -208,7 +210,8 @@ const generateAndPrintKitchenTicket = async (
     orderNumber,
     orderType,
     items,
-    groupMapping
+    groupMapping,
+    comment
   });
 
   try {
@@ -862,7 +865,6 @@ const Caisse = () => {
       finalRawSelections = incomingData;
     }
 
-    // 🟢 PRIORITÉ ABSOLUE À 'p' (le produit personnalisé renvoyé par OptionsModal)
     const currentProduct = p || selectedProduct;
     const effectiveVariantId = currentProduct?.variantId ?? currentProduct?.variant_id ?? selectedProduct?.variantId;
     const baseParentId = currentProduct?.original_product_id ?? currentProduct?.id ?? selectedProduct?.id;
@@ -963,9 +965,9 @@ const Caisse = () => {
           customToast(`Encaissé (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
 
           const isCashMethodOffline = String(method).toLowerCase().includes('espece') || 
-                                     String(method).toLowerCase().includes('cash') || 
-                                     String(method).toLowerCase() === 'counter' || 
-                                     cashAmount > 0;
+                                      String(method).toLowerCase().includes('cash') || 
+                                      String(method).toLowerCase() === 'counter' || 
+                                      cashAmount > 0;
           if (isCashMethodOffline) {
             openCashDrawer(true);
           }
@@ -1005,9 +1007,9 @@ const Caisse = () => {
               status: 'En cours', 
               payment_method: method, 
               cash_amount: cashAmount, 
-              order_type_id: currentOrderTypeId || undefined,
-              order_details: cleanOrderDetails,
-              total_price: parseFloat(finalTotal.toFixed(2)),
+              order_type_id: currentOrderTypeId || undefined, 
+              order_details: cleanOrderDetails, 
+              total_price: parseFloat(finalTotal.toFixed(2)), 
               delivery_fee: activeDeliveryFee,
               session_id: currentSessionId 
             })
@@ -1034,9 +1036,9 @@ const Caisse = () => {
         customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
 
         const isCashMethodOnline = String(method).toLowerCase().includes('espece') || 
-                                  String(method).toLowerCase().includes('cash') || 
-                                  String(method).toLowerCase() === 'counter' || 
-                                  cashAmount > 0;
+                                    String(method).toLowerCase().includes('cash') || 
+                                    String(method).toLowerCase() === 'counter' || 
+                                    cashAmount > 0;
         if (isCashMethodOnline) {
           openCashDrawer(true);
         }
@@ -1174,9 +1176,9 @@ const Caisse = () => {
               status: 'En cours', 
               payment_method: 'en attente', 
               cash_amount: 0, 
-              order_type_id: currentOrderTypeId || undefined,
-              order_details: cleanOrderDetails,
-              total_price: parseFloat(finalTotal.toFixed(2)),
+              order_type_id: currentOrderTypeId || undefined, 
+              order_details: cleanOrderDetails, 
+              total_price: parseFloat(finalTotal.toFixed(2)), 
               delivery_fee: activeDeliveryFee, 
               session_id: currentSessionId 
             })
@@ -1699,7 +1701,6 @@ const Caisse = () => {
             setSelectedProductForVariants(null); 
             setIsVariantsModalOpen(false); 
 
-            // Vérifie si ce produit a des groupes d'options (sauces, etc.)
             try {
               const { data: optionGroups } = await supabase
                 .from('product_option_groups')
@@ -1712,7 +1713,6 @@ const Caisse = () => {
                 setInitialSelections(null);
                 setIsOptionsModalOpen(true); 
               } else {
-                // Aucun groupe d'options : ajout direct au panier avec clé unique
                 const uniqueKey = `${variantProductId}-no-opts`;
                 addToCart({ 
                   id: uniqueKey, 
