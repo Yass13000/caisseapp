@@ -84,7 +84,7 @@ export const formatProductName = (name: string, isSolo: boolean): string => {
 };
 
 /**
- * 🟢 1. MAPPING DES OPTIONS DEPUIS SUPABASE
+ * 🟢 1. MAPPING DYNAMIQUE DEPUIS SUPABASE (GROUPE + VRAI NAME_KDS DIRECT DE LA BDD)
  */
 export const fetchOptionGroupMapping = async (
   items: any[], 
@@ -137,6 +137,25 @@ export const fetchOptionGroupMapping = async (
   const mapping: Record<string, any> = {};
 
   try {
+    const cleanOptionIds = Array.from(optionIds).filter(id => id && !isNaN(Number(id)));
+
+    // 🟢 RÉCUPÉRATION DU VRAI NAME_KDS DIRECTEMENT DANS LA TABLE OPTIONS DE SUPABASE
+    if (cleanOptionIds.length > 0) {
+      const { data: dbOptions } = await supabase
+        .from('options')
+        .select('id, name, name_kds')
+        .in('id', cleanOptionIds);
+
+      if (dbOptions) {
+        dbOptions.forEach(opt => {
+          if (opt.name_kds && String(opt.name_kds).trim() !== '') {
+            mapping[`opt_kds_${opt.id}`] = String(opt.name_kds).trim();
+          }
+        });
+      }
+    }
+
+    // A. Récupération par ID de groupe explicite
     if (explicitGroupIds.size > 0) {
       const { data: groupData } = await supabase
         .from('option_groups')
@@ -163,7 +182,7 @@ export const fetchOptionGroupMapping = async (
       }
     }
 
-    const cleanOptionIds = Array.from(optionIds).filter(id => id && !isNaN(Number(id)));
+    // B. Récupération via option_group_links
     if (cleanOptionIds.length > 0) {
       const { data: linksData } = await supabase
         .from('option_group_links')
@@ -212,18 +231,23 @@ export const fetchOptionGroupMapping = async (
       }
     }
 
+    // C. Options dynamiques (boissons, accompagnements...)
     if (dynamicProductIds.size > 0) {
       const dynProductArray = Array.from(dynamicProductIds);
 
       const { data: dynProductsData } = await supabase
         .from('product')
-        .select('id, category, subcategory_id')
+        .select('id, category, subcategory_id, name_kds')
         .in('id', dynProductArray);
 
       const dynProdCategoryMap: Record<string, { category?: string; subcategory_id?: number }> = {};
       if (dynProductsData) {
         dynProductsData.forEach(p => {
           if (p.id) {
+            if (p.name_kds) {
+              mapping[`opt_kds_${p.id}`] = String(p.name_kds).trim();
+              mapping[`opt_kds_dyn_${p.id}`] = String(p.name_kds).trim();
+            }
             dynProdCategoryMap[String(p.id)] = {
               category: p.category ? String(p.category).trim().toLowerCase() : undefined,
               subcategory_id: p.subcategory_id
@@ -287,7 +311,7 @@ export const fetchOptionGroupMapping = async (
 };
 
 /**
- * 🟢 2. FORMATEUR ET REGROUPEUR DES OPTIONS (PRIORITÉ ABSOLUE SUR NAME_KDS SI CUISINE)
+ * 🟢 2. FORMATEUR ET REGROUPEUR DES OPTIONS (RÉSOLUTION NAME_KDS DEPUIS SUPABASE)
  */
 export const getFormattedOrderOptions = (
   item: any, 
@@ -419,8 +443,10 @@ export const getFormattedOrderOptions = (
       return;
     }
 
-    // 🟢 PRIORITÉ DIRECTE AU NAME_KDS SANS AUCUNE DÉDUCTION
-    const directKds = opt.name_kds || opt.kds_name || opt.nameKds;
+    // 🟢 RÉSOLUTION DIRECTE DEPUIS SUPABASE (priorité sur le mapping BDD, puis sur l'objet)
+    const dbKdsName = groupMapping[`opt_kds_${strOptId}`] || groupMapping[`opt_kds_${cleanOptId}`];
+    const directKds = dbKdsName || opt.name_kds || opt.kds_name || opt.nameKds;
+
     const regularName = typeof opt === 'string' ? opt : (opt.name || opt.option_name || opt.title || opt.value || '');
     const rawName = isKitchen && directKds ? directKds : regularName;
 
@@ -628,7 +654,7 @@ export const buildClientReceiptPayload = (params: {
 };
 
 /**
- * 🟢 4. PAYLOAD BON CUISINE (TRANSMISSION SANS PERTE DES NAME_KDS ET COMPLÉMENTS)
+ * 🟢 4. PAYLOAD BON CUISINE (TRANSMISSION DIRECTE DU NOM KDS ET DU COMPLÉMENT)
  */
 export const buildKitchenReceiptPayload = (params: {
   orderNumber: string;
