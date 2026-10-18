@@ -363,7 +363,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
     const resolvedOrderType = ORDER_TYPE_LABELS[order.order_type_id] || 'SUR PLACE';
 
-    // 🟢 Transmission de toutes les informations client, du complément d'adresse et du commentaire
     const clientInfo = {
       name: order.customer_name || '',
       phone: order.customer_phone || '',
@@ -379,7 +378,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     onClose();
   };
 
-  // 🟢 Impression ticket caisse avec injection explicite de comment et customer_address_complement
   const printOrder = async (order: any, isCash: boolean = false) => {
     if (!(window as any).electronAPI) return;
 
@@ -399,7 +397,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     }
   };
 
-  // 🟢 Impression ticket cuisine avec injection explicite de comment et customer_address_complement
+  // 🟢 Impression ticket cuisine sans coordonnées client (uniquement commande & préparation)
   const printKitchenTicket = async (order: any) => {
     if (!(window as any).electronAPI) return;
 
@@ -407,7 +405,13 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       const items = extractItemsSafely(order.order_details);
 
       const printerName = localStorage.getItem('imprimante_cuisine') || undefined;
-      const date = new Date(order.created_at || Date.now()).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const date = new Date(order.created_at || Date.now()).toLocaleString('fr-FR', { 
+        day: '2-digit', 
+        month: '2-digit', 
+        year: 'numeric', 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
       const orderNumber = order.order_number || order.id.toString().slice(0, 4);
       
       let orderType = 'SUR PLACE';
@@ -420,16 +424,10 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         items,
         groupMapping: optionGroupMapping,
         orderDate: date,
-        comment: order.comment || order.notes || '',
-        customer_name: order.customer_name || '',
-        customer_address: order.customer_address || '',
-        customer_address_complement: order.customer_address_complement || order.address_complement || ''
+        comment: order.comment || order.notes || ''
       });
 
       kitchenPayload.comment = order.comment || order.notes || '';
-      kitchenPayload.customer_name = order.customer_name || '';
-      kitchenPayload.customer_address = order.customer_address || '';
-      kitchenPayload.customer_address_complement = order.customer_address_complement || order.address_complement || '';
 
       await (window as any).electronAPI.printReceipt(kitchenPayload, printerName);
     } catch (err) {
@@ -437,7 +435,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     }
   };
 
-  // 🟢 Encaissement direct par CB
   const handleQuickPay = async (e: React.MouseEvent, order: any) => {
     e.stopPropagation();
     try {
@@ -487,9 +484,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         await printOrder({ ...order, ...updatePayload }, false);
       }
 
-      // 🟢 RÈGLE ANTI-DOUBLON CUISINE :
-      // Si la commande vient de la caisse (numéro commençant par C), le bon cuisine est DÉJÀ sorti.
-      // On n'imprime en cuisine ICI que si c'est une commande App (A) ou Borne (B).
       const isFromCaisse = isCaisseOrder(order);
       const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
       
@@ -511,7 +505,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     setIsPaymentModalOpen(true);
   };
 
-  // 🟢 Encaissement Espèces / Autre
   const handleCashPaymentConfirm = async (method: string, cashAmount: number) => {
     if (!paymentOrder) return;
     setIsProcessing(true);
@@ -574,9 +567,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         await printOrder(updatedOrder, false);
       }
 
-      // 🟢 RÈGLE ANTI-DOUBLON CUISINE :
-      // Si la commande commence par C (Caisse), le bon cuisine est DÉJÀ sorti lors du « Envoyer sans paiement ».
-      // On bloque l'impression cuisine pour la caisse, mais on la garde pour App (A) et Borne (B).
       const isFromCaisse = isCaisseOrder(paymentOrder);
       const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
       
@@ -625,7 +615,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       return (
         <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mt-2 space-y-3">
           
-          {/* INFORMATIONS ADRESSE & COMPLÉMENT (SI LIVRAISON) */}
           {(orderAddress || orderComplement) && (
             <div className="bg-white border border-gray-200 p-2.5 rounded-lg text-xs space-y-1">
               {orderAddress && (
@@ -643,7 +632,6 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
             </div>
           )}
 
-          {/* COMMENTAIRE / NOTE CLIENT */}
           {orderComment && (
             <div className="p-2.5 bg-amber-50 border-2 border-amber-300 rounded-lg text-slate-950 font-black text-xs uppercase flex items-start gap-1.5 shadow-sm">
               <MessageSquare size={14} className="text-amber-700 shrink-0 mt-0.5" />
