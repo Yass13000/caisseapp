@@ -2,7 +2,9 @@
 import { supabase } from '@/lib/supabaseClient';
 
 export interface FormattedOptionItem {
+  id?: string | number;
   name: string;
+  name_kds?: string;
   price: number;
   qty: number;
   isSans: boolean;
@@ -43,27 +45,23 @@ const safeParseFloat = (val: unknown): number => {
 };
 
 /**
- * 🟢 DÉTECTION DU MODE SOLO D'UN ARTICLE (SÉCURISÉE SANS CONFLIT)
+ * 🟢 DÉTECTION DU MODE SOLO D'UN ARTICLE
  */
 export const checkIsSolo = (item: any): boolean => {
   if (!item) return false;
 
   const rawName = item.name || item.product?.name || '';
 
-  // 1. Si le nom commence expressément par "Menu", ce n'est jamais un solo
   if (/^menu\s+/i.test(rawName)) return false;
 
-  // 2. Si le choix solo est explicitement désactivé (false), on s'arrête tout de suite
   if (item.isSolo === false || item.is_solo === false) return false;
   if (item.optionsPayload?.isSolo === false || item.rawSelections?.isSolo === false) return false;
   if (item.product?.isSolo === false || item.product?.is_solo === false) return false;
 
-  // 3. Vérification positive directe
   if (item.isSolo === true || item.is_solo === true) return true;
   if (item.optionsPayload?.isSolo === true || item.rawSelections?.isSolo === true) return true;
   if (item.product?.isSolo === true || item.product?.is_solo === true) return true;
 
-  // 4. Si le nom contient spécifiquement le mot "seul"
   return /\bseul\b/i.test(rawName);
 };
 
@@ -73,12 +71,10 @@ export const checkIsSolo = (item: any): boolean => {
 export const formatProductName = (name: string, isSolo: boolean): string => {
   if (!name) return '';
 
-  // Si c'est un menu, on conserve le nom original sans lui rajouter "Seul"
   if (!isSolo) {
     return name.replace(/\s+seul\b/i, '').trim();
   }
 
-  // Si c'est un solo, on s'assure que le préfixe "Menu" est retiré et qu'il porte la mention "Seul"
   const cleanName = name
     .replace(/^menu\s+/i, '')
     .replace(/\s+seul\b/i, '')
@@ -88,7 +84,7 @@ export const formatProductName = (name: string, isSolo: boolean): string => {
 };
 
 /**
- * 🟢 1. MAPPING DES OPTIONS DEPUIS SUPABASE (AVEC LES VRAIES COLONNES DE OPTION_GROUPS)
+ * 🟢 1. MAPPING DES OPTIONS DEPUIS SUPABASE
  */
 export const fetchOptionGroupMapping = async (
   items: any[], 
@@ -141,7 +137,6 @@ export const fetchOptionGroupMapping = async (
   const mapping: Record<string, any> = {};
 
   try {
-    // A. Récupération par ID de groupe explicite
     if (explicitGroupIds.size > 0) {
       const { data: groupData } = await supabase
         .from('option_groups')
@@ -168,7 +163,6 @@ export const fetchOptionGroupMapping = async (
       }
     }
 
-    // B. Récupération via les liens option_group_links
     const cleanOptionIds = Array.from(optionIds).filter(id => id && !isNaN(Number(id)));
     if (cleanOptionIds.length > 0) {
       const { data: linksData } = await supabase
@@ -218,7 +212,6 @@ export const fetchOptionGroupMapping = async (
       }
     }
 
-    // C. Options dynamiques (Boissons, Accompagnements...)
     if (dynamicProductIds.size > 0) {
       const dynProductArray = Array.from(dynamicProductIds);
 
@@ -294,7 +287,7 @@ export const fetchOptionGroupMapping = async (
 };
 
 /**
- * 🟢 2. FORMATEUR ET REGROUPEUR DES OPTIONS POUR L'AFFICHAGE DU TICKET & CUISINE KDS
+ * 🟢 2. FORMATEUR ET REGROUPEUR DES OPTIONS (PRIORITÉ ABSOLUE SUR NAME_KDS SI CUISINE)
  */
 export const getFormattedOrderOptions = (
   item: any, 
@@ -310,7 +303,9 @@ export const getFormattedOrderOptions = (
 
   if (item.boisson) {
     rawOptions.push({
+      id: item.boisson.id,
       name: typeof item.boisson === 'string' ? item.boisson : (item.boisson.name || ''),
+      name_kds: typeof item.boisson === 'object' ? (item.boisson.name_kds || item.boisson.kds_name) : undefined,
       price: safeParseFloat(item.boisson.price),
       group_name: 'BOISSONS',
       hide_if_solo: true,
@@ -319,7 +314,9 @@ export const getFormattedOrderOptions = (
   }
   if (item.accompagnement) {
     rawOptions.push({
+      id: item.accompagnement.id,
       name: typeof item.accompagnement === 'string' ? item.accompagnement : (item.accompagnement.name || ''),
+      name_kds: typeof item.accompagnement === 'object' ? (item.accompagnement.name_kds || item.accompagnement.kds_name) : undefined,
       price: safeParseFloat(item.accompagnement.price),
       group_name: 'ACCOMPAGNEMENTS',
       hide_if_solo: true,
@@ -351,7 +348,6 @@ export const getFormattedOrderOptions = (
   const optionsByCategory = new Map<string, { originalGroupName: string; sortKds: number; items: FormattedOptionItem[] }>();
   const processedSansNames = new Set<string>();
 
-  // Ingrédients retirés (SANS ...)
   const removedIngs = item.removedIngredients || item.product?.removedIngredients || [];
   if (Array.isArray(removedIngs) && removedIngs.length > 0) {
     const catKey = 'INGRÉDIENTS';
@@ -368,7 +364,9 @@ export const getFormattedOrderOptions = (
         if (!processedSansNames.has(displayName)) {
           processedSansNames.add(displayName);
           optionsByCategory.get(catKey)!.items.push({ 
+            id: ing.id,
             name: displayName, 
+            name_kds: displayName,
             price: 0, 
             qty: 1, 
             isSans: true,
@@ -386,7 +384,6 @@ export const getFormattedOrderOptions = (
     const cleanOptId = strOptId.replace('dyn_', '');
     const explicitGrpId = opt.option_group_id || opt.group_id;
 
-    // Détermination du nom de groupe
     const mappedByOptId = groupMapping[strOptId] || groupMapping[cleanOptId] || groupMapping[`dyn_${cleanOptId}`];
     const mappedByGrpId = explicitGrpId ? groupMapping[`grp_${explicitGrpId}`] : null;
 
@@ -399,7 +396,6 @@ export const getFormattedOrderOptions = (
     const finalGroupName = mappedByGrpId || mappedByOptId || candidateGroup || fallbackType || 'OPTIONS';
     const cleanCategoryKey = String(finalGroupName).trim().toUpperCase();
 
-    // Métadonnées du groupe
     const groupMeta: GroupMeta | null = 
       (explicitGrpId ? (groupMapping[`_meta_grp_${explicitGrpId}`] || groupMapping[`_meta_${explicitGrpId}`]) : null) ||
       groupMapping[`_meta_${strOptId}`] ||
@@ -408,13 +404,11 @@ export const getFormattedOrderOptions = (
       groupMapping[`_meta_name_${cleanCategoryKey}`] ||
       null;
 
-    // 🚨 RÈGLE KDS 1 : show_on_kds
     const isShowOnKds = opt.show_on_kds !== false && groupMeta?.show_on_kds !== false;
     if (isKitchen && !isShowOnKds) {
       return;
     }
 
-    // 🚨 RÈGLE KDS 2 : hide_if_solo
     const isHideIfSolo = 
       opt.hide_if_solo === true || 
       opt.is_hide_if_solo === true || 
@@ -425,7 +419,11 @@ export const getFormattedOrderOptions = (
       return;
     }
 
-    const rawName = typeof opt === 'string' ? opt : (opt.name || opt.option_name || opt.title || opt.value || '');
+    // 🟢 PRIORITÉ DIRECTE AU NAME_KDS SANS AUCUNE DÉDUCTION
+    const directKds = opt.name_kds || opt.kds_name || opt.nameKds;
+    const regularName = typeof opt === 'string' ? opt : (opt.name || opt.option_name || opt.title || opt.value || '');
+    const rawName = isKitchen && directKds ? directKds : regularName;
+
     const name = String(rawName).trim();
     if (!name || name.toLowerCase() === 'option' || name.toLowerCase() === 'options...') return;
 
@@ -442,7 +440,9 @@ export const getFormattedOrderOptions = (
         optionsByCategory.set(catKey, { originalGroupName: catKey, sortKds: -1000, items: [] });
       }
       optionsByCategory.get(catKey)!.items.push({ 
+        id: opt.id,
         name: displayName, 
+        name_kds: displayName,
         price: 0, 
         qty: 1, 
         isSans: true,
@@ -451,7 +451,6 @@ export const getFormattedOrderOptions = (
       return;
     }
 
-    // 🚨 RÈGLE KDS 3 : Récupération du sort_kds dynamique
     const groupSortKds = Number(
       groupMeta?.sort_kds !== undefined && groupMeta?.sort_kds !== null
         ? groupMeta.sort_kds
@@ -483,7 +482,9 @@ export const getFormattedOrderOptions = (
       existing.price += price;
     } else {
       grpEntry.items.push({ 
+        id: opt.id,
         name: displayName, 
+        name_kds: directKds || displayName,
         price: price, 
         qty: 1, 
         isSans: false,
@@ -492,7 +493,6 @@ export const getFormattedOrderOptions = (
     }
   });
 
-  // Construction de la liste des groupes et tri des articles internes
   const groupsList = Array.from(optionsByCategory.entries()).map(([groupKey, data]) => {
     data.items.sort((a, b) => (a.kdsSortOrder ?? 0) - (b.kdsSortOrder ?? 0));
     return {
@@ -513,7 +513,7 @@ export const getFormattedOrderOptions = (
 };
 
 /**
- * 🟢 3. PAYLOAD TICKET CLIENT
+ * 🟢 3. PAYLOAD TICKET CLIENT (AVEC COMPLÉMENT ET NOTE)
  */
 export const buildClientReceiptPayload = (params: {
   restaurantId?: string | null;
@@ -562,6 +562,7 @@ export const buildClientReceiptPayload = (params: {
     const isSolo = checkIsSolo(item);
     const optionGroups = getFormattedOrderOptions(item, groupMapping, false);
     const notes = optionGroups.flatMap(grp => grp.items.map(opt => ({
+      id: opt.id,
       name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
       price: opt.price || 0,
       isSans: opt.isSans
@@ -571,6 +572,7 @@ export const buildClientReceiptPayload = (params: {
     const finalItemName = formatProductName(rawName, isSolo);
 
     return {
+      id: item.id || item.product?.id,
       qty: item.quantity || item.qty || 1,
       name: finalItemName,
       unitPrice: item.price !== undefined ? item.price : (item.product?.price || 0),
@@ -580,6 +582,12 @@ export const buildClientReceiptPayload = (params: {
   });
 
   const restoName = restaurantInfo?.restaurant_name || restaurantInfo?.name || 'VOTRE RESTAURANT';
+
+  const customerName = clientInfo?.name || clientInfo?.customer_name || '';
+  const customerAddress = clientInfo?.address || clientInfo?.customer_address || '';
+  const addressComplement = clientInfo?.customer_address_complement || clientInfo?.address_complement || clientInfo?.additionalInfo || '';
+  const customerPhone = clientInfo?.phone || clientInfo?.customer_phone || '';
+  const comment = clientInfo?.comment || clientInfo?.notes || clientInfo?.deliveryNotes || '';
 
   return {
     restaurant_id: restaurantId,
@@ -600,18 +608,27 @@ export const buildClientReceiptPayload = (params: {
     items: formattedItems,
     total_price: finalTotal,
     total: finalTotal,
+    customer_name: customerName,
+    customer_phone: customerPhone,
+    customer_address: customerAddress,
+    customer_address_complement: addressComplement,
+    comment: comment,
     delivery: orderType.toUpperCase().includes('LIVRAISON') ? {
-      customerName: clientInfo?.name || clientInfo?.customer_name,
-      address: clientInfo?.address || clientInfo?.customer_address,
-      phone: clientInfo?.phone || clientInfo?.customer_phone,
-      deliveryNotes: clientInfo?.notes || clientInfo?.additionalInfo || clientInfo?.comment || '',
+      customerName,
+      name: customerName,
+      address: customerAddress,
+      address_complement: addressComplement,
+      additionalInfo: addressComplement,
+      phone: customerPhone,
+      deliveryNotes: comment,
+      notes: comment,
       fee: deliveryFee
     } : undefined
   };
 };
 
 /**
- * 🟢 4. PAYLOAD BON CUISINE (RÈGLES KDS : HIDE_IF_SOLO, SHOW_ON_KDS & SORT_KDS)
+ * 🟢 4. PAYLOAD BON CUISINE (TRANSMISSION SANS PERTE DES NAME_KDS ET COMPLÉMENTS)
  */
 export const buildKitchenReceiptPayload = (params: {
   orderNumber: string;
@@ -619,26 +636,46 @@ export const buildKitchenReceiptPayload = (params: {
   items: any[];
   groupMapping?: Record<string, any>;
   orderDate?: string;
+  customer_name?: string;
+  customer_address?: string;
+  customer_address_complement?: string;
+  comment?: string;
 }) => {
-  const { orderNumber, orderType, items, groupMapping = {}, orderDate } = params;
+  const { 
+    orderNumber, 
+    orderType, 
+    items, 
+    groupMapping = {}, 
+    orderDate,
+    customer_name = '',
+    customer_address = '',
+    customer_address_complement = '',
+    comment = ''
+  } = params;
 
   const formattedItems = (items || []).map(item => {
     const isSolo = checkIsSolo(item);
     const optionGroups = getFormattedOrderOptions(item, groupMapping, { isKitchen: true });
     
     const notes = optionGroups.flatMap(grp => grp.items.map(opt => ({
-      name: (grp.groupName ? `${grp.groupName}: ` : '') + (opt.qty > 1 ? `${opt.qty}x ` : '') + opt.name,
-      isSans: opt.isSans
+      id: opt.id,
+      name: (opt.qty > 1 ? `${opt.qty}x ` : '') + (opt.name_kds || opt.name),
+      name_kds: opt.name_kds || opt.name,
+      isSans: opt.isSans,
+      group_name: grp.originalGroupName || ''
     })));
 
-    const rawName = item.name || item.product?.name || 'Produit';
+    const rawName = item.name_kds || item.product?.name_kds || item.name || item.product?.name || 'Produit';
     const finalItemName = formatProductName(rawName, isSolo);
 
     return {
+      id: item.id || item.product?.id,
       qty: item.quantity || item.qty || 1,
       name: finalItemName,
+      name_kds: item.name_kds || item.product?.name_kds || finalItemName,
       unitPrice: 0,
       notes,
+      options: notes,
       categoryName: item.product?.category_name || item.category || ''
     };
   });
@@ -651,6 +688,10 @@ export const buildKitchenReceiptPayload = (params: {
     restaurant_name: 'CUISINE',
     restaurantName: 'CUISINE',
     items: formattedItems,
+    customer_name,
+    customer_address,
+    customer_address_complement,
+    comment,
     total: 0
   };
 };
@@ -736,7 +777,8 @@ export const buildReceiptPayloadFromOrder = async (
       name: order.customer_name,
       phone: order.customer_phone,
       address: order.customer_address,
-      notes: order.comment
+      customer_address_complement: order.customer_address_complement || order.address_complement,
+      comment: order.comment || order.notes
     },
     groupMapping: optionGroupMapping,
     orderDate: order.created_at ? new Date(order.created_at).toLocaleString('fr-FR') : undefined

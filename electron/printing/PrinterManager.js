@@ -32,10 +32,6 @@ function readSettingsFile() {
   return {};
 }
 
-/**
- * Calcule une largeur imprimable 100% sécurisée pour éviter toute coupure à droite
- * sur les pilotes POS-80, Saga et Epson TM-m30II.
- */
 function getSafePrintableWidth(rawWidthMm) {
   const num = Number(rawWidthMm) || 72;
   if (num <= 60) {
@@ -44,9 +40,6 @@ function getSafePrintableWidth(rawWidthMm) {
   return '62mm';
 }
 
-/**
- * Décode de façon sécurisée les articles, que ce soit un Array ou une chaîne JSON sérialisée
- */
 function parseOrderItems(rawDetails) {
   if (!rawDetails) return [];
   if (Array.isArray(rawDetails)) return rawDetails;
@@ -63,108 +56,18 @@ function parseOrderItems(rawDetails) {
   return [];
 }
 
-// ----------------------------------------------------------------------------
-// 🗂️ TABLES DE SÉCURITÉ KDS (BASÉES SUR OPTION_GROUPS & OPTIONS SUPABASE)
-// ----------------------------------------------------------------------------
-
-const HIDDEN_KDS_GROUP_IDS = new Set([17, 19, 31, 33, 34, 36, 59, 68, 70]);
-const HIDDEN_KDS_GROUP_NAMES = new Set([
-  'choisis ta boisson',
-  'choisis ta sauce',
-  'choisis ta boisson (kids)',
-  'boissson',
-  'boissons krousty',
-  'boissons formule',
-  'boissons kids',
-  'choisis ta boisson etudiant'
-]);
-
-const OPTION_ID_TO_KDS_NAME = {
-  77: 'FRITE FROMAGERE',
-  79: 'Frites classique',
-  102: 'L',
-  173: 'Supp Tenders',
-  174: 'SAUCE K',
-  373: 'Grat CHEVRE MIEL',
-  374: 'Grat raclette',
-  375: 'GRAT CHEDDAR',
-  376: 'Grat rape'
-};
-
-const OPTION_NAME_TO_KDS_NAME = {
-  'frite cheesy': 'FRITE FROMAGERE',
-  'frites': 'Frites classique',
-  'taille l': 'L',
-  "supp' poulet croustillant": 'Supp Tenders',
-  'kinder': 'SAUCE K',
-  'chevre miel': 'Grat CHEVRE MIEL'
-};
-
-function isHiddenOnKdsByGroup(opt) {
-  if (!opt || typeof opt !== 'object') return false;
-
-  const explicitFlags = [
-    opt.show_on_kds,
-    opt.showOnKds,
-    opt.group_show_on_kds,
-    opt.groupShowOnKds,
-    opt.option_group?.show_on_kds,
-    opt.option_group?.showOnKds,
-    opt.optionGroup?.show_on_kds,
-    opt.optionGroup?.showOnKds,
-    opt.group?.show_on_kds,
-    opt.group?.showOnKds
-  ];
-
-  for (const flag of explicitFlags) {
-    if (flag === false || String(flag).toLowerCase() === 'false') return true;
-    if (flag === true || String(flag).toLowerCase() === 'true') return false;
-  }
-
-  const groupId = Number(
-    opt.option_group_id ??
-    opt.optionGroupId ??
-    opt.group_id ??
-    opt.groupId ??
-    opt.option_group?.id ??
-    opt.optionGroup?.id ??
-    opt.group?.id ??
-    NaN
-  );
-  if (!Number.isNaN(groupId) && HIDDEN_KDS_GROUP_IDS.has(groupId)) {
-    return true;
-  }
-
-  const groupName = String(
-    opt.group_name ??
-    opt.groupName ??
-    opt.option_group_name ??
-    opt.option_group?.name ??
-    opt.optionGroup?.name ??
-    opt.group?.name ??
-    ''
-  ).trim().toLowerCase();
-
-  if (groupName && HIDDEN_KDS_GROUP_NAMES.has(groupName)) {
-    return true;
-  }
-
-  return false;
-}
-
+/**
+ * 🟢 RÉSOLUTION DIRECTE DE NAME_KDS SANS AUCUN DICTIONNAIRE EN DUR
+ */
 function resolveKdsDisplayName(obj, fallback = '') {
   if (obj === null || obj === undefined) return fallback;
 
   if (typeof obj === 'string') {
     const rawStr = obj.trim();
-    if (!rawStr) return fallback;
-    const cleanKey = rawStr.replace(/\s*\(\+\s*\d+(?:[.,]\d+)?\s*€?\)\s*$/i, '').trim().toLowerCase();
-    if (OPTION_NAME_TO_KDS_NAME[cleanKey]) {
-      return OPTION_NAME_TO_KDS_NAME[cleanKey];
-    }
-    return rawStr;
+    return rawStr || fallback;
   }
 
+  // 1. Lecture directe de name_kds sans devinette
   const kdsCandidates = [
     obj.name_kds,
     obj.kds_name,
@@ -174,8 +77,6 @@ function resolveKdsDisplayName(obj, fallback = '') {
     obj.option?.kds_name,
     obj.sub_option?.name_kds,
     obj.sub_option?.kds_name,
-    obj.subOption?.name_kds,
-    obj.subOption?.kds_name,
     obj.product?.name_kds,
     obj.product?.kds_name,
     obj.item?.name_kds,
@@ -191,18 +92,11 @@ function resolveKdsDisplayName(obj, fallback = '') {
     }
   }
 
-  const optId = Number(obj.option_id ?? obj.optionId ?? obj.id ?? obj.option?.id ?? NaN);
-  if (!Number.isNaN(optId) && OPTION_ID_TO_KDS_NAME[optId]) {
-    if (!Array.isArray(obj.options) && !Array.isArray(obj.notes)) {
-      return OPTION_ID_TO_KDS_NAME[optId];
-    }
-  }
-
+  // 2. Repli direct sur name si aucun name_kds n'a été spécifié
   const nameCandidates = [
     obj.name,
     obj.option?.name,
     obj.sub_option?.name,
-    obj.subOption?.name,
     obj.product?.name,
     obj.item?.name,
     obj.label
@@ -212,24 +106,38 @@ function resolveKdsDisplayName(obj, fallback = '') {
     if (nameCand !== null && nameCand !== undefined) {
       const trimmedName = String(nameCand).trim();
       if (trimmedName !== '') {
-        const cleanKey = trimmedName.replace(/\s*\(\+\s*\d+(?:[.,]\d+)?\s*€?\)\s*$/i, '').trim().toLowerCase();
-        const grpName = String(obj.group_name ?? obj.option_group?.name ?? obj.group?.name ?? '').toLowerCase();
-        const grpId = Number(obj.option_group_id ?? obj.group_id ?? obj.option_group?.id ?? NaN);
-        if (grpId === 71 || grpName.includes('gratine')) {
-          if (cleanKey === 'raclette') return 'Grat raclette';
-          if (cleanKey === 'cheddar') return 'GRAT CHEDDAR';
-          if (cleanKey === 'rapé' || cleanKey === 'rape') return 'Grat rape';
-          if (cleanKey === 'chevre miel' || cleanKey === 'chèvre miel') return 'Grat CHEVRE MIEL';
-        }
-        if (OPTION_NAME_TO_KDS_NAME[cleanKey]) {
-          return OPTION_NAME_TO_KDS_NAME[cleanKey];
-        }
         return trimmedName;
       }
     }
   }
 
   return fallback;
+}
+
+function extractOrderComment(orderData) {
+  if (!orderData || typeof orderData !== 'object') return '';
+
+  const candidates = [
+    orderData.comment,
+    orderData.notes,
+    orderData.order_comment,
+    orderData.orderComment,
+    orderData.deliveryNotes,
+    orderData.delivery_notes,
+    orderData.delivery?.deliveryNotes,
+    orderData.delivery?.notes,
+    orderData.delivery?.comment,
+    orderData.note
+  ];
+
+  for (const c of candidates) {
+    if (c !== null && c !== undefined) {
+      const s = String(c).trim();
+      if (s && s !== 'null' && s !== 'undefined') return s;
+    }
+  }
+
+  return '';
 }
 
 // ----------------------------------------------------------------------------
@@ -482,7 +390,7 @@ $printerName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase
 }
 
 // ----------------------------------------------------------------------------
-// 👨‍🍳 TICKET CUISINE (AVEC COMMENTAIRE ET COMPLÉMENT D'ADRESSE)
+// 👨‍🍳 TICKET CUISINE
 // ----------------------------------------------------------------------------
 function buildKitchenHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
@@ -522,11 +430,10 @@ function buildKitchenHtml(orderData, widthMm = '72') {
   }
 
   let orderTypeLabel = 'SUR PLACE';
-  const rawType = String(orderData.orderType || '').toLowerCase();
+  const rawType = String(orderData.orderType || orderData.type || '').toLowerCase();
   if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'À EMPORTER';
   if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
 
-  // Décodage sécurisé de items (gère aussi bien les Array que les strings JSON)
   const items = parseOrderItems(orderData.items || orderData.order_details);
 
   const sortedItems = [...items].sort((a, b) => {
@@ -552,33 +459,12 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 
     let notesHtml = '';
     
-    const candidates = [item.options, item.selectedSubOptions, item.sub_options, item.selectedOptions, item.notes]
+    const candidates = [item.notes, item.options, item.selectedSubOptions, item.sub_options, item.selectedOptions]
       .filter(arr => Array.isArray(arr) && arr.length > 0);
-    const rawNotes = candidates.find(arr => typeof arr[0] === 'object' && arr[0] !== null) || candidates[0] || [];
-    
-    const filteredNotes = rawNotes.filter(n => {
-      if (!n) return false;
-      if (isHiddenOnKdsByGroup(n)) return false;
-      if (isSolo && (
-        n.hide_if_solo === true || 
-        n.is_hide_if_solo === true || 
-        n.group_hide_if_solo === true || 
-        n.option?.hide_if_solo === true ||
-        n.option_group?.hide_if_solo === true
-      )) {
-        return false;
-      }
-      return true;
-    });
+    const rawNotes = candidates[0] || [];
 
-    const sortedNotes = [...filteredNotes].sort((a, b) => {
-      const sortA = Number(a?.sort_kds ?? a?.group_sort_kds ?? a?.option_group?.sort_kds ?? 999);
-      const sortB = Number(b?.sort_kds ?? b?.group_sort_kds ?? b?.option_group?.sort_kds ?? 999);
-      return sortA - sortB;
-    });
-
-    if (sortedNotes.length > 0) {
-      notesHtml = sortedNotes.map(n => {
+    if (rawNotes.length > 0) {
+      notesHtml = rawNotes.map(n => {
         const noteName = resolveKdsDisplayName(n, '');
         if (!noteName) return '';
 
@@ -628,7 +514,6 @@ function buildKitchenHtml(orderData, widthMm = '72') {
     `;
   }).join('');
 
-  // 🟢 Extraction robuste de toutes les informations client & note
   const customerName = escapeHtml(orderData.customer_name || orderData.customerName || (orderData.delivery && (orderData.delivery.customerName || orderData.delivery.name)) || '');
   const customerAddress = escapeHtml(orderData.customer_address || orderData.address || (orderData.delivery && orderData.delivery.address) || '');
   const addressComplement = escapeHtml(
@@ -637,14 +522,9 @@ function buildKitchenHtml(orderData, widthMm = '72') {
     (orderData.delivery && (orderData.delivery.customer_address_complement || orderData.delivery.address_complement || orderData.delivery.additionalInfo)) || 
     ''
   );
-  const comment = escapeHtml(
-    orderData.comment || 
-    orderData.notes || 
-    orderData.order_comment || 
-    orderData.deliveryNotes || 
-    (orderData.delivery && (orderData.delivery.deliveryNotes || orderData.delivery.notes)) || 
-    ''
-  );
+  
+  const rawComment = extractOrderComment(orderData);
+  const comment = escapeHtml(rawComment);
 
   let footerHtml = `
     <div style="border-top: 2.5px solid #000; margin-top: 6px; padding-top: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 900;">
@@ -658,8 +538,13 @@ function buildKitchenHtml(orderData, widthMm = '72') {
       <div style="border: 2px solid #000; margin-top: 6px; padding: 5px; font-size: 13px; font-weight: 900; text-transform: uppercase; word-break: break-word;">
         ${customerName ? `<div style="margin-bottom: 2px;">👤 CLIENT : ${customerName}</div>` : ''}
         ${customerAddress ? `<div style="margin-top: 2px; font-size: 11px;">📍 ADR : ${customerAddress}</div>` : ''}
-        ${addressComplement ? `<div style="margin-top: 2px; font-size: 11px; padding-left: 6px;">↳ COMPL : ${addressComplement}</div>` : ''}
-        ${comment ? `<div style="border-top: 1.5px dashed #000; margin-top: 4px; padding-top: 4px; font-size: 14px; font-weight: 900; background-color: #000; color: #fff; padding: 4px 6px; -webkit-print-color-adjust: exact;">⚠️ NOTE : ${comment}</div>` : ''}
+        ${addressComplement ? `<div style="margin-top: 2px; font-size: 11px; padding-left: 6px; color: #000;">↳ COMPL : ${addressComplement}</div>` : ''}
+        ${comment ? `
+          <div style="border: 3px solid #000; margin-top: 6px; padding: 5px; font-size: 14px; font-weight: 900; color: #000; background-color: #fff;">
+            <div style="font-size: 11px; text-decoration: underline; margin-bottom: 2px;">⚠️ NOTE / COMMENTAIRE :</div>
+            <div style="font-size: 15px; font-weight: 900;">${comment}</div>
+          </div>
+        ` : ''}
       </div>
     `;
   }
@@ -697,6 +582,13 @@ function buildKitchenHtml(orderData, widthMm = '72') {
           <span style="font-size: 16px; font-weight: 900; text-transform: uppercase; text-decoration: underline;">${orderTypeLabel}</span>
         </div>
 
+        ${comment ? `
+          <div style="border: 3px solid #000; padding: 5px 6px; margin-bottom: 8px; font-size: 13px; font-weight: 900; text-transform: uppercase; color: #000;">
+            <span style="background-color: #000; color: #fff; padding: 1px 4px; font-size: 11px; margin-right: 4px; -webkit-print-color-adjust: exact;">NOTE CLIENT</span>
+            <span style="font-size: 14px; text-decoration: underline;">${comment}</span>
+          </div>
+        ` : ''}
+
         <div>${itemsHtml}</div>
 
         ${footerHtml}
@@ -706,7 +598,7 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 }
 
 // ----------------------------------------------------------------------------
-// 📊 TICKET X / TICKET Z (COMPTABILITÉ CAISSE)
+// 📊 TICKET X / TICKET Z
 // ----------------------------------------------------------------------------
 function buildZReportHtml(reportData, widthMm = '72') {
   const isZ = reportData.type === 'Z' || String(reportData.orderType || '').toUpperCase().includes('Z');
@@ -875,7 +767,7 @@ function buildZReportHtml(reportData, widthMm = '72') {
 }
 
 // ----------------------------------------------------------------------------
-// 📜 TICKET CLIENT (AVEC COMMENTAIRE ET COMPLÉMENT D'ADRESSE)
+// 📜 TICKET CLIENT
 // ----------------------------------------------------------------------------
 async function buildReceiptHtml(orderData, widthMm = '72') {
   const settings = readSettingsFile();
@@ -951,7 +843,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   const orderDate = escapeHtml(orderData.orderDate || (orderData.created_at ? new Date(orderData.created_at).toLocaleString('fr-FR') : new Date().toLocaleString('fr-FR')));
   
   let orderTypeLabel = 'SUR PLACE';
-  const rawType = String(orderData.orderType || '').toLowerCase();
+  const rawType = String(orderData.orderType || orderData.type || '').toLowerCase();
   if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'À EMPORTER';
   if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
 
@@ -981,7 +873,6 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     paymentLabel = escapeHtml(rawPayment.toUpperCase());
   }
 
-  // Décodage sécurisé de items (gère aussi bien les Array que les strings JSON)
   const items = parseOrderItems(orderData.items || orderData.order_details);
 
   const totalNum = Number(orderData.total_price ?? orderData.total ?? 0);
@@ -1000,7 +891,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     
     if (notes.length > 0) {
       notesHtml = notes.map(n => {
-        const noteName = typeof n === 'string' ? n : (n.name || n.name_kds || n.kds_name || '');
+        const noteName = typeof n === 'string' ? n : (n.name || n.name_kds || '');
         if (!noteName) return '';
         const isSans = (typeof n === 'object' && (n.isSans || n.is_sans)) || String(noteName).trim().toUpperCase().startsWith('SANS ');
         const optPrice = typeof n === 'object' ? Number(n.price || n.effective_price || 0) : 0;
@@ -1036,13 +927,11 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     `;
   }).join('');
 
-  // Bloc Livraison avec complément d'adresse
   let deliveryBlockHtml = '';
   const d = orderData.delivery || {};
   const custName = escapeHtml(d.customerName || d.name || orderData.customer_name || '');
   const custAddress = escapeHtml(d.address || orderData.customer_address || '');
   const custAddressComplement = escapeHtml(
-    d.customer_address_complement || 
     d.address_complement || 
     d.additionalInfo || 
     orderData.customer_address_complement || 
@@ -1070,7 +959,6 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     `;
   }
 
-  // 🟢 Commentaire global de la commande (imprimé sur le ticket caisse)
   const orderComment = escapeHtml(
     orderData.comment || 
     orderData.notes || 
@@ -1208,7 +1096,7 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
 const PrinterManager = {
   async printReceipt(orderData, desiredPrinterName, mainWindow) {
     if (typeof orderData !== 'object' || orderData === null) {
-      console.error('[PrinterManager] printReceipt exige des données de commande structurées, type reçu:', typeof orderData);
+      console.error('[PrinterManager] printReceipt exige des données structurées, type reçu:', typeof orderData);
       return { success: false, error: 'INVALID_ORDER_DATA_FORMAT' };
     }
 
@@ -1225,7 +1113,6 @@ const PrinterManager = {
       }
     } catch (e) {}
 
-    // Décodage des articles
     const items = parseOrderItems(orderData.items || orderData.order_details);
 
     if (isKitchen && routingConfig && Object.keys(routingConfig).length > 0 && items.length > 0) {
@@ -1359,7 +1246,7 @@ const PrinterManager = {
           } catch (e) {}
 
           if (!success) {
-            console.error(`[PrinterManager] Erreur d'impression physique sur "${deviceName}":`, failureReason);
+            console.error(`[PrinterManager] Erreur impression physique sur "${deviceName}":`, failureReason);
             resolve({ success: false, error: failureReason });
           } else {
             resolve({ success: true, printerName: deviceName });
