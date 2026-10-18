@@ -299,7 +299,6 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
 
       const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping, 'DUPLICATA');
       
-      // Injection garantie de toutes les métadonnées pour l'impression thermique
       orderPayloadData.comment = order.comment || order.notes || '';
       orderPayloadData.customer_address_complement = order.customer_address_complement || order.address_complement || '';
       orderPayloadData.customer_address = order.customer_address || order.address || '';
@@ -315,7 +314,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     }
   };
 
-  // 🟢 IMPRESSION BON CUISINE HISTORIQUE (AVEC COMMENTAIRE & COMPLÉMENT)
+  // 🟢 IMPRESSION BON CUISINE HISTORIQUE ÉPURÉE (SANS COORDONNÉES CLIENT)
   const handlePrintKitchenOrder = async (order: any) => {
     if (!(window as any).electronAPI) return;
 
@@ -326,7 +325,13 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
         return;
       }
 
-      const date = new Date(order.created_at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const date = new Date(order.created_at).toLocaleString('fr-FR', { 
+        day: '2-digit', 
+        month: '2-digit', 
+        year: 'numeric', 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
       const orderNumber = order.order_number || order.id.toString().slice(0, 4);
       
       let orderType = 'SUR PLACE';
@@ -340,17 +345,10 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
         items,
         groupMapping: optionGroupMapping,
         orderDate: date,
-        comment: order.comment || order.notes || '',
-        customer_name: order.customer_name || '',
-        customer_address: order.customer_address || '',
-        customer_address_complement: order.customer_address_complement || order.address_complement || ''
+        comment: order.comment || order.notes || ''
       });
 
-      // Injection directe de sécurité sur le payload final
       kitchenPayload.comment = order.comment || order.notes || '';
-      kitchenPayload.customer_name = order.customer_name || '';
-      kitchenPayload.customer_address = order.customer_address || '';
-      kitchenPayload.customer_address_complement = order.customer_address_complement || order.address_complement || '';
 
       const result = await (window as any).electronAPI.printReceipt(kitchenPayload, printerName);
       if (!result.success) toast.error("Erreur avec l'imprimante cuisine !");
