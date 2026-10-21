@@ -5,14 +5,47 @@ import { toast } from 'sonner';
 
 const CartContext = createContext<any>(null);
 
+// --- NORMALISATION DES MODES DE RÈGLEMENT ---
+const normalizePaymentMethod = (rawMethod?: string): string => {
+  if (!rawMethod) return 'Espèces';
+  const m = String(rawMethod).trim().toLowerCase();
+
+  // On préserve le détail si le règlement est fractionné ou mixte (ex: CB: 10€, Espèces: 5€)
+  if (m.includes('fractionn') || m.includes('mixte')) {
+    return String(rawMethod).trim();
+  }
+
+  // Normalisation stricte de toutes les variantes cartes
+  if (
+    m.includes('carte') || 
+    m.includes('cb') || 
+    m.includes('card') || 
+    m.includes('stripe') || 
+    m.includes('sumup') ||
+    m.includes('terminal') ||
+    m.includes('tpe')
+  ) {
+    return 'Carte bancaire';
+  }
+
+  // Normalisation espèces
+  if (m.includes('espece') || m.includes('espèces') || m.includes('cash')) {
+    return 'Espèces';
+  }
+
+  // Normalisation titres restaurant
+  if (m.includes('ticket') || m.includes('titre') || m.includes('tr')) {
+    return 'Titre restaurant';
+  }
+
+  return String(rawMethod).trim();
+};
+
 // --- GÉNÉRATEUR DE SIGNATURE (ANTI-FUSION) ---
-// Extrait l'ID produit et TOUS les IDs des options/sous-options
-// pour créer une signature infaillible peu importe l'ordre de sélection.
 const generateCartKey = (payload: any) => {
     const productId = payload.product ? payload.product.id : payload.id;
     const optIds: string[] = [];
 
-    // Fonction récursive pour trouver tous les champs "id" dans les sélections
     const extractIds = (data: any) => {
         if (!data) return;
         if (Array.isArray(data)) {
@@ -106,7 +139,6 @@ const cartReducer = (state: any, action: any) => {
   }
 };
 
-// INITIALISATION ET NETTOYAGE DU CACHE
 const initCart = () => {
   try {
     const localData = localStorage.getItem('cart');
@@ -144,7 +176,7 @@ export const CartProvider = ({ children }: { children: React.ReactNode }) => {
   const updateQuantity = (key: string | number, quantity: number) => dispatch({ type: 'UPDATE_QUANTITY', payload: { key, quantity } });
   const clearCart = () => dispatch({ type: 'CLEAR_CART' });
 
-  // 🟢 Fonction d'encaissement direct sécurisée pour la Caisse (avec Session ID & Numéro atomique)
+  // Encaissement direct sécurisé pour la caisse
   const submitCaisseOrder = async (orderDetails: any): Promise<{ success: boolean; order?: any }> => {
     const itemsToProcess = orderDetails?.order_details || state.items;
 
@@ -181,25 +213,27 @@ export const CartProvider = ({ children }: { children: React.ReactNode }) => {
         }
       }
 
-      // 2. Construction du payload complet avec gestion du complément d'adresse et des frais
+      // 2. Nettoyage et normalisation du mode de règlement
+      const cleanPaymentMethod = normalizePaymentMethod(
+        orderDetails?.payment_method || orderDetails?.paymentMethod
+      );
+
+      // 3. Construction du payload
       const orderPayload: any = {
         restaurant_id: activeRestoId,
         session_id: activeSessionId,
-        order_origin: orderDetails?.order_origin || 'caisse',
+        order_origin: orderDetails?.order_origin || orderDetails?.orderOrigin || 'caisse',
         status: orderDetails?.status || 'Fermé',
         is_paid: orderDetails?.is_paid ?? true,
-        payment_method: orderDetails?.payment_method || 'especes',
+        payment_method: cleanPaymentMethod,
         payment_status: orderDetails?.payment_status || 'paid',
-        total_price: orderDetails?.total_price || 0,
-        delivery_fee: orderDetails?.delivery_fee ?? orderDetails?.fee ?? 0,
+        total_price: Number(orderDetails?.total_price) || 0,
+        delivery_fee: Number(orderDetails?.delivery_fee ?? orderDetails?.fee ?? 0),
         order_details: itemsToProcess,
         customer_name: orderDetails?.customer_name || orderDetails?.name || 'Client Caisse',
         customer_phone: orderDetails?.customer_phone || orderDetails?.phone || null,
         customer_address: orderDetails?.customer_address || orderDetails?.address || null,
-        
-        // 🟢 Complément d'adresse récupéré directement
         customer_address_complement: orderDetails?.customer_address_complement || orderDetails?.address_complement || orderDetails?.additionalInfo || null,
-
         profile_id: orderDetails?.profile_id || orderDetails?.client_id || null,
         order_type_id: orderDetails?.order_type_id || '633425b1-f86c-4c17-8cba-b258906ad317',
         comment: orderDetails?.comment || orderDetails?.notes || null,
@@ -210,7 +244,7 @@ export const CartProvider = ({ children }: { children: React.ReactNode }) => {
         orderPayload.order_number = orderDetails.order_number;
       }
 
-      // 3. Insertion et lecture immédiate du numéro généré par Supabase (ex: C01)
+      // 4. Insertion Supabase
       const { data: insertedOrder, error } = await supabase
         .from('orders')
         .insert([orderPayload])
