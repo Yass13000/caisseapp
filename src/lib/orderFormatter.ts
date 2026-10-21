@@ -454,7 +454,7 @@ export const getFormattedOrderOptions = (
     if (!name || name.toLowerCase() === 'option' || name.toLowerCase() === 'options...') return;
 
     const upperName = name.toUpperCase();
-    const isSans = opt.groupName === 'Sans' || opt.group_name === 'Sans' || upperName.startsWith('SANS ') || !!opt.isRemoved || !!opt.isSans;
+    const isSans = opt.groupName === 'Sans' || opt.group_name === 'Sans' || upperName.startsWith('SANS ') || !!opt.isRemoved || !!opt.isSans || !!opt.is_sans;
     const displayName = isSans && !upperName.startsWith('SANS ') ? `SANS ${upperName}` : upperName;
 
     if (isSans) {
@@ -571,17 +571,35 @@ export const buildClientReceiptPayload = (params: {
     orderDate
   } = params;
 
-  let rawPayment = String(paymentMethod || 'counter').trim();
+  let rawPayment = String(paymentMethod || 'Espèces').trim();
   const pLower = rawPayment.toLowerCase();
 
-  if (pLower === 'counter' || pLower.includes('espece') || pLower.includes('cash')) {
-    rawPayment = 'especes';
-  } else if (pLower.includes('carte') || pLower.includes('cb') || pLower.includes('card') || pLower.includes('sumup')) {
-    rawPayment = 'cb';
-  } else if (pLower.includes('ticket') || pLower.includes('resto')) {
-    rawPayment = 'ticket_resto';
+  // 🟢 Normalisation cohérente avec CartContext et Caisse
+  if (pLower.includes('fractionn') || pLower.includes('mixte')) {
+    rawPayment = String(paymentMethod).trim();
+  } else if (
+    pLower.includes('carte') || 
+    pLower.includes('cb') || 
+    pLower.includes('card') || 
+    pLower.includes('sumup') ||
+    pLower.includes('stripe') ||
+    pLower.includes('terminal')
+  ) {
+    rawPayment = 'Carte bancaire';
+  } else if (pLower.includes('ticket') || pLower.includes('resto') || pLower.includes('tr')) {
+    rawPayment = 'Titre restaurant';
   } else if (pLower.includes('attente') || pLower.includes('pending')) {
-    rawPayment = 'en attente';
+    rawPayment = 'En attente';
+  } else if (
+    pLower.includes('espece') || 
+    pLower.includes('espèces') || 
+    pLower.includes('cash') || 
+    pLower === 'counter' || 
+    pLower === 'comptoir'
+  ) {
+    rawPayment = 'Espèces';
+  } else {
+    rawPayment = String(paymentMethod || 'Espèces').trim();
   }
 
   const formattedItems = (items || []).map(item => {
@@ -786,6 +804,7 @@ export const buildReceiptPayloadFromOrder = async (
     rawTypeLabel = ORDER_TYPE_LABELS[order.order_type_id] || 'SUR PLACE';
   }
 
+  // 🟢 Fix : concaténation propre sans saut de ligne accidentel ni résidu de git diff
   const finalOrderType = prefixOrderType ? `${prefixOrderType} - ${rawTypeLabel}` : rawTypeLabel;
 
   return buildClientReceiptPayload({
@@ -793,7 +812,7 @@ export const buildReceiptPayloadFromOrder = async (
     restaurantInfo: restoInfo,
     orderNumber: String(order.order_number || order.number || order.id || '001'),
     orderType: finalOrderType,
-    paymentMethod: order.payment_method || order.paymentMethod || 'especes',
+    paymentMethod: order.payment_method || order.paymentMethod || 'Espèces',
     items: rawItems,
     subtotal: Number(order.total_price || order.total || 0),
     deliveryFee: Number(order.delivery_fee || 0),

@@ -68,6 +68,65 @@ const ORDER_TYPE_CONFIG: Record<string, { label: string; icon: string }> = {
   'LIVRAISON': { label: 'Livraison', icon: '/SVG/liv.svg' }
 };
 
+// 🟢 Extraction fiable de l'ID numérique produit (même sur 'loaded-15196-0-208' ou '208-var_12')
+const extractRealProductId = (rawId: any): number | string => {
+  if (typeof rawId === 'number') return rawId;
+  const str = String(rawId || '').trim();
+  if (!str) return '';
+  if (str.startsWith('loaded-')) {
+    const parts = str.split('-');
+    const last = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(last)) return last;
+  }
+  const first = parseInt(str.split('-')[0].replace(/^dyn_/, ''), 10);
+  return !isNaN(first) ? first : rawId;
+};
+
+// 🟢 Normalisation universelle des modes de paiement
+const normalizeCaissePaymentMethod = (rawMethod?: string): string => {
+  if (!rawMethod) return 'Espèces';
+  const m = String(rawMethod).trim().toLowerCase();
+
+  if (m.includes('fractionn') || m.includes('mixte')) {
+    return String(rawMethod)
+      .replace(/\bcb\b/gi, 'Carte bancaire')
+      .replace(/\bespeces\b/gi, 'Espèces')
+      .trim();
+  }
+
+  if (m.includes('attente') || m === 'pending') {
+    return 'en attente';
+  }
+
+  if (
+    m.includes('carte') || 
+    m.includes('cb') || 
+    m.includes('card') || 
+    m.includes('stripe') || 
+    m.includes('sumup') ||
+    m.includes('terminal') ||
+    m.includes('tpe')
+  ) {
+    return 'Carte bancaire';
+  }
+
+  if (
+    m.includes('espece') || 
+    m.includes('espèces') || 
+    m.includes('cash') || 
+    m === 'counter' || 
+    m === 'comptoir'
+  ) {
+    return 'Espèces';
+  }
+
+  if (m.includes('ticket') || m.includes('titre') || m.includes('tr')) {
+    return 'Titre restaurant';
+  }
+
+  return String(rawMethod).trim();
+};
+
 const getSecureSetting = (key: string, defaultValue: any) => {
   if ((window as any).electronAPI?.getSetting) {
     return (window as any).electronAPI.getSetting(key, defaultValue);
@@ -108,9 +167,6 @@ const hexToHslString = (hex: string) => {
   return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
 };
 
-/**
- * 🟢 CALCUL SÉCURISÉ DU TOTAL ARTICLE (ANTI-DOUBLON OPTIONS ET BORNE)
- */
 const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   const groups = getFormattedOrderOptions(item, groupMapping);
   const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
@@ -195,7 +251,6 @@ const generateAndPrintReceipt = async (
   }
 };
 
-// 🟢 Impression ticket cuisine épurée (sans aucune information client)
 const generateAndPrintKitchenTicket = async (
   orderNumber: string, 
   orderType: string, 
@@ -246,13 +301,15 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
   const addPaymentLine = (method: 'CB' | 'Espèces') => {
     if (isProcessing) return;
 
-    let amt = inputAmount;
-    if (amt === 0 || (amt > remaining && method === 'CB')) {
-      amt = remaining;
+    let tendered = inputAmount;
+    if (tendered === 0 || (tendered > remaining && method === 'CB')) {
+      tendered = remaining;
     }
 
-    const newLine = { method, amount: parseFloat(amt.toFixed(2)) };
-    const nextRemaining = parseFloat((remaining - newLine.amount).toFixed(2));
+    // 🟢 Montant réellement appliqué au ticket (ne dépasse jamais le reste à payer, même si le client donne un billet plus gros)
+    const effectiveAmount = parseFloat(Math.min(tendered, remaining).toFixed(2));
+    const newLine = { method, amount: effectiveAmount, tendered: parseFloat(tendered.toFixed(2)) };
+    const nextRemaining = parseFloat(Math.max(0, remaining - effectiveAmount).toFixed(2));
     
     const updatedLines = [...lines, newLine];
     setLines(updatedLines);
@@ -260,9 +317,14 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
 
     if (nextRemaining <= 0) {
       const finalMethod = updatedLines.length > 1 
-        ? `Fractionné (${updatedLines.map(l => `${l.method}: ${l.amount}€`).join(' + ')})` 
-        : (method === 'CB' ? 'cb' : 'especes');
-      const totalCash = updatedLines.filter(l => l.method === 'Espèces').reduce((sum, l) => sum + l.amount, 0);
+        ? `Fractionné (${updatedLines.map(l => `${l.method === 'CB' ? 'Carte bancaire' : 'Espèces'}: ${l.amount.toFixed(2)}€`).join(' + ')})` 
+        : (method === 'CB' ? 'Carte bancaire' : 'Espèces');
+      const totalCash = parseFloat(
+        updatedLines
+          .filter(l => l.method === 'Espèces')
+          .reduce((sum, l) => sum + l.amount, 0)
+          .toFixed(2)
+      );
       onConfirm(finalMethod, totalCash);
     } else {
       setRemaining(nextRemaining);
@@ -324,7 +386,7 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
                   <div key={idx} className="flex justify-between items-center bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl">
                     <span className="font-black text-xs uppercase text-gray-500 flex items-center gap-2">
                       {line.method === 'CB' ? <CreditCard size={14} className="text-blue-500" /> : <Banknote size={14} className="text-primary" />}
-                      {line.method}
+                      {line.method === 'CB' ? 'Carte bancaire' : 'Espèces'}
                     </span>
                     <span className="font-black text-secondary text-sm">-{line.amount.toFixed(2)} €</span>
                   </div>
@@ -425,7 +487,6 @@ const Caisse = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // 🛑 Verrou synchrone immédiat anti-double clic / rebond tactile
   const isSubmittingRef = useRef(false);
 
   const [isOrderTrackerOpen, setIsOrderTrackerOpen] = useState(false);
@@ -516,7 +577,11 @@ const Caisse = () => {
       customToast(`Sync de ${offlineOrders.length} ticket(s) local...`, "success");
 
       for (const order of offlineOrders) {
-        const { offline_id, is_update, target_id, ...supabasePayload } = order;
+        const { offline_id, is_update, target_id, order_number, ...supabasePayload } = order;
+        if (supabasePayload.payment_method) {
+          supabasePayload.payment_method = normalizeCaissePaymentMethod(supabasePayload.payment_method);
+        }
+
         let error = null;
 
         if (is_update && target_id) {
@@ -775,9 +840,8 @@ const Caisse = () => {
       items.forEach((item, idx) => {
         const productObj = item.product || item;
         const rawId = productObj.id ?? item.id;
-        const parsed = typeof rawId === 'number' ? rawId : parseInt(String(rawId).split('-')[0], 10);
-        const realProductId = !isNaN(parsed) ? parsed : rawId;
-        const fullProduct = menuData.find(p => p.id === realProductId) || productObj;
+        const realProductId = extractRealProductId(rawId);
+        const fullProduct = menuData.find(p => String(p.id) === String(realProductId)) || productObj;
 
         const rawSelections = item.rawSelections || productObj.rawSelections || null;
         const selectedSubOptions = item.selectedSubOptions || productObj.selectedSubOptions || item.options || [];
@@ -811,6 +875,21 @@ const Caisse = () => {
     }, 150);
   };
 
+  // 🟢 Vérifie à la fois product_option_groups, sub_option_groups et product_ingredients
+  const checkHasCustomization = async (productId: number | string): Promise<boolean> => {
+    const cleanPid = extractRealProductId(productId);
+    const [optGroupsRes, subGroupsRes, ingRes] = await Promise.all([
+      supabase.from('product_option_groups').select('id').eq('product_id', cleanPid).limit(1),
+      supabase.from('sub_option_groups').select('id').eq('product_id', cleanPid).limit(1),
+      supabase.from('product_ingredients').select('product_id').eq('product_id', cleanPid).limit(1)
+    ]);
+    return Boolean(
+      (optGroupsRes.data && optGroupsRes.data.length > 0) ||
+      (subGroupsRes.data && subGroupsRes.data.length > 0) ||
+      (ingRes.data && ingRes.data.length > 0)
+    );
+  };
+
   const handleSelectProduct = async (product: Product) => {
     if (!product.is_available) { customToast("Produit indisponible", "error"); return; }
     try {
@@ -821,8 +900,8 @@ const Caisse = () => {
         return;
       }
 
-      const { data: optionGroups } = await supabase.from('product_option_groups').select('id').eq('product_id', product.id).limit(1);
-      if (optionGroups?.length) {
+      const hasOptions = await checkHasCustomization(product.id);
+      if (hasOptions) {
         setSelectedProduct(product);
         setInitialSelections(null);
         setIsOptionsModalOpen(true);
@@ -936,6 +1015,10 @@ const Caisse = () => {
       const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
       let targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
 
+      // 🟢 Normalisation stricte de la méthode (ex: 'cb' ou 'CB' devient 'Carte bancaire')
+      const cleanPaymentMethod = normalizeCaissePaymentMethod(method);
+      const effectiveClient = clientInfoRef.current || clientInfo;
+
       const offlineId = `offline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const orderPayload = {
         offline_id: offlineId,
@@ -947,14 +1030,15 @@ const Caisse = () => {
         is_paid: true,
         payment_status: 'paid',
         status: 'En cours',
-        payment_method: method,
+        payment_method: cleanPaymentMethod,
         cash_amount: cashAmount,
         order_origin: 'caisse',
         order_type_id: currentOrderTypeId,
         order_details: cleanOrderDetails,
-        customer_name: clientInfo?.name || 'Client Caisse',
-        customer_phone: clientInfo?.phone || null,
-        customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
+        customer_name: effectiveClient?.name || 'Client Caisse',
+        customer_phone: effectiveClient?.phone || null,
+        customer_address: effectiveClient?.address ? `${effectiveClient.address}${effectiveClient.additionalInfo ? ` - ${effectiveClient.additionalInfo}` : ''}`.trim() : null,
+        customer_address_complement: effectiveClient?.additionalInfo || null,
         order_number: targetOrderNumber,
         session_id: currentSessionId 
       };
@@ -964,9 +1048,9 @@ const Caisse = () => {
           await (window as any).electronAPI.saveOfflineOrder(orderPayload);
           customToast(`Encaissé (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
 
-          const isCashMethodOffline = String(method).toLowerCase().includes('espece') || 
-                                      String(method).toLowerCase().includes('cash') || 
-                                      String(method).toLowerCase() === 'counter' || 
+          const isCashMethodOffline = String(cleanPaymentMethod).toLowerCase().includes('espece') || 
+                                      String(cleanPaymentMethod).toLowerCase().includes('espèces') || 
+                                      String(cleanPaymentMethod).toLowerCase().includes('cash') || 
                                       cashAmount > 0;
           if (isCashMethodOffline) {
             openCashDrawer(true);
@@ -974,7 +1058,7 @@ const Caisse = () => {
           
           const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
           if (isAutoPrintReceiptEnabled) {
-            await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
+            await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, cleanPaymentMethod, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, effectiveClient, optionGroupMapping);
           }
           
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
@@ -999,20 +1083,29 @@ const Caisse = () => {
 
       try {
         if (loadedOrderId) {
+          const updateData: any = { 
+            is_paid: true, 
+            payment_status: 'paid', 
+            status: 'En cours', 
+            payment_method: cleanPaymentMethod, 
+            cash_amount: cashAmount, 
+            order_type_id: currentOrderTypeId || undefined, 
+            order_details: cleanOrderDetails, 
+            total_price: parseFloat(finalTotal.toFixed(2)), 
+            delivery_fee: activeDeliveryFee,
+            session_id: currentSessionId 
+          };
+
+          if (effectiveClient?.name) updateData.customer_name = effectiveClient.name;
+          if (effectiveClient?.phone) updateData.customer_phone = effectiveClient.phone;
+          if (effectiveClient?.address) {
+            updateData.customer_address = `${effectiveClient.address}${effectiveClient.additionalInfo ? ` - ${effectiveClient.additionalInfo}` : ''}`.trim();
+            updateData.customer_address_complement = effectiveClient.additionalInfo || null;
+          }
+
           const { error } = await supabase
             .from('orders')
-            .update({ 
-              is_paid: true, 
-              payment_status: 'paid', 
-              status: 'En cours', 
-              payment_method: method, 
-              cash_amount: cashAmount, 
-              order_type_id: currentOrderTypeId || undefined, 
-              order_details: cleanOrderDetails, 
-              total_price: parseFloat(finalTotal.toFixed(2)), 
-              delivery_fee: activeDeliveryFee,
-              session_id: currentSessionId 
-            })
+            .update(updateData)
             .eq('id', loadedOrderId);
           if (error) throw error;
 
@@ -1035,17 +1128,17 @@ const Caisse = () => {
 
         customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
 
-        const isCashMethodOnline = String(method).toLowerCase().includes('espece') || 
-                                    String(method).toLowerCase().includes('cash') || 
-                                    String(method).toLowerCase() === 'counter' || 
-                                    cashAmount > 0;
+        const isCashMethodOnline = String(cleanPaymentMethod).toLowerCase().includes('espece') || 
+                                   String(cleanPaymentMethod).toLowerCase().includes('espèces') || 
+                                   String(cleanPaymentMethod).toLowerCase().includes('cash') || 
+                                   cashAmount > 0;
         if (isCashMethodOnline) {
           openCashDrawer(true);
         }
 
         const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
         if (isAutoPrintReceiptEnabled) {
-          await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
+          await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, cleanPaymentMethod, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, effectiveClient, optionGroupMapping);
         }
         
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
@@ -1072,7 +1165,7 @@ const Caisse = () => {
           
           const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
           if (isAutoPrintReceiptEnabled) {
-            await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, method, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, clientInfo, optionGroupMapping);
+            await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, cleanPaymentMethod, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, effectiveClient, optionGroupMapping);
           }
 
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
@@ -1102,7 +1195,6 @@ const Caisse = () => {
   const processPendingOrder = async () => {
     if (cartState.items.length === 0) return;
     
-    // 🛑 Verrou synchrone immédiat : bloque tout double-clic
     if (isSubmittingRef.current || isProcessing) return;
     isSubmittingRef.current = true;
     setIsProcessing(true);
@@ -1118,6 +1210,7 @@ const Caisse = () => {
       const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
       const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
       let targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
+      const effectiveClient = clientInfoRef.current || clientInfo;
 
       const offlineId = `offline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const orderPayload = {
@@ -1135,9 +1228,10 @@ const Caisse = () => {
         order_origin: 'caisse',
         order_type_id: currentOrderTypeId,
         order_details: cleanOrderDetails,
-        customer_name: clientInfo?.name || 'Client Caisse',
-        customer_phone: clientInfo?.phone || null,
-        customer_address: clientInfo ? `${clientInfo.address} ${clientInfo.additionalInfo ? `- ${clientInfo.additionalInfo}` : ''}`.trim() : null,
+        customer_name: effectiveClient?.name || 'Client Caisse',
+        customer_phone: effectiveClient?.phone || null,
+        customer_address: effectiveClient?.address ? `${effectiveClient.address}${effectiveClient.additionalInfo ? ` - ${effectiveClient.additionalInfo}` : ''}`.trim() : null,
+        customer_address_complement: effectiveClient?.additionalInfo || null,
         order_number: targetOrderNumber,
         session_id: currentSessionId 
       };
@@ -1168,20 +1262,29 @@ const Caisse = () => {
 
       try {
         if (loadedOrderId) {
+          const updateData: any = { 
+            is_paid: false, 
+            payment_status: 'pending', 
+            status: 'En cours', 
+            payment_method: 'en attente', 
+            cash_amount: 0, 
+            order_type_id: currentOrderTypeId || undefined, 
+            order_details: cleanOrderDetails, 
+            total_price: parseFloat(finalTotal.toFixed(2)), 
+            delivery_fee: activeDeliveryFee, 
+            session_id: currentSessionId 
+          };
+
+          if (effectiveClient?.name) updateData.customer_name = effectiveClient.name;
+          if (effectiveClient?.phone) updateData.customer_phone = effectiveClient.phone;
+          if (effectiveClient?.address) {
+            updateData.customer_address = `${effectiveClient.address}${effectiveClient.additionalInfo ? ` - ${effectiveClient.additionalInfo}` : ''}`.trim();
+            updateData.customer_address_complement = effectiveClient.additionalInfo || null;
+          }
+
           const { error } = await supabase
             .from('orders')
-            .update({ 
-              is_paid: false, 
-              payment_status: 'pending', 
-              status: 'En cours', 
-              payment_method: 'en attente', 
-              cash_amount: 0, 
-              order_type_id: currentOrderTypeId || undefined, 
-              order_details: cleanOrderDetails, 
-              total_price: parseFloat(finalTotal.toFixed(2)), 
-              delivery_fee: activeDeliveryFee, 
-              session_id: currentSessionId 
-            })
+            .update(updateData)
             .eq('id', loadedOrderId);
           if (error) throw error;
 
@@ -1334,7 +1437,6 @@ const Caisse = () => {
         <div className="flex-1 flex flex-col h-full bg-[#F3F4F6] relative min-w-0">
           
           <div className="bg-white border-b border-gray-200 shadow-sm flex-shrink-0 z-20">
-            {/* 🟢 Sélecteur Mode de Commande */}
             {activeOrderTypes.length > 0 && (
               <div className="p-2 bg-gray-100/90 border-b border-gray-200">
                 <div className="flex gap-2 max-w-2xl">
@@ -1368,7 +1470,6 @@ const Caisse = () => {
               </div>
             )}
 
-            {/* 🟢 Catégories compactées */}
             <div className="p-2.5 sm:p-3 grid grid-cols-5 gap-2 sm:gap-2.5">
               {categories.map(cat => {
                 const isSelected = selectedCategory === cat.name;
@@ -1390,7 +1491,6 @@ const Caisse = () => {
             </div>
           </div>
 
-          {/* 🟢 Grille de produits */}
           <div className="flex-1 p-3.5 sm:p-4 xl:p-5 overflow-y-auto custom-scrollbar">
             <div className="grid grid-cols-[repeat(auto-fill,minmax(265px,1fr))] gap-3 sm:gap-3.5 xl:gap-4 content-start">
               {menuData.filter(p => p.category === selectedCategory).map(product => (
@@ -1400,7 +1500,6 @@ const Caisse = () => {
           </div>
         </div>
 
-        {/* Panneau du ticket de caisse à droite */}
         <div className="w-[260px] bg-white border-l border-gray-200 flex flex-col h-full z-30 shadow-xl flex-shrink-0">
           
           <div className="p-3 border-b border-gray-100 bg-gray-50 flex-shrink-0 flex justify-between items-center">
@@ -1430,10 +1529,9 @@ const Caisse = () => {
                   onClick={() => {
                     const now = Date.now();
                     if (lastClickRef.current.id === itemKey && now - lastClickRef.current.time < 300) {
-                      const rawId = item.product?.id ?? item.id;
-                      const parsed = typeof rawId === 'number' ? rawId : parseInt(String(rawId).split('-')[0], 10);
-                      const realId = !isNaN(parsed) ? parsed : rawId;
-                      const baseProduct = menuData.find(p => p.id === realId) || item.product || item;
+                      const rawId = item.product?.original_product_id ?? item.product?.id ?? item.id;
+                      const realId = extractRealProductId(rawId);
+                      const baseProduct = menuData.find(p => String(p.id) === String(realId)) || item.product || item;
                       
                       const rawSelections = item.rawSelections || item.product?.rawSelections || null;
                       const flatOptions = item.selectedSubOptions || item.product?.selectedSubOptions || item.options || item.product?.options || [];
@@ -1442,6 +1540,8 @@ const Caisse = () => {
                       const fullProduct = {
                         ...baseProduct,
                         ...(item.product || {}),
+                        id: realId,
+                        original_product_id: realId,
                         name: item.product?.name || item.name || baseProduct.name,
                         price: item.product?.price !== undefined ? item.product.price : baseProduct.price,
                         variantId: item.product?.variantId ?? item.product?.variant_id ?? item.variantId,
@@ -1566,11 +1666,12 @@ const Caisse = () => {
         <div className="w-[74px] flex flex-col items-center py-3 z-40 shadow-[-5px_0_15px_rgba(0,0,0,0.2)] flex-shrink-0 justify-between" style={{ backgroundColor: themeColors.secondary }}>
           <div className="flex flex-col gap-1.5 w-full px-2 items-center">
             
+            {/* 🟢 Paiement Rapide normalisé directement en 'Carte bancaire' */}
             <button 
               disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current} 
-              onClick={() => finalizePayment('cb', 0)} 
+              onClick={() => finalizePayment('Carte bancaire', 0)} 
               className={`w-[56px] h-[56px] mx-auto flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing && !isSubmittingRef.current ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95 cursor-pointer' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} 
-              title="Paiement Rapide CB"
+              title="Paiement Rapide Carte bancaire"
             >
               <CreditCard size={24} />
               <span className="text-[8px] font-black uppercase mt-0.5 tracking-wider">Rapide</span>
@@ -1702,13 +1803,8 @@ const Caisse = () => {
             setIsVariantsModalOpen(false); 
 
             try {
-              const { data: optionGroups } = await supabase
-                .from('product_option_groups')
-                .select('id')
-                .eq('product_id', baseProductId)
-                .limit(1);
-
-              if (optionGroups && optionGroups.length > 0) {
+              const hasOptions = await checkHasCustomization(baseProductId);
+              if (hasOptions) {
                 setSelectedProduct(variantProduct); 
                 setInitialSelections(null);
                 setIsOptionsModalOpen(true); 
