@@ -1,9 +1,9 @@
 // @ts-nocheck
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   Bike, MapPin, CheckCircle2, RefreshCw, Send, DollarSign, 
   AlertCircle, Clock, Compass, AlertTriangle, Phone, Printer, 
-  Layers, CheckSquare, Square, Coins, X, History, Navigation
+  Layers, CheckSquare, Square, Coins, X, History, Navigation, ArrowRight
 } from 'lucide-react';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { toast } from 'sonner';
@@ -70,7 +70,7 @@ const extractZone = (address: string | null) => {
 const formatGpsAge = (updatedAt?: string | null, nowMs?: number) => {
   if (!updatedAt) return 'Aucun signal';
   const diffSec = Math.max(0, Math.floor(((nowMs || Date.now()) - new Date(updatedAt).getTime()) / 1000));
-  if (diffSec < 60) return 'En direct';
+  if (diffSec < 45) return 'En direct';
   const mins = Math.floor(diffSec / 60);
   if (mins < 60) return `Il y a ${mins} min`;
   return `Il y a ${Math.floor(mins / 60)}h`;
@@ -124,6 +124,10 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
   const [loading, setLoading] = useState<boolean>(true);
   const [receivedCashStr, setReceivedCashStr] = useState<string>('');
 
+  // Cache d'adresses réelles des livreurs (Reverse Geocoding : lat,lng -> rue exacte)
+  const [driverAddresses, setDriverAddresses] = useState<Record<string, string>>({});
+  const reverseGeoCacheRef = useRef<Record<string, string>>({});
+
   const activeRestoId = useMemo(() => {
     const raw = (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null)
       || localStorage.getItem('pos_restaurant_id')
@@ -137,7 +141,47 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     return () => clearInterval(t);
   }, []);
 
-  // Fusion intelligente de profiles + driver_locations (aucun livreur oublié)
+  // Géocodage inverse automatique : transforme les coordonnées GPS de chaque livreur en adresse de rue lisible
+  useEffect(() => {
+    let isMounted = true;
+
+    const resolveDriverStreets = async () => {
+      for (const d of drivers) {
+        if (!d.latitude || !d.longitude) continue;
+        // Arrondi à ~20m pour éviter les appels inutiles si le livreur est au feu rouge
+        const coordKey = `${Number(d.latitude).toFixed(4)},${Number(d.longitude).toFixed(4)}`;
+
+        if (reverseGeoCacheRef.current[coordKey]) {
+          if (driverAddresses[d.id] !== reverseGeoCacheRef.current[coordKey]) {
+            setDriverAddresses(prev => ({ ...prev, [d.id]: reverseGeoCacheRef.current[coordKey] }));
+          }
+          continue;
+        }
+
+        try {
+          const res = await fetch(`https://api-adresse.data.gouv.fr/reverse/?lon=${d.longitude}&lat=${d.latitude}`);
+          if (res.ok) {
+            const data = await res.json();
+            const feat = data?.features?.[0]?.properties;
+            if (feat) {
+              const streetLabel = feat.name 
+                ? `${feat.name}${feat.postcode ? ` (${feat.postcode})` : ''}` 
+                : feat.label || 'En déplacement';
+              reverseGeoCacheRef.current[coordKey] = streetLabel;
+              if (isMounted) {
+                setDriverAddresses(prev => ({ ...prev, [d.id]: streetLabel }));
+              }
+            }
+          }
+        } catch {}
+      }
+    };
+
+    resolveDriverStreets();
+    return () => { isMounted = false; };
+  }, [drivers]);
+
+  // Fusion intelligente de profiles + driver_locations
   const mergeDriversAndLocations = useCallback((profilesList: any[], locationsList: any[]): DriverProfile[] => {
     const map = new Map<string, DriverProfile>();
 
@@ -151,11 +195,11 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
         role: p.role || 'driver',
         is_driver: true,
         is_driver_online: Boolean(p.is_driver_online),
-        latitude: null,
-        longitude: null,
-        heading: null,
-        speed: null,
-        location_updated_at: null,
+        latitude: p.latitude ?? null,
+        longitude: p.longitude ?? null,
+        heading: p.heading ?? null,
+        speed: p.speed ?? null,
+        location_updated_at: p.location_updated_at ?? null,
         cash_float: Number(p.cash_float || 0)
       });
     });
@@ -185,7 +229,6 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
           location_updated_at: loc.updated_at || existing.location_updated_at
         });
       } else {
-        // Livreur présent dans driver_locations mais non tagué dans profiles
         map.set(dId, {
           id: dId,
           customer_name: loc.driver_name || 'Livreur',
@@ -291,7 +334,6 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     if (!activeRestoId) return;
 
     const channel = supabase.channel(`dispatch_realtime_${activeRestoId}`)
-      // 1. Broadcast direct livreur (< 100ms)
       .on('broadcast', { event: 'driver_location' }, ({ payload }) => {
         if (!payload?.driver_id) return;
         setDrivers(prev => mergeDriversAndLocations(prev, [{
@@ -304,8 +346,6 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
           updated_at: payload.updated_at || new Date().toISOString()
         }]));
       })
-
-      // 2. Table driver_locations (INSERT / UPDATE)
       .on('postgres_changes', { 
         event: '*', 
         schema: 'public', 
@@ -315,8 +355,6 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
         if (!payload.new) return;
         setDrivers(prev => mergeDriversAndLocations(prev, [payload.new]));
       })
-
-      // 3. Profils livreurs (En ligne & Sacoche)
       .on('postgres_changes', { 
         event: 'UPDATE', 
         schema: 'public', 
@@ -333,8 +371,6 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
           cash_float: Number(r.cash_float ?? d.cash_float ?? 0) 
         } : d));
       })
-
-      // 4. Commandes en direct (< 4h strict)
       .on('postgres_changes', { 
         event: '*', 
         schema: 'public', 
@@ -361,8 +397,6 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
           setOrders(prev => prev.filter(o => String(o.id) !== String(oldOrder.id)));
         }
       })
-
-      // 5. Clôtures de shift
       .on('postgres_changes', { 
         event: '*', 
         schema: 'public', 
@@ -424,15 +458,24 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
 
   const onlineDrivers = useMemo(() => drivers.filter(d => d.is_driver_online || (d.latitude && d.longitude)), [drivers]);
 
+  // Vue complète de la tournée d'un livreur (triée par ordre chronologique de livraison)
   const getDriverOverview = useCallback((driverId: string) => {
-    const dOrders = liveActiveOrders.filter(o => String(o.driver_id) === String(driverId));
+    const dOrders = liveActiveOrders
+      .filter(o => String(o.driver_id) === String(driverId))
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
     const inTransit = dOrders.filter(o => (o.delivery_status === 'in_transit' || o.delivery_status === 'assigned') && o.status !== 'Fermé');
     const delivered = dOrders.filter(o => o.delivery_status === 'delivered' || o.status === 'Fermé');
+
     return {
       currentOrder: inTransit[0] || null,
+      nextOrders: inTransit.slice(1),
+      inTransitOrders: inTransit,
+      deliveredOrders: delivered,
       inTransitCount: inTransit.length,
       deliveredCount: delivered.length,
-      totalCount: dOrders.length,
+      totalCount: inTransit.length + delivered.length,
+      currentStepNumber: delivered.length + (inTransit.length > 0 ? 1 : 0),
       isReturning: inTransit.length === 0 && delivered.length > 0
     };
   }, [liveActiveOrders]);
@@ -595,7 +638,6 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     toast.success("Duplicata imprimé");
   };
 
-  // Sélection réactive du livreur sur la carte (se met à jour en direct quand ses coordonnées bougent)
   const targetedMapDriver = useMemo(() => {
     if (activeDriverIdForMap) {
       const found = drivers.find(d => String(d.id) === String(activeDriverIdForMap));
@@ -611,17 +653,22 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     return targetedMapDriver ? getDriverOverview(targetedMapDriver.id) : null;
   }, [targetedMapDriver, getDriverOverview]);
 
+  // Stabilisation à 4 décimales (~11 mètres) pour éviter de faire clignoter l'iframe quand le GPS tremble
   const mapEmbedUrl = useMemo(() => {
     if (!targetedMapDriver?.latitude || !targetedMapDriver?.longitude) return '';
-    const lat = Number(targetedMapDriver.latitude);
-    const lng = Number(targetedMapDriver.longitude);
-    if (isNaN(lat) || isNaN(lng)) return '';
+    const lat = Number(targetedMapDriver.latitude).toFixed(4);
+    const lng = Number(targetedMapDriver.longitude).toFixed(4);
+    if (isNaN(Number(lat)) || isNaN(Number(lng))) return '';
 
     if (targetedOverview?.currentOrder?.customer_address) {
       return `https://maps.google.com/maps?saddr=${lat},${lng}&daddr=${encodeURIComponent(targetedOverview.currentOrder.customer_address)}&output=embed&hl=fr`;
     }
     return `https://maps.google.com/maps?q=${lat},${lng}&t=m&z=16&hl=fr&output=embed`;
-  }, [targetedMapDriver?.latitude, targetedMapDriver?.longitude, targetedOverview?.currentOrder?.customer_address]);
+  }, [
+    targetedMapDriver?.latitude ? Number(targetedMapDriver.latitude).toFixed(4) : null,
+    targetedMapDriver?.longitude ? Number(targetedMapDriver.longitude).toFixed(4) : null,
+    targetedOverview?.currentOrder?.customer_address
+  ]);
 
   const changeDue = useMemo(() => {
     if (!selectedDriverForSettlement) return 0;
@@ -639,7 +686,7 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
             <Send className="w-4 h-4" /> <span>DISPATCH ({unassignedOrders.length})</span>
           </button>
           <button onClick={() => setSubTab('map')} className={`h-11 px-4 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all active:scale-95 ${subTab === 'map' ? 'bg-amber-500 text-slate-950 shadow-md' : 'bg-slate-900 text-slate-400 hover:text-white'}`}>
-            <Compass className="w-4 h-4" /> <span>CARTE ({onlineDrivers.length})</span>
+            <Compass className="w-4 h-4" /> <span>SUIVI GPS ({onlineDrivers.length})</span>
           </button>
           <button onClick={() => setSubTab('settlement')} className={`h-11 px-4 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all active:scale-95 ${subTab === 'settlement' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-900 text-slate-400 hover:text-white'}`}>
             <DollarSign className="w-4 h-4" /> <span>CAISSE ({settlementDrivers.length})</span>
@@ -792,9 +839,18 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
                         </div>
 
                         <div className="pt-2 border-t border-slate-700 flex items-center justify-between gap-1.5">
-                          <span className="text-xs font-black text-amber-300 bg-amber-500/10 px-2 py-1 rounded-lg truncate max-w-[140px]">
-                            🛵 {assignedDriver?.customer_name || 'Livreur'}
-                          </span>
+                          <button
+                            onClick={() => {
+                              if (assignedDriver) {
+                                setActiveDriverIdForMap(assignedDriver.id);
+                                setSubTab('map');
+                              }
+                            }}
+                            className="text-xs font-black text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 px-2.5 py-1 rounded-lg truncate max-w-[160px] flex items-center gap-1"
+                            title="Voir sur la carte"
+                          >
+                            <span>🛵 {assignedDriver?.customer_name || 'Livreur'}</span>
+                          </button>
                           <div className="flex items-center gap-1">
                             {order.customer_phone && (
                               <button onClick={() => window.open(`sms:${order.customer_phone}?body=${encodeURIComponent('Votre livreur arrive !')}`, '_blank')} className="h-8 px-2 bg-blue-600 text-white rounded-lg text-[10px] font-black">SMS</button>
@@ -815,77 +871,275 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
 
         ) : subTab === 'map' ? (
 
-          /* 2. CARTE DIRECTE FLOTTE */
-          <div className="h-full grid grid-cols-3 gap-3.5">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 flex flex-col overflow-hidden">
-              <span className="text-xs font-black uppercase text-slate-400 pb-2 border-b border-slate-800">Flotte ({drivers.length})</span>
-              <div className="flex-1 overflow-y-auto space-y-2 pt-2 pr-1 custom-scrollbar">
+          /* 2. SUIVI GPS TACTIQUE ULTRA-LISIBLE */
+          <div className="h-full grid grid-cols-12 gap-3.5">
+            
+            {/* COLONNE GAUCHE : FLOTTE AVEC RÉSUMÉ IMMÉDIAT (4/12) */}
+            <div className="col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-3 flex flex-col overflow-hidden">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800 shrink-0">
+                <span className="text-xs font-black uppercase text-slate-300">Livreurs ({drivers.length})</span>
+                <span className="text-[10px] font-bold text-emerald-400">{onlineDrivers.length} actif(s)</span>
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-2.5 pt-2.5 pr-1 custom-scrollbar">
                 {drivers.map(d => {
                   const ov = getDriverOverview(d.id);
                   const isSel = targetedMapDriver?.id === d.id;
                   const hasGps = d.latitude !== null && d.longitude !== null;
+                  const currentStreet = driverAddresses[d.id] || (hasGps ? 'Localisation...' : 'Signal GPS inactif');
+                  const progressPct = ov.totalCount > 0 ? Math.round((ov.deliveredCount / ov.totalCount) * 100) : 0;
+
                   return (
-                    <div key={d.id} onClick={() => setActiveDriverIdForMap(d.id)} className={`p-3 rounded-xl border cursor-pointer transition-all ${isSel ? 'bg-blue-600/20 border-blue-500' : 'bg-slate-800/80 border-slate-700'}`}>
+                    <div 
+                      key={d.id} 
+                      onClick={() => setActiveDriverIdForMap(d.id)} 
+                      className={`p-3 rounded-xl border cursor-pointer transition-all space-y-2 ${
+                        isSel 
+                          ? 'bg-blue-600/20 border-blue-400 shadow-lg ring-1 ring-blue-400' 
+                          : 'bg-slate-800/80 border-slate-700/80 hover:border-slate-600'
+                      }`}
+                    >
+                      {/* Ligne 1 : Nom + Badge Signal */}
                       <div className="flex justify-between items-center">
-                        <div className="flex items-center gap-2">
-                          <span className={`w-2.5 h-2.5 rounded-full ${hasGps ? 'bg-emerald-400 animate-pulse' : d.is_driver_online ? 'bg-amber-400' : 'bg-slate-600'}`} />
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${hasGps ? 'bg-emerald-400 animate-pulse' : d.is_driver_online ? 'bg-amber-400' : 'bg-slate-600'}`} />
                           <span className="font-black text-sm text-white truncate">{d.customer_name || d.email}</span>
                         </div>
-                        <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-950 text-slate-400">
-                          {formatGpsAge(d.location_updated_at, now)}
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded shrink-0 ${
+                          ov.inTransitCount > 0 
+                            ? 'bg-amber-500 text-slate-950' 
+                            : ov.isReturning 
+                            ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' 
+                            : 'bg-slate-950 text-slate-400'
+                        }`}>
+                          {ov.inTransitCount > 0 ? `EN COURSE (${ov.currentStepNumber}/${ov.totalCount})` : ov.isReturning ? 'RETOUR RESTO' : 'DISPONIBLE'}
                         </span>
                       </div>
-                      <div className="mt-2 flex justify-between text-[11px] text-slate-400 font-bold border-t border-slate-700/50 pt-1.5">
-                        <span>{ov.inTransitCount} en route</span>
-                        <span className="text-purple-300 font-black">Sac: {Number(d.cash_float || 0).toFixed(2)}€</span>
+
+                      {/* Ligne 2 : OÙ IL EST ACTUELLEMENT */}
+                      <div className="bg-slate-950/70 rounded-lg px-2.5 py-1.5 border border-slate-800/80 space-y-1">
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                          <Navigation className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span className="text-slate-400 font-bold shrink-0">Est à :</span>
+                          <span className="text-white font-black truncate">{currentStreet}</span>
+                        </div>
+
+                        {/* Ligne 3 : OÙ IL VA */}
+                        {ov.currentOrder ? (
+                          <div className="flex items-center gap-1.5 text-[11px] pt-0.5 border-t border-slate-800/80">
+                            <MapPin className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                            <span className="text-amber-400 font-bold shrink-0">Va à :</span>
+                            <span className="text-amber-300 font-black truncate">
+                              #{ov.currentOrder.order_number} • {ov.currentOrder.customer_address}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                            <Clock className="w-3 h-3 shrink-0" />
+                            <span>{formatGpsAge(d.location_updated_at, now)}</span>
+                          </div>
+                        )}
                       </div>
+
+                      {/* Ligne 4 : Barre de progression de la tournée */}
+                      {ov.totalCount > 0 && (
+                        <div className="space-y-1 pt-0.5">
+                          <div className="flex justify-between text-[10px] font-black">
+                            <span className="text-slate-400">Progression : {ov.deliveredCount}/{ov.totalCount} livrées</span>
+                            <span className="text-emerald-400">Reste {ov.inTransitCount}</span>
+                          </div>
+                          <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-emerald-500 transition-all duration-300" 
+                              style={{ width: `${progressPct}%` }} 
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            <div className="col-span-2 bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden flex flex-col relative">
-              {targetedMapDriver && (
-                <div className="bg-slate-900 px-4 py-2.5 border-b border-slate-800 flex justify-between items-center shrink-0">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Bike className="w-5 h-5 text-blue-400 shrink-0" />
-                    <div className="min-w-0">
-                      <span className="font-black text-sm text-white block truncate">{targetedMapDriver.customer_name || targetedMapDriver.email}</span>
-                      <p className="text-[11px] text-amber-300 font-bold truncate">
-                        {targetedOverview?.currentOrder 
-                          ? `#${targetedOverview.currentOrder.order_number} • ${targetedOverview.currentOrder.customer_address || ''}` 
-                          : 'Libre'}
-                      </p>
+            {/* COLONNE DROITE : TABLEAU DE BORD MISSION + CARTE (8/12) */}
+            <div className="col-span-8 bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden flex flex-col relative">
+              {targetedMapDriver ? (
+                <>
+                  {/* EN-TÊTE TACTIQUE : POSITION ACTUELLE vs DESTINATION + ÉTAPES TOURNÉE */}
+                  <div className="bg-slate-900 p-3 border-b border-slate-800 space-y-2.5 shrink-0">
+                    
+                    {/* Barre supérieure : Identité livreur + Actions rapides */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black shrink-0 shadow">
+                          <Bike className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-black text-base text-white truncate">
+                              {targetedMapDriver.customer_name || targetedMapDriver.email}
+                            </span>
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                              {formatGpsAge(targetedMapDriver.location_updated_at, now)}
+                            </span>
+                            {targetedMapDriver.speed ? (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300">
+                                {Math.round(Number(targetedMapDriver.speed) * 3.6)} km/h
+                              </span>
+                            ) : null}
+                          </div>
+                          <span className="text-[11px] font-bold text-slate-400">
+                            Sacoche : <strong className="text-purple-300">{Number(targetedMapDriver.cash_float || 0).toFixed(2)} €</strong>
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {targetedMapDriver.phone && (
+                          <a 
+                            href={`tel:${targetedMapDriver.phone}`} 
+                            className="h-9 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black flex items-center gap-1.5 active:scale-95"
+                          >
+                            <Phone className="w-3.5 h-3.5" /> <span>Appeler</span>
+                          </a>
+                        )}
+                        {targetedMapDriver.latitude && targetedMapDriver.longitude && (
+                          <a
+                            href={`https://www.google.com/maps?q=${targetedMapDriver.latitude},${targetedMapDriver.longitude}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="h-9 px-3 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-black flex items-center gap-1.5 border border-slate-700 active:scale-95"
+                          >
+                            <Navigation className="w-3.5 h-3.5 text-blue-400" /> <span>Google Maps</span>
+                          </a>
+                        )}
+                        <button 
+                          onClick={() => setDriverForCashReload(targetedMapDriver)} 
+                          className="h-9 px-3 bg-amber-500 text-slate-950 rounded-xl text-xs font-black flex items-center gap-1 active:scale-95"
+                        >
+                          <Coins className="w-3.5 h-3.5" /> <span>+ Monnaie</span>
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {targetedMapDriver.latitude && targetedMapDriver.longitude && (
-                      <a
-                        href={`https://www.google.com/maps?q=${targetedMapDriver.latitude},${targetedMapDriver.longitude}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="h-9 px-3 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-black flex items-center gap-1 active:scale-95"
-                      >
-                        <Navigation className="w-3.5 h-3.5 text-blue-400" /> <span>Maps</span>
-                      </a>
+
+                    {/* DOUBLE ENCADRÉ ULTRA-LISIBLE : OÙ IL EST ACTUELLEMENT -> OÙ IL VA */}
+                    <div className="grid grid-cols-2 gap-2.5">
+                      {/* Bloc 1 : Où il est actuellement */}
+                      <div className="bg-slate-950 border border-emerald-500/40 rounded-xl p-2.5 flex items-start gap-2.5">
+                        <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
+                          <Navigation className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 block">
+                            POSITION ACTUELLE DU LIVREUR
+                          </span>
+                          <p className="text-xs font-black text-white truncate mt-0.5">
+                            {driverAddresses[targetedMapDriver.id] || (
+                              targetedMapDriver.latitude 
+                                ? `${Number(targetedMapDriver.latitude).toFixed(4)}, ${Number(targetedMapDriver.longitude).toFixed(4)}` 
+                                : 'En attente du signal GPS...'
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Bloc 2 : Où il est en train d'aller */}
+                      <div className={`bg-slate-950 border rounded-xl p-2.5 flex items-start gap-2.5 ${
+                        targetedOverview?.currentOrder ? 'border-amber-500/50' : 'border-slate-800'
+                      }`}>
+                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                          targetedOverview?.currentOrder ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-800 text-slate-500'
+                        }`}>
+                          <MapPin className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between">
+                            <span className={`text-[10px] font-black uppercase tracking-wider ${
+                              targetedOverview?.currentOrder ? 'text-amber-400' : 'text-slate-500'
+                            }`}>
+                              {targetedOverview?.currentOrder 
+                                ? `DESTINATION (${targetedOverview.currentStepNumber}/${targetedOverview.totalCount}) • #${targetedOverview.currentOrder.order_number}` 
+                                : 'DESTINATION'}
+                            </span>
+                            {targetedOverview?.currentOrder && (
+                              <span className="text-[10px] font-black text-white bg-blue-600 px-1.5 py-0.2 rounded">
+                                {targetedOverview.currentOrder.customer_name}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs font-black text-white truncate mt-0.5">
+                            {targetedOverview?.currentOrder 
+                              ? targetedOverview.currentOrder.customer_address || 'Adresse non renseignée'
+                              : targetedOverview?.isReturning 
+                              ? 'Tournée terminée — Retour au restaurant' 
+                              : 'Aucune livraison en cours'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* BARRE D'ÉTAPES DE TOUTE LA TOURNÉE (Où il en est sur tout ce qu'il doit livrer) */}
+                    {targetedOverview && targetedOverview.totalCount > 0 && (
+                      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
+                        <span className="text-[10px] font-black uppercase text-slate-400 shrink-0 mr-1">
+                          Tournée ({targetedOverview.deliveredCount}/{targetedOverview.totalCount}) :
+                        </span>
+                        
+                        {/* Commandes déjà livrées */}
+                        {targetedOverview.deliveredOrders.map((ord) => (
+                          <span 
+                            key={ord.id} 
+                            className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-black shrink-0 flex items-center gap-1"
+                          >
+                            <CheckCircle2 className="w-3 h-3" /> #{ord.order_number} Livrée
+                          </span>
+                        ))}
+
+                        {/* Commande en cours de livraison + suivantes */}
+                        {targetedOverview.inTransitOrders.map((ord, idx) => (
+                          <span 
+                            key={ord.id} 
+                            className={`px-2.5 py-0.5 rounded-md text-[10px] font-black shrink-0 flex items-center gap-1 ${
+                              idx === 0 
+                                ? 'bg-amber-500 text-slate-950 shadow-sm' 
+                                : 'bg-slate-800 text-slate-300 border border-slate-700'
+                            }`}
+                          >
+                            {idx === 0 ? <Bike className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+                            <span>
+                              {idx === 0 ? 'EN ROUTE :' : `SUIVANTE #${idx + 1} :`} #{ord.order_number} ({ord.customer_name || 'Client'})
+                            </span>
+                          </span>
+                        ))}
+                      </div>
                     )}
-                    <button onClick={() => setDriverForCashReload(targetedMapDriver)} className="h-9 px-3 bg-amber-500 text-slate-950 rounded-xl text-xs font-black flex items-center gap-1 active:scale-95">
-                      <Coins className="w-3.5 h-3.5" /> <span>+ Monnaie</span>
-                    </button>
                   </div>
+
+                  {/* CARTE INTERACTIVE PLEIN ÉCRAN */}
+                  <div className="flex-1 w-full h-full relative">
+                    {mapEmbedUrl ? (
+                      <iframe 
+                        key={mapEmbedUrl} 
+                        title="Maps" 
+                        width="100%" 
+                        height="100%" 
+                        style={{ border: 0 }} 
+                        src={mapEmbedUrl} 
+                      />
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs font-bold gap-2">
+                        <Compass className="w-6 h-6 animate-spin text-slate-600" />
+                        <span>Aucun signal GPS reçu pour ce livreur</span>
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="h-full flex items-center justify-center text-slate-500 text-xs font-bold">
+                  Sélectionnez un livreur à gauche
                 </div>
               )}
-              <div className="flex-1 w-full h-full">
-                {mapEmbedUrl ? (
-                  <iframe key={mapEmbedUrl} title="Maps" width="100%" height="100%" style={{ border: 0 }} src={mapEmbedUrl} />
-                ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs font-bold gap-2">
-                    <Compass className="w-6 h-6 animate-spin text-slate-600" />
-                    <span>Aucun signal GPS reçu pour ce livreur</span>
-                  </div>
-                )}
-              </div>
             </div>
           </div>
 
