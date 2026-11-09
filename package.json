@@ -1,10 +1,10 @@
 {
-  "name": "borne-kiosk",
-  "productName": "Borne Kiosk",
-  "description": "Application de borne interactive pour restaurant",
+  "name": "yaiba-caisse",
+  "productName": "Yaiba Caisse",
+  "description": "Application de caisse enregistreuse tactile haute performance",
   "author": "Votre Nom",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.2.0",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
@@ -113,8 +113,8 @@
     "wait-on": "^9.0.5"
   },
   "build": {
-    "appId": "com.borne.kiosk",
-    "productName": "Borne Kiosk",
+    "appId": "com.yaiba.caisse",
+    "productName": "Yaiba Caisse",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -171,7 +171,7 @@
       "installerHeaderIcon": "build/icon.ico",
       "license": "LICENSE.txt",
       "runAfterFinish": true,
-      "shortcutName": "Borne Kiosk"
+      "shortcutName": "Yaiba Caisse"
     },
     "portable": {
       "artifactName": "${productName}-Portable-${version}.${ext}"

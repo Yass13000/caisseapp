@@ -7,15 +7,16 @@ import { calculateCartSubtotal } from '@/lib/cartCalculations';
 import { createOrderInDatabase } from '@/lib/createOrder';
 import { usePaymentSettings } from '@/hooks/usePaymentSettings';
 import { toast } from 'sonner';
+import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 
 // --- MAPPING DES UUID POUR SUPABASE ---
 // Cela traduit le texte du localStorage en véritable ID pour la base de données
 const ORDER_TYPE_MAPPING: Record<string, string> = {
-  'sur-place': '633425b1-f86c-4c17-8cba-b258906ad317',
-  'a-emporter': '2cac3f10-73e2-40a5-a7e0-053bd861b4d9',
-  'livraison': 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d',
-  'SUR PLACE': '633425b1-f86c-4c17-8cba-b258906ad317',
-  'EMPORTER': '2cac3f10-73e2-40a5-a7e0-053bd861b4d9'
+  'sur-place': ORDER_TYPE_ID.SUR_PLACE,
+  'a-emporter': ORDER_TYPE_ID.EMPORTER,
+  'livraison': ORDER_TYPE_ID.LIVRAISON,
+  'SUR PLACE': ORDER_TYPE_ID.SUR_PLACE,
+  'EMPORTER': ORDER_TYPE_ID.EMPORTER
 };
 
 const PaymentMethod = () => {

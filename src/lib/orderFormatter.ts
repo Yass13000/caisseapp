@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { supabase } from '@/lib/supabaseClient';
+import { ORDER_TYPE_ID } from './orderTypes';
 
 export interface FormattedOptionItem {
   id?: string | number;
@@ -541,6 +542,19 @@ export const getFormattedOrderOptions = (
 /**
  * 🟢 3. PAYLOAD TICKET CLIENT (AVEC COMPLÉMENT ET NOTE)
  */
+/**
+ * Les anciennes commandes caisse enregistraient l'adresse sous la forme "12 rue X - Bât B"
+ * ET le complément "Bât B" à part. On retire le complément collé en fin d'adresse
+ * pour ne pas l'afficher deux fois.
+ */
+export const stripComplementFromAddress = (address?: string | null, complement?: string | null): string => {
+  const addr = String(address || '').trim();
+  const comp = String(complement || '').trim();
+  if (!addr || !comp) return addr;
+  const suffix = ` - ${comp}`;
+  return addr.endsWith(suffix) ? addr.slice(0, -suffix.length).trim() : addr;
+};
+
 export const buildClientReceiptPayload = (params: {
   restaurantId?: string | null;
   restaurantInfo: { name?: string; restaurant_name?: string; address?: string | null; phone?: string | null; tva?: number; logoUrl?: string | null };
@@ -628,8 +642,8 @@ export const buildClientReceiptPayload = (params: {
   const restoName = restaurantInfo?.restaurant_name || restaurantInfo?.name || 'VOTRE RESTAURANT';
 
   const customerName = clientInfo?.name || clientInfo?.customer_name || '';
-  const customerAddress = clientInfo?.address || clientInfo?.customer_address || '';
   const addressComplement = clientInfo?.customer_address_complement || clientInfo?.address_complement || clientInfo?.additionalInfo || '';
+  const customerAddress = stripComplementFromAddress(clientInfo?.address || clientInfo?.customer_address || '', addressComplement);
   const customerPhone = clientInfo?.phone || clientInfo?.customer_phone || '';
   const comment = clientInfo?.comment || clientInfo?.notes || clientInfo?.deliveryNotes || '';
 
@@ -794,9 +808,9 @@ export const buildReceiptPayloadFromOrder = async (
   }
 
   const ORDER_TYPE_LABELS: Record<string, string> = {
-    '633425b1-f86c-4c17-8cba-b258906ad317': 'SUR PLACE',
-    '2cac3f10-73e2-40a5-a7e0-053bd861b4d9': 'EMPORTER',
-    'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d': 'LIVRAISON'
+    [ORDER_TYPE_ID.SUR_PLACE]: 'SUR PLACE',
+    [ORDER_TYPE_ID.EMPORTER]: 'EMPORTER',
+    [ORDER_TYPE_ID.LIVRAISON]: 'LIVRAISON'
   };
 
   let rawTypeLabel = String(order.order_type || '').toUpperCase();

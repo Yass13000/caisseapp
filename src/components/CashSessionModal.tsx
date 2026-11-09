@@ -99,7 +99,14 @@ const CashSessionModal = ({
 
         const origin = String(o.order_origin || '').toLowerCase();
 
-        if (method.includes('carte') || method.includes('cb') || method.includes('card') || method.includes('sumup')) {
+        // ⚠️ Le fractionné doit être testé EN PREMIER : son libellé contient aussi "Carte bancaire"
+        if (method.includes('fractionn') || method.includes('mixte')) {
+          const cashPart = round2(Math.min(amount, o.cash_amount || 0));
+          const cardPart = round2(Math.max(0, amount - cashPart));
+          totalCash = round2(totalCash + cashPart);
+          totalCard = round2(totalCard + cardPart);
+          cardSalesCaisse = round2(cardSalesCaisse + cardPart);
+        } else if (method.includes('carte') || method.includes('cb') || method.includes('card') || method.includes('sumup')) {
           totalCard = round2(totalCard + amount);
           if (origin.includes('borne') || origin.includes('kiosk')) cardSalesBorne = round2(cardSalesBorne + amount);
           else if (origin.includes('app') || origin.includes('web') || origin.includes('pwa')) cardSalesApp = round2(cardSalesApp + amount);
@@ -108,12 +115,6 @@ const CashSessionModal = ({
           totalCash = round2(totalCash + amount);
         } else if (method.includes('ticket') || method.includes('resto')) {
           totalTicketResto = round2(totalTicketResto + amount);
-        } else if (method.includes('fractionn')) {
-          const cashPart = round2(o.cash_amount || 0);
-          const cardPart = round2(Math.max(0, amount - cashPart));
-          totalCash = round2(totalCash + cashPart);
-          totalCard = round2(totalCard + cardPart);
-          cardSalesCaisse = round2(cardSalesCaisse + cardPart);
         } else {
           totalCash = round2(totalCash + amount);
         }

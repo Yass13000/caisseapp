@@ -52,6 +52,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
   const [caissePrinter, setCaissePrinter] = useState(getSecureSetting('imprimante_caisse', ''));
   const [kitchenPrinter, setKitchenPrinter] = useState(getSecureSetting('imprimante_cuisine', ''));
   const [reportsPrinter, setReportsPrinter] = useState(getSecureSetting('imprimante_rapports', ''));
+  const [deliveryPrinter, setDeliveryPrinter] = useState(getSecureSetting('imprimante_livraison', ''));
 
   const [fontSize, setFontSize] = useState(() => getSecureSetting('receipt_font_size', 'normal'));
   const [marginType, setMarginType] = useState(() => getSecureSetting('receipt_margin_type', 'none'));
@@ -471,6 +472,20 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                           className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
                         >
                           <option value="">-- Même que Ticket Client --</option>
+                          {availablePrinters.map((p, idx) => (
+                            <option key={idx} value={p.name}>{p.name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Imprimante Livraison</label>
+                        <select 
+                          value={deliveryPrinter}
+                          onChange={(e) => { setDeliveryPrinter(e.target.value); setSecureSetting('imprimante_livraison', e.target.value); }}
+                          className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2.5 text-sm font-bold text-secondary shadow-sm"
+                        >
+                          <option value="">-- Même que Bon Cuisine --</option>
                           {availablePrinters.map((p, idx) => (
                             <option key={idx} value={p.name}>{p.name}</option>
                           ))}

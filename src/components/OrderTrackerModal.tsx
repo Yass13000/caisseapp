@@ -21,17 +21,29 @@ import {
   Info
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload } from '@/lib/orderFormatter';
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload, stripComplementFromAddress } from '@/lib/orderFormatter';
 import { addLoyaltyPointsThreadSafe, getActiveRestoId } from '@/lib/loyaltyPoints';
 import { PaymentModal } from '@/pages/Caisse';
+import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 
 interface OrderTrackerModalProps {
   onClose: () => void;
-  onLoadOrder: (orderDetails: any[], orderId: string | number, orderType?: string, clientInfo?: any) => void;
+  onLoadOrder: (orderDetails: any[], orderId: string | number, orderType?: string, clientInfo?: any, isFromCaisse?: boolean) => void;
   restaurantName?: string;
 }
 
 // 🟢 CALCUL DU TOTAL DE LIGNE (GARANTI SANS DOUBLE COMPTAGE)
+// Lecture des réglages depuis la même source que l'écran Réglages
+// (fichier Electron en priorité, localStorage en secours sur le Web)
+const getSecureSetting = (key: string, defaultValue: any) => {
+  if ((window as any).electronAPI?.getSetting) {
+    return (window as any).electronAPI.getSetting(key, defaultValue);
+  }
+  const local = localStorage.getItem(key);
+  if (local === null || local === undefined) return defaultValue;
+  return local;
+};
+
 const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   if (!item) return 0;
   if (item.isReward || item.is_reward) return 0;
@@ -130,9 +142,9 @@ const isCaisseOrder = (order: any): boolean => {
 };
 
 const ORDER_TYPE_LABELS = {
-  '633425b1-f86c-4c17-8cba-b258906ad317': 'SUR PLACE',
-  '2cac3f10-73e2-40a5-a7e0-053bd861b4d9': 'EMPORTER',
-  'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d': 'LIVRAISON'
+  [ORDER_TYPE_ID.SUR_PLACE]: 'SUR PLACE',
+  [ORDER_TYPE_ID.EMPORTER]: 'EMPORTER',
+  [ORDER_TYPE_ID.LIVRAISON]: 'LIVRAISON'
 };
 
 const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTAURANT" }: OrderTrackerModalProps) => {
@@ -142,6 +154,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
   const [paymentOrder, setPaymentOrder] = useState<any | null>(null);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  // Verrou anti double-appui : empêche de payer (et d'imprimer) deux fois la même commande
+  const payingOrderIdsRef = useRef<Set<string>>(new Set());
   const [optionGroupMapping, setOptionGroupMapping] = useState<Record<string, string>>({});
   
   const getLocalToday = () => {
@@ -363,18 +377,20 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
     const resolvedOrderType = ORDER_TYPE_LABELS[order.order_type_id] || 'SUR PLACE';
 
+    const loadedComplement = order.customer_address_complement || order.address_complement || '';
     const clientInfo = {
       name: order.customer_name || '',
       phone: order.customer_phone || '',
-      address: order.customer_address || '',
-      address_complement: order.customer_address_complement || order.address_complement || '',
-      customer_address_complement: order.customer_address_complement || order.address_complement || '',
+      address: stripComplementFromAddress(order.customer_address || '', loadedComplement),
+      additionalInfo: loadedComplement,
+      address_complement: loadedComplement,
+      customer_address_complement: loadedComplement,
       comment: order.comment || order.notes || '',
       notes: order.comment || order.notes || '',
       fee: order.delivery_fee || 0
     };
 
-    onLoadOrder(items, order.id, resolvedOrderType, clientInfo);
+    onLoadOrder(items, order.id, resolvedOrderType, clientInfo, isCaisseOrder(order));
     onClose();
   };
 
@@ -382,7 +398,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     if (!(window as any).electronAPI) return;
 
     try {
-      const printerName = localStorage.getItem('imprimante_caisse') || undefined;
+      const printerName = getSecureSetting('imprimante_caisse', undefined) || undefined;
       const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping);
 
       orderPayloadData.comment = order.comment || order.notes || '';
@@ -404,7 +420,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     try {
       const items = extractItemsSafely(order.order_details);
 
-      const printerName = localStorage.getItem('imprimante_cuisine') || undefined;
+      const printerName = getSecureSetting('imprimante_cuisine', undefined) || undefined;
       const date = new Date(order.created_at || Date.now()).toLocaleString('fr-FR', { 
         day: '2-digit', 
         month: '2-digit', 
@@ -415,8 +431,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       const orderNumber = order.order_number || order.id.toString().slice(0, 4);
       
       let orderType = 'SUR PLACE';
-      if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') orderType = 'EMPORTER';
-      if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') orderType = 'LIVRAISON';
+      if (order.order_type_id === ORDER_TYPE_ID.EMPORTER) orderType = 'EMPORTER';
+      if (order.order_type_id === ORDER_TYPE_ID.LIVRAISON) orderType = 'LIVRAISON';
 
       const kitchenPayload = buildKitchenReceiptPayload({
         orderNumber,
@@ -437,13 +453,21 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const handleQuickPay = async (e: React.MouseEvent, order: any) => {
     e.stopPropagation();
+    const lockKey = String(order.id);
+    if (payingOrderIdsRef.current.has(lockKey)) return;
+    payingOrderIdsRef.current.add(lockKey);
     try {
       const activeRestoId = getActiveRestoId(order.restaurant_id) 
         || (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null) 
         || localStorage.getItem('pos_restaurant_id') 
         || RESTAURANT_ID;
 
-      const activeSessionId = order.session_id || await resolveActiveSessionId(activeRestoId);
+      // Le paiement doit compter dans la session OUVERTE (et pas celle où la commande a été créée)
+      const activeSessionId = await resolveActiveSessionId(activeRestoId);
+      if (!activeSessionId) {
+        toast.error("Veuillez ouvrir la caisse d'abord !");
+        return;
+      }
 
       const updatePayload: any = { 
         is_paid: true,
@@ -479,13 +503,13 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
       toast.success(`Commande #${order.order_number || order.id.toString().slice(0, 4)} encaissée par carte`);
       
-      const isAutoPrintReceiptEnabled = localStorage.getItem('auto_print_receipt') === 'true';
+      const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
       if (isAutoPrintReceiptEnabled) {
         await printOrder({ ...order, ...updatePayload }, false);
       }
 
       const isFromCaisse = isCaisseOrder(order);
-      const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
+      const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
       
       if (isKitchenTicketEnabled && !isFromCaisse) {
         setTimeout(async () => {
@@ -496,6 +520,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       setOrders(prevOrders => prevOrders.filter(o => o.id !== order.id));
     } catch (err) {
       toast.error("Erreur lors de l'encaissement rapide");
+    } finally {
+      payingOrderIdsRef.current.delete(lockKey);
     }
   };
 
@@ -507,6 +533,9 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const handleCashPaymentConfirm = async (method: string, cashAmount: number) => {
     if (!paymentOrder) return;
+    const lockKey = String(paymentOrder.id);
+    if (payingOrderIdsRef.current.has(lockKey)) return;
+    payingOrderIdsRef.current.add(lockKey);
     setIsProcessing(true);
     try {
       const activeRestoId = getActiveRestoId(paymentOrder.restaurant_id) 
@@ -514,7 +543,12 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         || localStorage.getItem('pos_restaurant_id') 
         || RESTAURANT_ID;
 
-      const activeSessionId = paymentOrder.session_id || await resolveActiveSessionId(activeRestoId);
+      // Le paiement doit compter dans la session OUVERTE (et pas celle où la commande a été créée)
+      const activeSessionId = await resolveActiveSessionId(activeRestoId);
+      if (!activeSessionId) {
+        toast.error("Veuillez ouvrir la caisse d'abord !");
+        return;
+      }
 
       const updatePayload: any = {
         is_paid: true,
@@ -556,19 +590,19 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                             String(method).toLowerCase() === 'counter' || 
                             cashAmount > 0;
       if (isCashPayment && (window as any).electronAPI?.openDrawer) {
-        const printerName = localStorage.getItem('imprimante_caisse') || undefined;
+        const printerName = getSecureSetting('imprimante_caisse', undefined) || undefined;
         (window as any).electronAPI.openDrawer(printerName);
       }
 
       const updatedOrder = { ...paymentOrder, ...updatePayload };
 
-      const isAutoPrintReceiptEnabled = localStorage.getItem('auto_print_receipt') !== 'false';
+      const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
       if (isAutoPrintReceiptEnabled) {
         await printOrder(updatedOrder, false);
       }
 
       const isFromCaisse = isCaisseOrder(paymentOrder);
-      const isKitchenTicketEnabled = localStorage.getItem('print_kitchen_ticket') !== 'false';
+      const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
       
       if (isKitchenTicketEnabled && !isFromCaisse) {
         setTimeout(async () => {
@@ -583,6 +617,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       console.error(err);
       toast.error("Erreur lors de l'enregistrement du paiement");
     } finally {
+      payingOrderIdsRef.current.delete(lockKey);
       setIsProcessing(false);
     }
   };

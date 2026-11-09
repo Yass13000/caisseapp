@@ -18,7 +18,8 @@ import {
   ClipboardList, History, Package, Wifi, WifiOff,
   UserRound, CalendarDays, LayoutDashboard, AlertTriangle,
   CreditCard, Banknote, CheckCircle2, Store, ArchiveRestore,
-  Calculator, Hourglass, Plus, RotateCcw, RotateCw
+  Calculator, Hourglass, Plus, RotateCcw, RotateCw,
+  X, Check, Equal, Receipt, ArrowLeftRight, Loader2
 } from 'lucide-react';
 
 // Composants
@@ -34,7 +35,7 @@ import NewtonsCradleLoader from '@/components/NewtonsCradleLoader';
 import CashSessionModal from '@/components/CashSessionModal';
 import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
 import PosSetup from '@/components/PosSetup';
-import { DeliveryDispatchModal } from '@/features/delivery/components/DeliveryDispatchModal';
+import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 
 export interface Product {
   id: number | string;
@@ -57,9 +58,9 @@ interface Category {
 }
 
 const ORDER_TYPE_IDS = {
-  'SUR PLACE': '633425b1-f86c-4c17-8cba-b258906ad317',
-  'EMPORTER': '2cac3f10-73e2-40a5-a7e0-053bd861b4d9',
-  'LIVRAISON': 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d'
+  'SUR PLACE': ORDER_TYPE_ID.SUR_PLACE,
+  'EMPORTER': ORDER_TYPE_ID.EMPORTER,
+  'LIVRAISON': ORDER_TYPE_ID.LIVRAISON
 };
 
 const ORDER_TYPE_CONFIG: Record<string, { label: string; icon: string }> = {
@@ -82,16 +83,27 @@ const extractRealProductId = (rawId: any): number | string => {
   return !isNaN(first) ? first : rawId;
 };
 
+// Erreur renvoyée par PostgREST/Postgres (a un code) vs coupure réseau (pas de code)
+const isDbRejection = (e: any): boolean =>
+  !!e && typeof e.code === 'string' && e.code !== '' && !/fetch|network/i.test(String(e.message || ''));
+
+const describeDbError = (e: any): string =>
+  e && typeof e === 'object'
+    ? JSON.stringify({ code: e.code, message: e.message, details: e.details, hint: e.hint })
+    : String(e);
+
 // 🟢 Normalisation universelle des modes de paiement
 const normalizeCaissePaymentMethod = (rawMethod?: string): string => {
   if (!rawMethod) return 'Espèces';
   const m = String(rawMethod).trim().toLowerCase();
 
   if (m.includes('fractionn') || m.includes('mixte')) {
+    // Pas d'expansion "CB" → "Carte bancaire" : la colonne payment_method est limitée à 50 caractères
     return String(rawMethod)
-      .replace(/\bcb\b/gi, 'Carte bancaire')
+      .replace(/\bcarte bancaire\b/gi, 'CB')
       .replace(/\bespeces\b/gi, 'Espèces')
-      .trim();
+      .trim()
+      .slice(0, 50);
   }
 
   if (m.includes('attente') || m === 'pending') {
@@ -136,8 +148,15 @@ const getSecureSetting = (key: string, defaultValue: any) => {
   return local;
 };
 
+// Type par défaut du restaurant (chargé depuis la base au démarrage), utilisé si la caisse n'a pas son propre réglage
+let restaurantDefaultOrderType: string | null = null;
+
+// Le complément d'adresse peut arriver sous plusieurs noms selon l'écran d'origine
+const getClientComplement = (client: any): string =>
+  String(client?.additionalInfo || client?.address_complement || client?.customer_address_complement || '').trim();
+
 const getDefaultOrderType = (): 'SUR PLACE' | 'EMPORTER' | 'LIVRAISON' => {
-  const val = getSecureSetting('default_order_type', 'EMPORTER');
+  const val = getSecureSetting('default_order_type', restaurantDefaultOrderType || 'EMPORTER');
   return (val === 'SUR PLACE' || val === 'LIVRAISON' || val === 'EMPORTER') ? val : 'EMPORTER';
 };
 
@@ -277,178 +296,267 @@ const generateAndPrintKitchenTicket = async (
   }
 };
 
+type PayMethod = 'CB' | 'Espèces';
+type PayLine = { id: number; method: PayMethod; amount: number; tendered: number }; // centimes
+
+const toCents = (v: number) => Math.round((Number(v) || 0) * 100);
+const fmtCents = (c: number) => (c / 100).toFixed(2).replace('.', ',');
+const parseInputCents = (s: string) => {
+  if (!s || s === '.') return 0;
+  const [i, d = ''] = s.split('.');
+  return (parseInt(i || '0', 10) || 0) * 100 + (parseInt((d + '00').slice(0, 2), 10) || 0);
+};
+
 export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing }: any) => {
-  const roundedSubtotal = parseFloat(subtotal.toFixed(2));
-  const [remaining, setRemaining] = useState(roundedSubtotal);
-  const [tenderedStr, setTenderedStr] = useState("");
-  const [lines, setLines] = useState<any[]>([]);
+  const totalCents = toCents(subtotal);
+  const [lines, setLines] = useState<PayLine[]>([]);
+  const [input, setInput] = useState('');
+  const lineIdRef = useRef(0);
+  const confirmLockRef = useRef(false);
 
-  const inputAmount = parseFloat(tenderedStr) || 0;
-  const changeDue = Math.max(0, inputAmount - remaining);
+  const paidCents = lines.reduce((s, l) => s + l.amount, 0);
+  const remainingCents = Math.max(0, totalCents - paidCents);
+  const changeCents = lines.reduce((s, l) => s + (l.tendered - l.amount), 0);
+  const inputCents = parseInputCents(input);
+  const pendingChange = Math.max(0, inputCents - remainingCents);
+  const isComplete = totalCents > 0 && remainingCents === 0;
+  const busy = !!isProcessing;
 
-  const handleNumpad = (val: string) => {
-    if (val === 'DEL') setTenderedStr(p => p.slice(0, -1));
-    else if (val === '.') { if (!tenderedStr.includes('.')) setTenderedStr(p => p + '.'); }
-    else if (val === '00') { if (tenderedStr && !tenderedStr.includes('.')) setTenderedStr(p => p + '00'); }
-    else { if (tenderedStr.includes('.') && tenderedStr.split('.')[1]?.length >= 2) return; setTenderedStr(p => p + val); }
+  const confirm = (finalLines: PayLine[]) => {
+    if (confirmLockRef.current || busy) return;
+    const sum = finalLines.reduce((s, l) => s + l.amount, 0);
+    if (sum !== totalCents) return;
+    confirmLockRef.current = true;
+    const label = (m: PayMethod) => (m === 'CB' ? 'Carte bancaire' : 'Espèces');
+    const merged = (['CB', 'Espèces'] as PayMethod[])
+      .map(m => ({ m, c: finalLines.filter(l => l.method === m).reduce((s, l) => s + l.amount, 0) }))
+      .filter(x => x.c > 0);
+    // payment_method est un varchar(50) : un total par mode, libellé court (max ~46 car.)
+    const method = merged.length > 1
+      ? `Fractionné (${merged.map(x => `${x.m}: ${(x.c / 100).toFixed(2)}€`).join(' + ')})`
+      : label(merged[0].m);
+    const cash = (merged.find(x => x.m === 'Espèces')?.c || 0) / 100;
+    Promise.resolve(onConfirm(method, cash)).finally(() => { confirmLockRef.current = false; });
   };
 
-  const handleAddAmount = (amount: number) => {
-    const current = parseFloat(tenderedStr) || 0;
-    setTenderedStr((current + amount).toFixed(2).replace(/\.00$/, ''));
+  const addLine = (method: PayMethod) => {
+    if (busy || remainingCents <= 0) return;
+    const asked = inputCents > 0 ? inputCents : remainingCents;
+    const amount = Math.min(asked, remainingCents);
+    // CB : jamais plus que le reste. Espèces : on garde le montant remis pour calculer le rendu.
+    const tendered = method === 'Espèces' ? asked : amount;
+    const next = [...lines, { id: ++lineIdRef.current, method, amount, tendered }];
+    setLines(next);
+    setInput('');
+    const nextChange = next.reduce((s, l) => s + (l.tendered - l.amount), 0);
+    // Paiement soldé sans monnaie à rendre → validation immédiate
+    if (amount === remainingCents && nextChange === 0) confirm(next);
   };
 
-  const addPaymentLine = (method: 'CB' | 'Espèces') => {
-    if (isProcessing) return;
-
-    let tendered = inputAmount;
-    if (tendered === 0 || (tendered > remaining && method === 'CB')) {
-      tendered = remaining;
-    }
-
-    // 🟢 Montant réellement appliqué au ticket (ne dépasse jamais le reste à payer, même si le client donne un billet plus gros)
-    const effectiveAmount = parseFloat(Math.min(tendered, remaining).toFixed(2));
-    const newLine = { method, amount: effectiveAmount, tendered: parseFloat(tendered.toFixed(2)) };
-    const nextRemaining = parseFloat(Math.max(0, remaining - effectiveAmount).toFixed(2));
-    
-    const updatedLines = [...lines, newLine];
-    setLines(updatedLines);
-    setTenderedStr("");
-
-    if (nextRemaining <= 0) {
-      const finalMethod = updatedLines.length > 1 
-        ? `Fractionné (${updatedLines.map(l => `${l.method === 'CB' ? 'Carte bancaire' : 'Espèces'}: ${l.amount.toFixed(2)}€`).join(' + ')})` 
-        : (method === 'CB' ? 'Carte bancaire' : 'Espèces');
-      const totalCash = parseFloat(
-        updatedLines
-          .filter(l => l.method === 'Espèces')
-          .reduce((sum, l) => sum + l.amount, 0)
-          .toFixed(2)
-      );
-      onConfirm(finalMethod, totalCash);
-    } else {
-      setRemaining(nextRemaining);
-    }
+  const removeLine = (id: number) => {
+    if (busy) return;
+    setLines(ls => ls.filter(l => l.id !== id));
   };
 
-  const handleExactCount = () => {
-    setTenderedStr(remaining.toFixed(2).replace(/\.00$/, ''));
+  const press = (key: string) => {
+    if (busy) return;
+    setInput(prev => {
+      if (key === 'DEL') return prev.slice(0, -1);
+      if (key === 'C') return '';
+      if (key === '.') return prev.includes('.') ? prev : (prev || '0') + '.';
+      const [i, d] = prev.split('.');
+      if (d !== undefined) {
+        const room = 2 - d.length;
+        return room <= 0 ? prev : prev + key.slice(0, room);
+      }
+      const nextInt = (i === '0' ? '' : i) + key;
+      const clean = nextInt.replace(/^0+(?=\d)/, '');
+      return clean.length > 5 ? prev : clean;
+    });
   };
 
-  const resetSplit = () => {
-    setRemaining(roundedSubtotal);
-    setLines([]);
-    setTenderedStr("");
+  const addBill = (euros: number) => {
+    if (busy) return;
+    const c = parseInputCents(input) + euros * 100;
+    if (c > 9999900) return;
+    setInput(c % 100 === 0 ? String(c / 100) : (c / 100).toFixed(2));
   };
+
+  // Clavier physique
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (/^[0-9]$/.test(e.key)) press(e.key);
+      else if (e.key === '.' || e.key === ',') press('.');
+      else if (e.key === 'Backspace') press('DEL');
+      else if (e.key === 'Escape') { if (!busy) onClose(); }
+      else if (e.key === 'Enter') { if (isComplete) confirm(lines); }
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  const primary = themeColors?.primary || '#04B855';
+  const display = input ? input.replace('.', ',') : '';
+  const key = 'rounded-2xl bg-white border border-gray-200 text-secondary font-black active:scale-[0.96] active:bg-gray-100 transition-transform flex items-center justify-center cursor-pointer disabled:opacity-40 disabled:pointer-events-none';
 
   return createPortal(
-    <motion.div 
+    <motion.div
       role="dialog"
       aria-modal="true"
       className="fixed inset-0 z-[9999999] bg-black/60 backdrop-blur-[2px] flex items-center justify-center p-4 font-helvetica select-none"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.16, ease: "linear" }}
-      style={{ willChange: 'opacity' }}
+      transition={{ duration: 0.16, ease: 'linear' }}
     >
-      <motion.div 
-        className="bg-[#F3F4F6] w-[1000px] h-[580px] max-w-[95vw] max-h-[95vh] rounded-[2.5rem] shadow-2xl flex overflow-hidden border border-white/20"
+      <motion.div
+        className="bg-[#F3F4F6] w-[1000px] h-[600px] max-w-[96vw] max-h-[94vh] rounded-[2rem] shadow-2xl flex overflow-hidden"
         initial={{ y: 20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 20, opacity: 0 }}
         transition={{ type: 'spring', damping: 28, stiffness: 400, mass: 0.5 }}
-        style={{ willChange: 'transform, opacity', transform: 'translateZ(0)' }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="w-[35%] bg-white border-r border-gray-200 flex flex-col p-6 justify-between">
-          <div className="space-y-6">
-            <div className="flex justify-between items-start">
-              <div>
-                <div className="text-3xl font-black text-secondary tracking-tight">{roundedSubtotal.toFixed(2)} €</div>
-                <div className="text-[10px] font-black uppercase text-gray-400 tracking-wider mt-1">Total Ticket</div>
-              </div>
-              {lines.length > 0 && (
-                <button onClick={resetSplit} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all active:scale-95 text-gray-500 cursor-pointer">
-                  <RotateCcw size={18} />
-                </button>
-              )}
+        {/* Colonne gauche : récap */}
+        <div className="w-[36%] bg-white border-r border-gray-200 flex flex-col p-5 gap-4">
+          <div className="flex items-center justify-between">
+            <button onClick={onClose} disabled={busy} aria-label="Fermer" className="w-12 h-12 rounded-xl bg-gray-100 text-gray-500 flex items-center justify-center active:scale-95 cursor-pointer disabled:opacity-40">
+              <X size={22} />
+            </button>
+            <div className="flex items-center gap-2 text-secondary">
+              <Receipt size={20} className="text-gray-400" />
+              <span className="text-2xl font-black tabular-nums">{fmtCents(totalCents)} €</span>
             </div>
-
-            <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 shadow-inner min-h-[140px] flex flex-col justify-center text-center">
-              <div className="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">Reste à percevoir</div>
-              <div className={`text-4xl font-black tracking-tight ${remaining === 0 ? 'text-primary' : 'text-orange-500'}`}>{remaining.toFixed(2)} €</div>
-            </div>
-
-            {lines.length > 0 && (
-              <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1 custom-scrollbar">
-                {lines.map((line, idx) => (
-                  <div key={idx} className="flex justify-between items-center bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl">
-                    <span className="font-black text-xs uppercase text-gray-500 flex items-center gap-2">
-                      {line.method === 'CB' ? <CreditCard size={14} className="text-blue-500" /> : <Banknote size={14} className="text-primary" />}
-                      {line.method === 'CB' ? 'Carte bancaire' : 'Espèces'}
-                    </span>
-                    <span className="font-black text-secondary text-sm">-{line.amount.toFixed(2)} €</span>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
 
-          <button onClick={onClose} disabled={isProcessing} className="w-full py-4 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-500 font-black uppercase tracking-wider active:scale-95 transition-all text-xs cursor-pointer">
-            Retour
-          </button>
+          <div
+            className="rounded-2xl p-4 flex items-center justify-center gap-3 transition-colors"
+            style={{ backgroundColor: isComplete ? `${primary}1A` : '#FFF7ED' }}
+          >
+            {isComplete
+              ? <CheckCircle2 size={34} style={{ color: primary }} />
+              : <Hourglass size={26} className="text-orange-500" />}
+            <div className="text-4xl font-black tabular-nums" style={{ color: isComplete ? primary : '#F97316' }}>
+              {fmtCents(remainingCents)} €
+            </div>
+          </div>
+
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+            <AnimatePresence initial={false}>
+              {lines.map(l => (
+                <motion.div
+                  key={l.id}
+                  layout
+                  initial={{ opacity: 0, x: -12 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 12 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-xl pl-3 pr-1 py-1"
+                >
+                  {l.method === 'CB'
+                    ? <CreditCard size={20} className="text-blue-600 flex-shrink-0" />
+                    : <Banknote size={20} className="flex-shrink-0" style={{ color: primary }} />}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-black text-secondary tabular-nums">{fmtCents(l.amount)} €</div>
+                    {l.tendered > l.amount && (
+                      <div className="text-[11px] font-bold text-gray-400 tabular-nums">
+                        {fmtCents(l.tendered)} € → <span className="text-amber-600">{fmtCents(l.tendered - l.amount)} €</span>
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={() => removeLine(l.id)} disabled={busy} aria-label="Supprimer" className="w-11 h-11 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center active:scale-95 cursor-pointer disabled:opacity-40">
+                    <X size={18} />
+                  </button>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+
+          {changeCents > 0 && (
+            <div className="rounded-2xl bg-amber-500 text-white px-4 py-3 flex items-center justify-between">
+              <ArrowLeftRight size={22} />
+              <span className="text-3xl font-black tabular-nums">{fmtCents(changeCents)} €</span>
+            </div>
+          )}
+
+          {isComplete && (
+            <button
+              onClick={() => confirm(lines)}
+              disabled={busy}
+              aria-label="Valider"
+              className="h-16 rounded-2xl text-white flex items-center justify-center active:scale-95 transition-transform shadow-md cursor-pointer disabled:opacity-60"
+              style={{ backgroundColor: primary }}
+            >
+              {busy ? <Loader2 size={28} className="animate-spin" /> : <Check size={32} strokeWidth={3} />}
+            </button>
+          )}
         </div>
 
-        <div className="flex-1 flex flex-col p-6 gap-4">
-          <div className="grid grid-cols-2 gap-4 flex-shrink-0">
-            <button onClick={() => addPaymentLine('CB')} disabled={isProcessing} className="h-20 bg-blue-600 text-white rounded-2xl flex flex-col items-center justify-center gap-1 hover:bg-blue-700 active:scale-95 transition-all shadow-md cursor-pointer disabled:opacity-50">
-              <CreditCard size={28} />
-              <span className="text-[10px] font-black uppercase tracking-widest">Carte Bancaire</span>
-            </button>
-            <button onClick={() => addPaymentLine('Espèces')} disabled={isProcessing || (inputAmount < remaining && inputAmount === 0)} className="h-20 bg-primary text-white rounded-2xl flex flex-col items-center justify-center gap-1 hover:bg-primary/90 active:scale-95 transition-all shadow-md disabled:opacity-50 cursor-pointer">
-              <Banknote size={28} />
-              <span className="text-[10px] font-black uppercase tracking-widest">Valider Espèces</span>
-            </button>
-          </div>
-
-          <div className="flex gap-4 items-center bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex-shrink-0 h-20">
-            <div className="flex-1">
-              <div className="text-2xl font-black text-secondary">{tenderedStr || '0.00'} <span className="text-sm text-gray-400">€</span></div>
+        {/* Colonne droite : saisie */}
+        <div className="flex-1 flex flex-col p-5 gap-3 min-w-0">
+          <div className="h-20 flex-shrink-0 bg-white border border-gray-200 rounded-2xl px-5 flex items-center gap-4">
+            <div className={`flex-1 text-4xl font-black tabular-nums truncate ${display ? 'text-secondary' : 'text-gray-300'}`}>
+              {display || fmtCents(remainingCents)} <span className="text-xl text-gray-400">€</span>
             </div>
-            {changeDue > 0 && (
-              <div className="bg-amber-500 text-white px-4 py-2 rounded-xl font-black text-sm">
-                Rendu : {changeDue.toFixed(2)} €
+            {pendingChange > 0 && (
+              <div className="bg-amber-500 text-white px-3 py-2 rounded-xl font-black text-lg tabular-nums flex items-center gap-2">
+                <ArrowLeftRight size={18} /> {fmtCents(pendingChange)} €
               </div>
             )}
           </div>
 
-          <div className="flex-1 flex gap-4 min-h-0">
-            <div className="w-[30%] flex flex-col gap-2">
-              <button onClick={handleExactCount} className="flex-1 bg-white border border-gray-200 hover:border-secondary text-secondary font-black text-sm rounded-xl active:scale-95 transition-all shadow-sm cursor-pointer">
-                Compte Exact
+          <div className="flex-1 flex gap-3 min-h-0">
+            <div className="w-[26%] grid grid-rows-5 gap-2">
+              <button onClick={() => setInput(remainingCents ? (remainingCents / 100).toFixed(2) : '')} disabled={busy || isComplete} aria-label="Montant exact" className={key}>
+                <Equal size={24} />
               </button>
-              {[5, 10, 20, 50].map(amt => (
-                <button key={amt} onClick={() => handleAddAmount(amt)} className="flex-1 bg-white border border-gray-200 hover:border-secondary text-secondary font-black text-sm rounded-xl active:scale-95 transition-all shadow-sm flex items-center justify-center gap-1 cursor-pointer">
-                  <Plus size={12} className="text-gray-400" /> {amt} €
+              {[5, 10, 20, 50].map(b => (
+                <button key={b} onClick={() => addBill(b)} disabled={busy || isComplete} className={`${key} text-lg gap-1`}>
+                  <Plus size={14} className="text-gray-400" />{b}
                 </button>
               ))}
             </div>
 
-            <div className="flex-1 flex flex-col gap-2">
-              <div className="grid grid-cols-3 gap-2 flex-1">
-                {['1','2','3','4','5','6','7','8','9','0','00','.'].map(key => (
-                  <button key={key} onClick={() => handleNumpad(key)} className="bg-white border border-gray-200 hover:border-secondary text-secondary text-lg font-black rounded-xl active:scale-95 transition-all shadow-sm flex items-center justify-center cursor-pointer">
-                    {key}
-                  </button>
-                ))}
-              </div>
-              <div className="h-14 flex-shrink-0">
-                <button onClick={() => handleNumpad('DEL')} className="w-full h-full bg-red-50 hover:bg-red-100 text-red-500 font-black rounded-xl active:scale-95 transition-all border border-red-100 flex items-center justify-center shadow-sm cursor-pointer">
-                  <Delete size={20} />
-                </button>
-              </div>
+            <div className="flex-1 grid grid-cols-3 grid-rows-4 gap-2">
+              {['7', '8', '9', '4', '5', '6', '1', '2', '3'].map(k => (
+                <button key={k} onClick={() => press(k)} disabled={busy || isComplete} className={`${key} text-2xl`}>{k}</button>
+              ))}
+              <button onClick={() => press('.')} disabled={busy || isComplete} className={`${key} text-2xl`}>,</button>
+              <button onClick={() => press('0')} disabled={busy || isComplete} className={`${key} text-2xl`}>0</button>
+              <button
+                onClick={() => press('DEL')}
+                onContextMenu={(e) => { e.preventDefault(); press('C'); }}
+                disabled={busy || isComplete || !input}
+                aria-label="Effacer"
+                className={`${key} !bg-red-50 !border-red-100 text-red-500`}
+              >
+                <Delete size={24} />
+              </button>
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 h-20 flex-shrink-0">
+            <button
+              onClick={() => addLine('CB')}
+              disabled={busy || isComplete}
+              aria-label="Carte bancaire"
+              className="rounded-2xl bg-blue-600 text-white flex items-center justify-center gap-3 active:scale-[0.97] transition-transform shadow-md cursor-pointer disabled:opacity-40"
+            >
+              <CreditCard size={30} />
+              <span className="text-xl font-black tabular-nums opacity-90">{fmtCents(Math.min(inputCents || remainingCents, remainingCents))}</span>
+            </button>
+            <button
+              onClick={() => addLine('Espèces')}
+              disabled={busy || isComplete}
+              aria-label="Espèces"
+              className="rounded-2xl text-white flex items-center justify-center gap-3 active:scale-[0.97] transition-transform shadow-md cursor-pointer disabled:opacity-40"
+              style={{ backgroundColor: primary }}
+            >
+              <Banknote size={30} />
+              <span className="text-xl font-black tabular-nums opacity-90">{fmtCents(inputCents || remainingCents)}</span>
+            </button>
           </div>
         </div>
       </motion.div>
@@ -488,6 +596,7 @@ const Caisse = () => {
   const [isProcessing, setIsProcessing] = useState(false);
 
   const isSubmittingRef = useRef(false);
+  const isSyncingOfflineRef = useRef(false);
 
   const [isOrderTrackerOpen, setIsOrderTrackerOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -499,6 +608,8 @@ const Caisse = () => {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
   const [loadedOrderId, setLoadedOrderId] = useState<string | number | null>(null);
+  // true = la commande rechargée a été créée sur la caisse (son bon cuisine est déjà sorti à la mise en attente)
+  const loadedOrderFromCaisseRef = useRef<boolean>(true);
 
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -570,6 +681,10 @@ const Caisse = () => {
 
   const syncOfflineOrders = async () => {
     if (!(window as any).electronAPI?.getOfflineOrders) return;
+    // Verrou : une seule synchro à la fois, sinon les mêmes tickets sont envoyés deux fois
+    if (isSyncingOfflineRef.current) return;
+    isSyncingOfflineRef.current = true;
+    let failedCount = 0;
     try {
       const offlineOrders = await (window as any).electronAPI.getOfflineOrders();
       if (!offlineOrders || offlineOrders.length === 0) return;
@@ -599,11 +714,17 @@ const Caisse = () => {
 
         if (!error) {
           await (window as any).electronAPI.removeOfflineOrder(offline_id);
+        } else {
+          failedCount++;
+          console.error("Échec synchro ticket hors-ligne :", offline_id, describeDbError(error));
         }
       }
-      customToast("Caisse synchronisée !", "success");
+      if (failedCount === 0) customToast("Caisse synchronisée !", "success");
+      else customToast(`${failedCount} ticket(s) hors-ligne non synchronisé(s), nouvel essai plus tard`, "error");
     } catch (err) {
       console.error("Échec boucle sync :", err);
+    } finally {
+      isSyncingOfflineRef.current = false;
     }
   };
 
@@ -753,9 +874,14 @@ const Caisse = () => {
           setActiveOrderTypes(types);
 
           const defaultFromDb = restoData.default_order_type;
-          const initialDefault = (defaultFromDb && types.includes(defaultFromDb)) 
-            ? defaultFromDb 
-            : getDefaultOrderType();
+          restaurantDefaultOrderType = (defaultFromDb && types.includes(defaultFromDb)) ? defaultFromDb : null;
+          const localDefault = getSecureSetting('default_order_type', '');
+          // Priorité : réglage de cette caisse > réglage du restaurant en ligne > EMPORTER
+          const initialDefault = (localDefault && types.includes(localDefault))
+            ? localDefault
+            : (defaultFromDb && types.includes(defaultFromDb))
+              ? defaultFromDb
+              : getDefaultOrderType();
 
           setOrderType(initialDefault as any);
           setPreviousOrderType(initialDefault as any);
@@ -817,8 +943,9 @@ const Caisse = () => {
     setIsDeliveryModalOpen(false);
   };
 
-  const handleLoadOrderIntoCart = (items: any[], orderId: string | number, loadedOrderType?: string, loadedClientInfo?: any) => {
+  const handleLoadOrderIntoCart = (items: any[], orderId: string | number, loadedOrderType?: string, loadedClientInfo?: any, isFromCaisse: boolean = true) => {
     setLoadedOrderId(orderId);
+    loadedOrderFromCaisseRef.current = isFromCaisse;
     clearCart();
     setDeliveryFee(0);
     setClientInfo(null);
@@ -1037,8 +1164,8 @@ const Caisse = () => {
         order_details: cleanOrderDetails,
         customer_name: effectiveClient?.name || 'Client Caisse',
         customer_phone: effectiveClient?.phone || null,
-        customer_address: effectiveClient?.address ? `${effectiveClient.address}${effectiveClient.additionalInfo ? ` - ${effectiveClient.additionalInfo}` : ''}`.trim() : null,
-        customer_address_complement: effectiveClient?.additionalInfo || null,
+        customer_address: effectiveClient?.address ? String(effectiveClient.address).trim() : null,
+        customer_address_complement: getClientComplement(effectiveClient) || null,
         order_number: targetOrderNumber,
         session_id: currentSessionId 
       };
@@ -1062,9 +1189,9 @@ const Caisse = () => {
           }
           
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
-          if (isKitchenTicketEnabled && !loadedOrderId) {
+          if (isKitchenTicketEnabled && (!loadedOrderId || !loadedOrderFromCaisseRef.current)) {
             setTimeout(async () => {
-              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, effectiveClient?.comment || effectiveClient?.notes || '');
             }, 500);
           }
 
@@ -1099,8 +1226,8 @@ const Caisse = () => {
           if (effectiveClient?.name) updateData.customer_name = effectiveClient.name;
           if (effectiveClient?.phone) updateData.customer_phone = effectiveClient.phone;
           if (effectiveClient?.address) {
-            updateData.customer_address = `${effectiveClient.address}${effectiveClient.additionalInfo ? ` - ${effectiveClient.additionalInfo}` : ''}`.trim();
-            updateData.customer_address_complement = effectiveClient.additionalInfo || null;
+            updateData.customer_address = String(effectiveClient.address).trim();
+            updateData.customer_address_complement = getClientComplement(effectiveClient) || null;
           }
 
           const { error } = await supabase
@@ -1142,9 +1269,9 @@ const Caisse = () => {
         }
         
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
-        if (isKitchenTicketEnabled && !loadedOrderId) {
+        if (isKitchenTicketEnabled && (!loadedOrderId || !loadedOrderFromCaisseRef.current)) {
           setTimeout(async () => {
-            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
+            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, effectiveClient?.comment || effectiveClient?.notes || '');
           }, 500);
         }
 
@@ -1157,7 +1284,14 @@ const Caisse = () => {
         setIsPaymentModalOpen(false);
 
       } catch (e) {
-        console.error("Crash réseau inattendu, bascule de secours locale :", e);
+        // Refus explicite de Supabase (contrainte, trigger, droits…) : inutile de stocker en local,
+        // la synchro échouerait à l'identique. On affiche la vraie raison et on garde le panier.
+        if (isDbRejection(e)) {
+          console.error("Supabase a refusé l'enregistrement :", describeDbError(e));
+          customToast(`Refusé par la base : ${e?.message || e?.code}`, "error");
+          return;
+        }
+        console.error("Crash réseau inattendu, bascule de secours locale :", describeDbError(e));
         if ((window as any).electronAPI?.saveOfflineOrder) {
           orderPayload.order_number = targetOrderNumber;
           await (window as any).electronAPI.saveOfflineOrder(orderPayload);
@@ -1169,9 +1303,9 @@ const Caisse = () => {
           }
 
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
-          if (isKitchenTicketEnabled && !loadedOrderId) {
+          if (isKitchenTicketEnabled && (!loadedOrderId || !loadedOrderFromCaisseRef.current)) {
             setTimeout(async () => {
-              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, effectiveClient?.comment || effectiveClient?.notes || '');
             }, 500);
           }
           
@@ -1230,8 +1364,8 @@ const Caisse = () => {
         order_details: cleanOrderDetails,
         customer_name: effectiveClient?.name || 'Client Caisse',
         customer_phone: effectiveClient?.phone || null,
-        customer_address: effectiveClient?.address ? `${effectiveClient.address}${effectiveClient.additionalInfo ? ` - ${effectiveClient.additionalInfo}` : ''}`.trim() : null,
-        customer_address_complement: effectiveClient?.additionalInfo || null,
+        customer_address: effectiveClient?.address ? String(effectiveClient.address).trim() : null,
+        customer_address_complement: getClientComplement(effectiveClient) || null,
         order_number: targetOrderNumber,
         session_id: currentSessionId 
       };
@@ -1278,8 +1412,8 @@ const Caisse = () => {
           if (effectiveClient?.name) updateData.customer_name = effectiveClient.name;
           if (effectiveClient?.phone) updateData.customer_phone = effectiveClient.phone;
           if (effectiveClient?.address) {
-            updateData.customer_address = `${effectiveClient.address}${effectiveClient.additionalInfo ? ` - ${effectiveClient.additionalInfo}` : ''}`.trim();
-            updateData.customer_address_complement = effectiveClient.additionalInfo || null;
+            updateData.customer_address = String(effectiveClient.address).trim();
+            updateData.customer_address_complement = getClientComplement(effectiveClient) || null;
           }
 
           const { error } = await supabase
@@ -1322,7 +1456,14 @@ const Caisse = () => {
         setOrderType(getDefaultOrderType());
 
       } catch (e) {
-        console.error("Crash réseau inattendu, bascule de secours locale :", e);
+        // Refus explicite de Supabase (contrainte, trigger, droits…) : inutile de stocker en local,
+        // la synchro échouerait à l'identique. On affiche la vraie raison et on garde le panier.
+        if (isDbRejection(e)) {
+          console.error("Supabase a refusé l'enregistrement :", describeDbError(e));
+          customToast(`Refusé par la base : ${e?.message || e?.code}`, "error");
+          return;
+        }
+        console.error("Crash réseau inattendu, bascule de secours locale :", describeDbError(e));
         if ((window as any).electronAPI?.saveOfflineOrder) {
           orderPayload.order_number = targetOrderNumber;
           await (window as any).electronAPI.saveOfflineOrder(orderPayload);

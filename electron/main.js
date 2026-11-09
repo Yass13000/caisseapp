@@ -21,6 +21,7 @@ const MAX_RETRY_DELAY_MS = 30000;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
+    title: 'Yaiba Caisse',
     width: 1080,
     height: 1920,
     show: false,
@@ -143,7 +144,12 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'kitchen_show_prices',
   'drawer_pin_mode',
   'auto_open_drawer_cash',
-  'category_printer_routing'
+  'category_printer_routing',
+  'default_order_type',
+  'highlight_multi_qty',
+  'kitchen_font_scale',
+  'kitchen_inverted_header',
+  'show_logo'
 ]);
 
 ipcMain.on('get-setting-sync', (event, key, defaultValue) => {
@@ -195,6 +201,13 @@ ipcMain.on('set-setting-sync', (event, key, value) => {
   if (key === 'receipt_copies_client' || key === 'receipt_copies_kitchen') {
     const num = Number(value);
     if (isNaN(num) || num < 1 || num > 5) {
+      event.returnValue = false;
+      return;
+    }
+  }
+
+  if (key === 'default_order_type') {
+    if (!['SUR PLACE', 'EMPORTER', 'LIVRAISON'].includes(String(value))) {
       event.returnValue = false;
       return;
     }

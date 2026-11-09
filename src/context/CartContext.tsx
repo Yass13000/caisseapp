@@ -2,6 +2,7 @@
 import React, { createContext, useContext, useReducer, useEffect } from 'react';
 import { supabase, RESTAURANT_ID } from '@/lib/supabaseClient';
 import { toast } from 'sonner';
+import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 
 const CartContext = createContext<any>(null);
 
@@ -235,7 +236,7 @@ export const CartProvider = ({ children }: { children: React.ReactNode }) => {
         customer_address: orderDetails?.customer_address || orderDetails?.address || null,
         customer_address_complement: orderDetails?.customer_address_complement || orderDetails?.address_complement || orderDetails?.additionalInfo || null,
         profile_id: orderDetails?.profile_id || orderDetails?.client_id || null,
-        order_type_id: orderDetails?.order_type_id || '633425b1-f86c-4c17-8cba-b258906ad317',
+        order_type_id: orderDetails?.order_type_id || ORDER_TYPE_ID.SUR_PLACE,
         comment: orderDetails?.comment || orderDetails?.notes || null,
         created_at: new Date().toISOString()
       };

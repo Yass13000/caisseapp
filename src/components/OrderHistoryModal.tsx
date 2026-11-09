@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload } from '@/lib/orderFormatter';
+import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 
 interface OrderHistoryModalProps {
   onClose: () => void;
@@ -118,8 +119,8 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     if (raw.includes('emporter') || raw.includes('collect')) return 'À emporter';
     if (raw.includes('place')) return 'Sur place';
     
-    if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') return 'À emporter';
-    if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') return 'Livraison';
+    if (order.order_type_id === ORDER_TYPE_ID.EMPORTER) return 'À emporter';
+    if (order.order_type_id === ORDER_TYPE_ID.LIVRAISON) return 'Livraison';
     return 'Sur place';
   }, [orderTypesMap]);
 
@@ -335,10 +336,10 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
       const orderNumber = order.order_number || order.id.toString().slice(0, 4);
       
       let orderType = 'SUR PLACE';
-      if (order.order_type_id === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9') orderType = 'EMPORTER';
-      if (order.order_type_id === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d') orderType = 'LIVRAISON';
+      if (order.order_type_id === ORDER_TYPE_ID.EMPORTER) orderType = 'EMPORTER';
+      if (order.order_type_id === ORDER_TYPE_ID.LIVRAISON) orderType = 'LIVRAISON';
 
-      const printerName = localStorage.getItem('imprimante_cuisine') || undefined;
+      const printerName = ((window as any).electronAPI?.getSetting ? (window as any).electronAPI.getSetting('imprimante_cuisine', undefined) : localStorage.getItem('imprimante_cuisine')) || undefined;
       const kitchenPayload = buildKitchenReceiptPayload({
         orderNumber,
         orderType,

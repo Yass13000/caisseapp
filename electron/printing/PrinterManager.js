@@ -598,6 +598,72 @@ function buildKitchenHtml(orderData, widthMm = '72') {
 }
 
 // ----------------------------------------------------------------------------
+// 🛵 TICKET CLÔTURE LIVREUR
+// ----------------------------------------------------------------------------
+function buildDriverSettlementHtml(data, widthMm = '72') {
+  const is58mm = Number(widthMm) <= 60;
+  const bodyWidth = getSafePrintableWidth(widthMm);
+  const fontSize = is58mm ? '10px' : '11px';
+  const n = (v) => (Number(v) || 0).toFixed(2);
+  const hasCollected = data.collectedTotal !== undefined && data.collectedTotal !== null && data.collectedTotal !== '';
+  const gap = hasCollected ? Number(data.collectedTotal) - Number(data.expectedTotal || 0) : 0;
+  const ordersRows = Array.isArray(data.orders) ? data.orders.map(o => `
+        <div class="row"><span>#${escapeHtml(o.number)} ${escapeHtml(o.client || '')}</span><span>${n(o.total)} € ${escapeHtml(o.mode || '')}</span></div>`).join('') : '';
+
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          @page { margin: 0; size: auto; }
+          * { box-sizing: border-box; }
+          html, body {
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: ${fontSize};
+            margin: 0;
+            padding: 2px 3mm 2px 1mm;
+            width: ${bodyWidth};
+            max-width: ${bodyWidth};
+            height: auto;
+            overflow: hidden;
+            color: #000;
+            line-height: 1.25;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          .center { text-align: center; width: 100%; }
+          .row { display: flex; justify-content: space-between; align-items: baseline; margin: 2px 0; gap: 4px; }
+          .row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          .row span:last-child { white-space: nowrap; font-weight: 700; }
+          hr { border: none; border-top: 1.5px dashed #000; margin: 5px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="center">
+          <div style="font-size: 12px; font-weight: 900; border: 2px solid #000; padding: 3px;">*** ${escapeHtml(data.title || 'CLÔTURE LIVREUR')} ***</div>
+          <div style="font-size: 14px; font-weight: 900; margin-top: 4px; text-transform: uppercase;">${escapeHtml(data.driverName || 'Livreur')}</div>
+          <div style="font-size: 10px;">${escapeHtml(data.date || new Date().toLocaleString('fr-FR'))}</div>
+        </div>
+        <hr />
+        <div class="row"><span>Courses livrées</span><span>${Number(data.totalCourses || 0)}</span></div>
+        <div class="row"><span>Espèces encaissées</span><span>${n(data.cashOrders)} €</span></div>
+        ${data.cbTotal !== undefined ? `<div class="row"><span>Carte bancaire</span><span>${n(data.cbTotal)} €</span></div>` : ''}
+        ${data.cashFloat !== undefined ? `<div class="row"><span>Sacoche (monnaie)</span><span>${n(data.cashFloat)} €</span></div>` : ''}
+        <hr />
+        <div class="row" style="font-size: 13px; font-weight: 900;"><span>À REMETTRE</span><span>${n(data.expectedTotal)} €</span></div>
+        ${hasCollected ? `<div class="row"><span>Reçu</span><span>${n(data.collectedTotal)} €</span></div>` : ''}
+        ${hasCollected && Math.abs(gap) >= 0.01 ? `<div class="row" style="font-weight: 900;"><span>${gap > 0 ? 'Excédent' : 'Manque'}</span><span>${n(Math.abs(gap))} €</span></div>` : ''}
+        ${ordersRows ? `<hr /><div style="font-weight: 800;">DÉTAIL</div>${ordersRows}` : ''}
+        <hr />
+        <div style="margin-top: 14px;">Signature livreur :</div>
+        <div style="height: 28px;"></div>
+      </body>
+    </html>
+  `;
+}
+
+// ----------------------------------------------------------------------------
 // 📊 TICKET X / TICKET Z
 // ----------------------------------------------------------------------------
 function buildZReportHtml(reportData, widthMm = '72') {
@@ -1122,10 +1188,11 @@ const PrinterManager = {
         const cat = String(item.categoryName || item.category || '').trim();
         const assignedRole = cat && routingConfig[cat] ? routingConfig[cat] : 'cuisine';
         
-        let targetPrinterRoleName = desiredPrinterName;
-        if (!targetPrinterRoleName) {
-          targetPrinterRoleName = settings[`imprimante_${assignedRole}`] || settings.imprimante_cuisine || settings.imprimante_caisse;
-        }
+        // Rôle "cuisine" : on garde l'imprimante demandée. Autre rôle (caisse, livraison, rapports) :
+        // on prend l'imprimante de ce rôle, sinon on retombe sur l'imprimante cuisine.
+        let targetPrinterRoleName = assignedRole === 'cuisine'
+          ? (desiredPrinterName || settings.imprimante_cuisine || settings.imprimante_caisse)
+          : (settings[`imprimante_${assignedRole}`] || desiredPrinterName || settings.imprimante_cuisine || settings.imprimante_caisse);
 
         const resolvedPrinter = await getTargetPrinter(targetPrinterRoleName, mainWindow, assignedRole);
         const physicalPrinterName = resolvedPrinter ? resolvedPrinter.name : 'DEFAULT_PRINTER';
@@ -1186,10 +1253,15 @@ const PrinterManager = {
                      orderData.totalSales !== undefined || 
                      orderData.sessionId !== undefined;
 
-    const role = forcedRole || (isReport ? 'rapports' : (isKitchen ? 'cuisine' : 'caisse'));
+    // Clôture livreur (nouveau format type DRIVER_SETTLEMENT, ou ancien format avec un titre "... LIVREUR")
+    const isDriverSettlement = orderData.type === 'DRIVER_SETTLEMENT' || String(orderData.title || '').toUpperCase().includes('LIVREUR');
+
+    const role = forcedRole || ((isReport || isDriverSettlement) ? 'rapports' : (isKitchen ? 'cuisine' : 'caisse'));
 
     let htmlContent = '';
-    if (isReport) {
+    if (isDriverSettlement) {
+      htmlContent = buildDriverSettlementHtml(orderData, widthMm);
+    } else if (isReport) {
       htmlContent = buildZReportHtml(orderData, widthMm);
     } else if (isKitchen) {
       htmlContent = buildKitchenHtml(orderData, widthMm);
@@ -1199,7 +1271,7 @@ const PrinterManager = {
 
     const isTestOrder = String(orderData.orderNumber || '').toUpperCase().includes('TEST');
     let copiesCount = 1;
-    if (!isReport && !isTestOrder) {
+    if (!isReport && !isDriverSettlement && !isTestOrder) {
       const rawCopies = isKitchen ? settings.receipt_copies_kitchen : settings.receipt_copies_client;
       copiesCount = Math.max(1, Math.min(5, Number(rawCopies) || 1));
     }

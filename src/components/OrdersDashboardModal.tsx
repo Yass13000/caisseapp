@@ -28,6 +28,7 @@ import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseCl
 import { getFormattedOrderOptions, fetchOptionGroupMapping } from '@/lib/orderFormatter';
 import { DeliveryDispatchModal } from '@/components/DeliveryDispatchModal';
 import { toast } from 'sonner';
+import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 
 interface Order {
   id: string | number;
@@ -63,15 +64,15 @@ const isOrderClosed = (status: string) => {
 
 const isDeliveryOrder = (order: Order) => {
   const tid = String(order.order_type_id || '').toLowerCase();
-  return tid === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d' || tid === '3' || tid.includes('liv');
+  return tid === ORDER_TYPE_ID.LIVRAISON || tid === '3' || tid.includes('liv');
 };
 
 const getOrderTypeDetails = (order: Order) => {
   const tid = String(order.order_type_id || '').toLowerCase();
-  if (tid === 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d' || tid === '3' || tid.includes('liv')) {
+  if (tid === ORDER_TYPE_ID.LIVRAISON || tid === '3' || tid.includes('liv')) {
     return { label: 'LIVRAISON', abbr: 'LIV', bgClass: 'bg-[#1976D2]', borderClass: 'border-blue-500', Icon: Truck };
   }
-  if (tid === '2cac3f10-73e2-40a5-a7e0-053bd861b4d9' || tid === '2' || tid.includes('emp')) {
+  if (tid === ORDER_TYPE_ID.EMPORTER || tid === '2' || tid.includes('emp')) {
     return { label: 'À EMPORTER', abbr: 'EMP', bgClass: 'bg-[#A0612D]', borderClass: 'border-amber-700', Icon: ShoppingBag };
   }
   return { label: 'SUR PLACE', abbr: 'SP', bgClass: 'bg-[#E65100]', borderClass: 'border-orange-600', Icon: Store };

@@ -1,12 +1,12 @@
 // @ts-nocheck
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { 
-  Bike, MapPin, CheckCircle2, RefreshCw, Send, DollarSign, 
-  AlertCircle, Clock, Compass, AlertTriangle, Phone, Printer, 
-  Layers, CheckSquare, Square, Coins, X, History, Navigation, ArrowRight
+import {
+  Bike, MapPin, CheckCircle2, RefreshCw, Send, Banknote, AlertTriangle, Clock, Compass,
+  Phone, Printer, Layers, CheckSquare, Square, Coins, X, History, Navigation, Undo2, Check, Users
 } from 'lucide-react';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { toast } from 'sonner';
+import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 
 interface DriverProfile {
   id: string;
@@ -38,7 +38,9 @@ interface DeliveryOrder {
   customer_address_complement?: string | null;
   comment?: string | null;
   is_paid: boolean;
+  payment_status?: string | null;
   payment_method: string | null;
+  cash_amount?: number | null;
   created_at: string;
   scheduled_time?: string | null;
   global_prep_time?: number | null;
@@ -58,8 +60,20 @@ interface DriverShiftHistory {
   total_cash_collected: number;
 }
 
-const DELIVERY_ORDER_TYPE_ID = 'c48b80a4-0dcd-4f75-9e67-a99d30bf4f9d';
-const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
+type PayKind = 'cash' | 'card' | 'split' | 'unpaid';
+
+const DELIVERY_ORDER_TYPE_ID = ORDER_TYPE_ID.LIVRAISON;
+// Commandes à assigner : on n'affiche que les 4 dernières heures
+const DISPATCH_WINDOW_MS = 4 * 60 * 60 * 1000;
+// Chargement : 16 h pour ne jamais perdre une course d'un service long (soir + après minuit) au moment de la clôture
+const LOOKBACK_MS = 16 * 60 * 60 * 1000;
+
+// ── OUTILS ──────────────────────────────────────────────────────────────────
+
+const norm = (s: any) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const money = (n: number) => `${(Number(n) || 0).toFixed(2)} €`;
+const orderTotal = (o: DeliveryOrder) => Number(o.total_price ?? o.total_amount ?? 0);
+const orderNum = (o: DeliveryOrder) => o.order_number || String(o.id).slice(-4);
 
 const extractZone = (address: string | null) => {
   if (!address) return null;
@@ -68,40 +82,82 @@ const extractZone = (address: string | null) => {
 };
 
 const formatGpsAge = (updatedAt?: string | null, nowMs?: number) => {
-  if (!updatedAt) return 'Aucun signal';
+  if (!updatedAt) return 'Hors ligne';
   const diffSec = Math.max(0, Math.floor(((nowMs || Date.now()) - new Date(updatedAt).getTime()) / 1000));
-  if (diffSec < 45) return 'En direct';
+  if (diffSec < 45) return 'Direct';
   const mins = Math.floor(diffSec / 60);
-  if (mins < 60) return `Il y a ${mins} min`;
-  return `Il y a ${Math.floor(mins / 60)}h`;
+  if (mins < 60) return `${mins} min`;
+  return `${Math.floor(mins / 60)} h`;
 };
 
-const OrderDeliveryTimerBadge = React.memo(({ order, now, defaultPrepTime }: { order: DeliveryOrder; now: number; defaultPrepTime: number }) => {
-  const targetMs = order.scheduled_time 
-    ? new Date(order.scheduled_time).getTime() 
-    : new Date(order.created_at).getTime() + (Number(order.global_prep_time ?? defaultPrepTime ?? 40) + Number(order.additional_prep_time ?? 0)) * 60000;
+const getTargetMs = (o: DeliveryOrder, defaultPrepTime: number) => o.scheduled_time
+  ? new Date(o.scheduled_time).getTime()
+  : new Date(o.created_at).getTime() + (Number(o.global_prep_time ?? defaultPrepTime ?? 40) + Number(o.additional_prep_time ?? 0)) * 60000;
 
+const isCancelled = (o: DeliveryOrder) => norm(o.status).startsWith('annul');
+const isDelivered = (o: DeliveryOrder) => o.delivery_status === 'delivered' || o.status === 'Fermé';
+const isEnRoute = (o: DeliveryOrder) => !!o.driver_id && (o.delivery_status === 'in_transit' || o.delivery_status === 'assigned') && !isDelivered(o);
+
+const getPayKind = (o: DeliveryOrder): PayKind => {
+  if (!o.is_paid && o.payment_status !== 'paid') return 'unpaid';
+  const m = norm(o.payment_method);
+  if (m.includes('fractionn') || m.includes('mixte')) return 'split';
+  if (m.includes('esp') || m.includes('cash') || m === 'counter') return 'cash';
+  return 'card';
+};
+
+// Pour une commande non payée : mode d'encaissement proposé par défaut au livreur
+const defaultUnpaidChoice = (o: DeliveryOrder): 'cash' | 'card' => {
+  const m = norm(o.payment_method);
+  return (m.includes('carte') || m.includes('card') || m.includes('cb')) ? 'card' : 'cash';
+};
+
+const PAY_BADGE: Record<PayKind, { label: string; cls: string }> = {
+  unpaid: { label: 'NON PAYÉ', cls: 'bg-red-600 text-white' },
+  cash: { label: 'ESP', cls: 'bg-amber-500 text-slate-950' },
+  split: { label: 'MIXTE', cls: 'bg-amber-500/80 text-slate-950' },
+  card: { label: 'CB', cls: 'bg-slate-700 text-slate-200' },
+};
+
+const PayBadge = ({ order }: { order: DeliveryOrder }) => {
+  const b = PAY_BADGE[getPayKind(order)];
+  return <span className={`px-1.5 py-0.5 text-[9px] font-black uppercase leading-none ${b.cls}`}>{b.label}</span>;
+};
+
+const TimerBadge = React.memo(({ order, now, defaultPrepTime }: { order: DeliveryOrder; now: number; defaultPrepTime: number }) => {
+  const targetMs = getTargetMs(order, defaultPrepTime);
   const diffMs = targetMs - now;
   const isLate = diffMs < 0;
   const mins = Math.floor(Math.abs(diffMs) / 60000);
-  const secs = Math.floor((Math.abs(diffMs) % 60000) / 1000);
-  const fmt = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   const targetStr = new Date(targetMs).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const cls = isLate ? 'bg-red-600 text-white' : mins < 8 ? 'bg-amber-500 text-slate-950' : 'bg-slate-950 text-emerald-400 border border-slate-700';
 
   return (
-    <div className="flex items-center gap-1.5 shrink-0">
-      <span className="text-[11px] font-black bg-slate-950 px-2 py-0.5 rounded-lg text-slate-300 border border-slate-700">
-        {targetStr}
-      </span>
-      <span className={`flex items-center gap-1 text-[11px] font-black px-2 py-0.5 rounded-lg ${
-        isLate ? 'bg-red-600 text-white animate-pulse' : mins < 8 ? 'bg-amber-500 text-slate-950 animate-pulse' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-      }`}>
-        {isLate ? <AlertTriangle className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
-        <span>{isLate ? `+${fmt}` : fmt}</span>
-      </span>
-    </div>
+    <span className={`flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-black leading-none tabular-nums shrink-0 ${cls}`} title={`Prévu ${targetStr}`}>
+      {isLate ? <AlertTriangle className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+      {isLate ? `+${mins}'` : `${mins}'`}
+      <span className="opacity-70 font-bold">{targetStr}</span>
+    </span>
   );
 });
+
+const Empty = ({ icon: Icon, label }: { icon: any; label: string }) => (
+  <div className="h-full min-h-[160px] flex flex-col items-center justify-center gap-2 text-slate-600">
+    <Icon className="w-8 h-8" />
+    <span className="text-[11px] font-black uppercase tracking-widest">{label}</span>
+  </div>
+);
+
+const ColumnHeader = ({ cls, icon: Icon, label, count, children }: any) => (
+  <div className={`${cls} px-3 h-10 flex items-center justify-between shrink-0`}>
+    <span className="text-xs font-black uppercase tracking-wide flex items-center gap-2">
+      <Icon className="w-4 h-4" /> {label} <span className="opacity-80">({count})</span>
+    </span>
+    {children}
+  </div>
+);
+
+// ── COMPOSANT ───────────────────────────────────────────────────────────────
 
 export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ searchQuery = '' }) => {
   const [subTab, setSubTab] = useState<'dispatch' | 'map' | 'settlement'>('dispatch');
@@ -110,7 +166,7 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
   const [drivers, setDrivers] = useState<DriverProfile[]>([]);
   const [orders, setOrders] = useState<DeliveryOrder[]>([]);
   const [pastShifts, setPastShifts] = useState<DriverShiftHistory[]>([]);
-  
+
   const [selectedDriverIdForSettlement, setSelectedDriverIdForSettlement] = useState<string | null>(null);
   const [activeDriverIdForMap, setActiveDriverIdForMap] = useState<string | null>(null);
   const [driverForCashReload, setDriverForCashReload] = useState<DriverProfile | null>(null);
@@ -123,8 +179,11 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
   const [now, setNow] = useState<number>(Date.now());
   const [loading, setLoading] = useState<boolean>(true);
   const [receivedCashStr, setReceivedCashStr] = useState<string>('');
+  const [unpaidChoice, setUnpaidChoice] = useState<Record<string, 'cash' | 'card'>>({});
+  const [isSettling, setIsSettling] = useState(false);
+  const settlingRef = useRef(false);
 
-  // Cache d'adresses réelles des livreurs (Reverse Geocoding : lat,lng -> rue exacte)
+  // Cache d'adresses réelles des livreurs (géocodage inverse : lat,lng -> rue)
   const [driverAddresses, setDriverAddresses] = useState<Record<string, string>>({});
   const reverseGeoCacheRef = useRef<Record<string, string>>({});
 
@@ -141,14 +200,13 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     return () => clearInterval(t);
   }, []);
 
-  // Géocodage inverse automatique : transforme les coordonnées GPS de chaque livreur en adresse de rue lisible
+  // Géocodage inverse : coordonnées GPS du livreur -> nom de rue
   useEffect(() => {
     let isMounted = true;
 
     const resolveDriverStreets = async () => {
       for (const d of drivers) {
         if (!d.latitude || !d.longitude) continue;
-        // Arrondi à ~20m pour éviter les appels inutiles si le livreur est au feu rouge
         const coordKey = `${Number(d.latitude).toFixed(4)},${Number(d.longitude).toFixed(4)}`;
 
         if (reverseGeoCacheRef.current[coordKey]) {
@@ -164,13 +222,11 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
             const data = await res.json();
             const feat = data?.features?.[0]?.properties;
             if (feat) {
-              const streetLabel = feat.name 
-                ? `${feat.name}${feat.postcode ? ` (${feat.postcode})` : ''}` 
+              const streetLabel = feat.name
+                ? `${feat.name}${feat.postcode ? ` (${feat.postcode})` : ''}`
                 : feat.label || 'En déplacement';
               reverseGeoCacheRef.current[coordKey] = streetLabel;
-              if (isMounted) {
-                setDriverAddresses(prev => ({ ...prev, [d.id]: streetLabel }));
-              }
+              if (isMounted) setDriverAddresses(prev => ({ ...prev, [d.id]: streetLabel }));
             }
           }
         } catch {}
@@ -181,7 +237,7 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     return () => { isMounted = false; };
   }, [drivers]);
 
-  // Fusion intelligente de profiles + driver_locations
+  // Fusion profiles + driver_locations
   const mergeDriversAndLocations = useCallback((profilesList: any[], locationsList: any[]): DriverProfile[] => {
     const map = new Map<string, DriverProfile>();
 
@@ -194,7 +250,7 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
         phone: p.phone || null,
         role: p.role || 'driver',
         is_driver: true,
-        is_driver_online: Boolean(p.is_driver_online),
+        is_driver_online: p.is_driver_online === true,
         latitude: p.latitude ?? null,
         longitude: p.longitude ?? null,
         heading: p.heading ?? null,
@@ -212,37 +268,18 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
       const lng = loc.longitude !== null && loc.longitude !== undefined ? Number(loc.longitude) : null;
       const validCoords = lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng);
 
-      const isRecent = loc.updated_at 
-        ? (Date.now() - new Date(loc.updated_at).getTime()) < 2 * 60 * 60 * 1000 
-        : false;
-
+      // Sécurité : une position GPS n'est prise en compte que pour un livreur connu (profil livreur du restaurant).
+      // Le statut "en ligne" vient UNIQUEMENT du profil, jamais d'un signal GPS.
       if (map.has(dId)) {
         const existing = map.get(dId)!;
         map.set(dId, {
           ...existing,
           customer_name: existing.customer_name || loc.driver_name || 'Livreur',
-          is_driver_online: existing.is_driver_online || isRecent,
           latitude: validCoords ? lat : existing.latitude,
           longitude: validCoords ? lng : existing.longitude,
           heading: loc.heading !== null && loc.heading !== undefined ? Number(loc.heading) : existing.heading,
           speed: loc.speed !== null && loc.speed !== undefined ? Number(loc.speed) : existing.speed,
           location_updated_at: loc.updated_at || existing.location_updated_at
-        });
-      } else {
-        map.set(dId, {
-          id: dId,
-          customer_name: loc.driver_name || 'Livreur',
-          email: null,
-          phone: null,
-          role: 'driver',
-          is_driver: true,
-          is_driver_online: isRecent || validCoords,
-          latitude: validCoords ? lat : null,
-          longitude: validCoords ? lng : null,
-          heading: loc.heading !== null && loc.heading !== undefined ? Number(loc.heading) : null,
-          speed: loc.speed !== null && loc.speed !== undefined ? Number(loc.speed) : null,
-          location_updated_at: loc.updated_at || null,
-          cash_float: 0
         });
       }
     });
@@ -253,14 +290,13 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     });
   }, []);
 
-  // ── CHARGEMENT INITIAL (STRICTEMENT < 4 HEURES) ──
+  // ── CHARGEMENT ──
   const loadInitialData = useCallback(async () => {
     if (!activeRestoId) return;
     try {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
-      const fourHoursAgo = new Date(Date.now() - FOUR_HOURS_MS);
-      const cutoffIso = (fourHoursAgo > todayStart ? fourHoursAgo : todayStart).toISOString();
+      const cutoffIso = new Date(Date.now() - LOOKBACK_MS).toISOString();
 
       const [pRes, lRes, rRes, oRes, shiftRes] = await Promise.all([
         supabase
@@ -297,8 +333,7 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
         setDefaultPrepTime(Number(rRes.data.prep_time_delivery));
       }
 
-      const mergedDrivers = mergeDriversAndLocations(pRes.data || [], lRes.data || []);
-      setDrivers(mergedDrivers);
+      setDrivers(mergeDriversAndLocations(pRes.data || [], lRes.data || []));
       setOrders((oRes.data as DeliveryOrder[]) || []);
       setPastShifts((shiftRes.data as DriverShiftHistory[]) || []);
     } catch (err) {
@@ -308,11 +343,11 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     }
   }, [activeRestoId, mergeDriversAndLocations]);
 
-  useEffect(() => { 
-    loadInitialData(); 
+  useEffect(() => {
+    loadInitialData();
   }, [loadInitialData]);
 
-  // Rafraîchissement automatique GPS toutes les 4s
+  // Rafraîchissement GPS toutes les 4 s
   useEffect(() => {
     if (!activeRestoId) return;
     const poll = setInterval(async () => {
@@ -329,61 +364,49 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     return () => clearInterval(poll);
   }, [activeRestoId, mergeDriversAndLocations]);
 
-  // ── FLUX TEMPS RÉEL SYNCHRONE (BROADCAST + POSTGRES) ──
+  // ── TEMPS RÉEL ──
   useEffect(() => {
     if (!activeRestoId) return;
 
     const channel = supabase.channel(`dispatch_realtime_${activeRestoId}`)
-      .on('broadcast', { event: 'driver_location' }, ({ payload }) => {
-        if (!payload?.driver_id) return;
-        setDrivers(prev => mergeDriversAndLocations(prev, [{
-          driver_id: payload.driver_id,
-          driver_name: payload.driver_name,
-          latitude: payload.lat ?? payload.latitude,
-          longitude: payload.lng ?? payload.longitude,
-          heading: payload.heading,
-          speed: payload.speed,
-          updated_at: payload.updated_at || new Date().toISOString()
-        }]));
-      })
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'driver_locations', 
-        filter: `restaurant_id=eq.${activeRestoId}` 
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'driver_locations',
+        filter: `restaurant_id=eq.${activeRestoId}`
       }, (payload) => {
         if (!payload.new) return;
         setDrivers(prev => mergeDriversAndLocations(prev, [payload.new]));
       })
-      .on('postgres_changes', { 
-        event: 'UPDATE', 
-        schema: 'public', 
-        table: 'profiles', 
-        filter: `restaurant_id=eq.${activeRestoId}` 
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'profiles',
+        filter: `restaurant_id=eq.${activeRestoId}`
       }, (payload) => {
         const r = payload.new as any;
         if (!r?.id) return;
-        setDrivers(list => list.map(d => d.id === String(r.id) ? { 
-          ...d, 
+        setDrivers(list => list.map(d => d.id === String(r.id) ? {
+          ...d,
           customer_name: r.customer_name || d.customer_name,
           phone: r.phone || d.phone,
-          is_driver_online: Boolean(r.is_driver_online),
-          cash_float: Number(r.cash_float ?? d.cash_float ?? 0) 
+          is_driver_online: r.is_driver_online === true,
+          cash_float: Number(r.cash_float ?? d.cash_float ?? 0)
         } : d));
       })
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'orders', 
-        filter: `restaurant_id=eq.${activeRestoId}` 
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'orders',
+        filter: `restaurant_id=eq.${activeRestoId}`
       }, (payload) => {
-        const newOrder = payload.new as DeliveryOrder;
-        const oldOrder = payload.old as DeliveryOrder;
+        const newOrder = payload.new as any;
+        const oldOrder = payload.old as any;
 
         if (payload.eventType === 'INSERT') {
           if (newOrder.order_type_id === DELIVERY_ORDER_TYPE_ID) {
             const ageMs = Date.now() - new Date(newOrder.created_at).getTime();
-            if (ageMs <= FOUR_HOURS_MS) {
+            if (ageMs <= LOOKBACK_MS) {
               setOrders(prev => [newOrder, ...prev.filter(o => String(o.id) !== String(newOrder.id))]);
             }
           }
@@ -397,11 +420,11 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
           setOrders(prev => prev.filter(o => String(o.id) !== String(oldOrder.id)));
         }
       })
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'driver_shifts', 
-        filter: `restaurant_id=eq.${activeRestoId}` 
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'driver_shifts',
+        filter: `restaurant_id=eq.${activeRestoId}`
       }, () => {
         loadInitialData();
       })
@@ -412,64 +435,86 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     };
   }, [activeRestoId, loadInitialData, mergeDriversAndLocations]);
 
-  // ── FILTRE DYNAMIQUE STRICT : ÉVICTION > 4 HEURES ──
-  const liveActiveOrders = useMemo(() => {
-    const todayStartMs = new Date().setHours(0, 0, 0, 0);
-    const minTimestamp = Math.max(todayStartMs, now - FOUR_HOURS_MS);
+  // ── DONNÉES DÉRIVÉES ──
+  const isLate = useCallback((o: DeliveryOrder) => !isDelivered(o) && getTargetMs(o, defaultPrepTime) < now, [defaultPrepTime, now]);
 
-    return orders.filter(o => {
-      const orderMs = new Date(o.created_at).getTime();
-      return orderMs >= minTimestamp;
-    });
-  }, [orders, now]);
-
-  const filteredOrders = useMemo(() => {
-    let list = liveActiveOrders;
+  const matchesFilters = useCallback((o: DeliveryOrder) => {
     if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      list = list.filter(o => 
-        String(o.order_number || o.id).toLowerCase().includes(q) || 
-        String(o.customer_name || '').toLowerCase().includes(q) || 
-        String(o.customer_address || '').toLowerCase().includes(q)
-      );
+      const q = norm(searchQuery.trim());
+      const hay = norm(`${o.order_number || o.id} ${o.customer_name || ''} ${o.customer_address || ''} ${o.customer_address_complement || ''} ${o.customer_phone || ''}`);
+      if (!hay.includes(q)) return false;
     }
-    if (filterType === 'late') {
-      list = list.filter(o => (new Date(o.created_at).getTime() + Number(o.global_prep_time ?? defaultPrepTime ?? 40) * 60000) < now && o.delivery_status !== 'delivered');
-    } else if (filterType === 'cash') {
-      list = list.filter(o => (o.payment_method || '').toLowerCase().includes('esp') || !o.is_paid);
-    } else if (filterType === 'failed') {
-      list = list.filter(o => o.delivery_status === 'failed');
-    }
-    return list;
-  }, [liveActiveOrders, searchQuery, filterType, defaultPrepTime, now]);
+    if (filterType === 'late') return isLate(o);
+    if (filterType === 'cash') return getPayKind(o) !== 'card';
+    if (filterType === 'failed') return o.delivery_status === 'failed';
+    return true;
+  }, [searchQuery, filterType, isLate]);
 
-  const unassignedOrders = useMemo(() => filteredOrders.filter(o => 
-    (!o.driver_id || o.delivery_status === 'pending' || o.delivery_status === 'failed') && 
-    o.delivery_status !== 'delivered' && 
-    o.status !== 'Fermé' && 
-    o.status !== 'Annulée'
-  ), [filteredOrders]);
+  // À assigner : fenêtre de 4 h, triées par urgence (incidents d'abord)
+  const unassignedOrders = useMemo(() => {
+    const minTs = now - DISPATCH_WINDOW_MS;
+    return orders
+      .filter(o =>
+        new Date(o.created_at).getTime() >= minTs &&
+        (!o.driver_id || o.delivery_status === 'pending' || o.delivery_status === 'failed') &&
+        !isDelivered(o) &&
+        !isCancelled(o) &&
+        matchesFilters(o)
+      )
+      .sort((a, b) => {
+        const fa = a.delivery_status === 'failed' ? 0 : 1;
+        const fb = b.delivery_status === 'failed' ? 0 : 1;
+        if (fa !== fb) return fa - fb;
+        return getTargetMs(a, defaultPrepTime) - getTargetMs(b, defaultPrepTime);
+      });
+  }, [orders, now, matchesFilters, defaultPrepTime]);
 
-  const inTransitOrders = useMemo(() => filteredOrders.filter(o => 
-    (o.delivery_status === 'in_transit' || o.delivery_status === 'assigned') && 
-    o.driver_id && 
-    o.status !== 'Fermé'
-  ), [filteredOrders]);
+  const enRouteAll = useMemo(() => orders.filter(isEnRoute), [orders]);
+  const enRouteFiltered = useMemo(() => enRouteAll.filter(matchesFilters), [enRouteAll, matchesFilters]);
 
-  const onlineDrivers = useMemo(() => drivers.filter(d => d.is_driver_online || (d.latitude && d.longitude)), [drivers]);
+  const driverLoad = useMemo(() => {
+    const m: Record<string, number> = {};
+    enRouteAll.forEach(o => { m[String(o.driver_id)] = (m[String(o.driver_id)] || 0) + 1; });
+    return m;
+  }, [enRouteAll]);
 
-  // Vue complète de la tournée d'un livreur (triée par ordre chronologique de livraison)
+  // Tournées en cours, groupées par livreur
+  const tours = useMemo(() => {
+    const groups: Record<string, DeliveryOrder[]> = {};
+    enRouteFiltered.forEach(o => {
+      const k = String(o.driver_id);
+      (groups[k] = groups[k] || []).push(o);
+    });
+    return Object.entries(groups)
+      .map(([driverId, list]) => ({
+        driverId,
+        driver: drivers.find(d => String(d.id) === driverId) || null,
+        orders: list.sort((a, b) => getTargetMs(a, defaultPrepTime) - getTargetMs(b, defaultPrepTime))
+      }))
+      .sort((a, b) => getTargetMs(a.orders[0], defaultPrepTime) - getTargetMs(b.orders[0], defaultPrepTime));
+  }, [enRouteFiltered, drivers, defaultPrepTime]);
+
+  // Assignation : UNIQUEMENT les livreurs en ligne, les plus libres d'abord
+  const driversForPicker = useMemo(() => drivers
+    .filter(d => d.is_driver_online)
+    .sort((a, b) => (driverLoad[a.id] || 0) - (driverLoad[b.id] || 0)), [drivers, driverLoad]);
+
+  const onlineDrivers = useMemo(() => drivers.filter(d => d.is_driver_online), [drivers]);
+  const freeDriversCount = useMemo(() => onlineDrivers.filter(d => !driverLoad[d.id]).length, [onlineDrivers, driverLoad]);
+  const lateCount = useMemo(() => [...orders.filter(o => !o.driver_id || o.delivery_status === 'pending'), ...enRouteAll]
+    .filter(o => new Date(o.created_at).getTime() >= now - DISPATCH_WINDOW_MS && !isCancelled(o) && isLate(o)).length, [orders, enRouteAll, now, isLate]);
+
+  // Tournée d'un livreur pour la carte
   const getDriverOverview = useCallback((driverId: string) => {
-    const dOrders = liveActiveOrders
-      .filter(o => String(o.driver_id) === String(driverId))
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const dOrders = orders
+      .filter(o => String(o.driver_id) === String(driverId) && (isEnRoute(o) || (isDelivered(o) && !o.is_settled)))
+      .sort((a, b) => getTargetMs(a, defaultPrepTime) - getTargetMs(b, defaultPrepTime));
 
-    const inTransit = dOrders.filter(o => (o.delivery_status === 'in_transit' || o.delivery_status === 'assigned') && o.status !== 'Fermé');
-    const delivered = dOrders.filter(o => o.delivery_status === 'delivered' || o.status === 'Fermé');
+    const inTransit = dOrders.filter(isEnRoute);
+    const delivered = dOrders.filter(isDelivered);
 
     return {
       currentOrder: inTransit[0] || null,
-      nextOrders: inTransit.slice(1),
       inTransitOrders: inTransit,
       deliveredOrders: delivered,
       inTransitCount: inTransit.length,
@@ -478,164 +523,293 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
       currentStepNumber: delivered.length + (inTransit.length > 0 ? 1 : 0),
       isReturning: inTransit.length === 0 && delivered.length > 0
     };
-  }, [liveActiveOrders]);
+  }, [orders, defaultPrepTime]);
 
+  // Caisse livreur : ce qu'il doit remettre (espèces encaissées + sacoche de monnaie)
   const getFinancials = useCallback((driverId: string) => {
     const driver = drivers.find(d => String(d.id) === String(driverId));
-    const inTransit = liveActiveOrders.filter(o => String(o.driver_id) === String(driverId) && (o.delivery_status === 'in_transit' || o.delivery_status === 'assigned'));
-    
-    const delivered = liveActiveOrders.filter(o => 
-      String(o.driver_id) === String(driverId) && 
-      (o.delivery_status === 'delivered' || o.status === 'Fermé') &&
-      !o.is_settled
-    );
+    const mine = orders.filter(o => String(o.driver_id) === String(driverId));
+    const inTransitCount = mine.filter(isEnRoute).length;
+    const delivered = mine.filter(o => isDelivered(o) && !o.is_settled);
 
-    const cash = delivered
-      .filter(o => (o.payment_method || '').toLowerCase().includes('esp') || (o.payment_method || '').toLowerCase().includes('cash'))
-      .reduce((s, o) => s + Number(o.total_price ?? o.total_amount ?? 0), 0);
+    let cash = 0;
+    let card = 0;
+    const unpaid: DeliveryOrder[] = [];
 
-    const cb = delivered
-      .filter(o => !(o.payment_method || '').toLowerCase().includes('esp') && !(o.payment_method || '').toLowerCase().includes('cash'))
-      .reduce((s, o) => s + Number(o.total_price ?? o.total_amount ?? 0), 0);
+    delivered.forEach(o => {
+      const total = orderTotal(o);
+      const kind = getPayKind(o);
+      let cashPart = 0;
+      if (kind === 'cash') cashPart = total;
+      else if (kind === 'split') cashPart = Math.min(total, Math.max(0, Number(o.cash_amount || 0)));
+      else if (kind === 'unpaid') {
+        unpaid.push(o);
+        cashPart = (unpaidChoice[String(o.id)] ?? defaultUnpaidChoice(o)) === 'cash' ? total : 0;
+      }
+      cash += cashPart;
+      card += total - cashPart;
+    });
 
     const floatVal = Number(driver?.cash_float || 0);
+    const r2 = (n: number) => Math.round(n * 100) / 100;
 
     return {
       count: delivered.length,
-      inTransitCount: inTransit.length,
-      cash: cash.toFixed(2),
-      cb: cb.toFixed(2),
-      total: (cash + cb).toFixed(2),
-      float: floatVal.toFixed(2),
-      due: (cash + floatVal).toFixed(2),
-      delivered
+      inTransitCount,
+      cash: r2(cash),
+      card: r2(card),
+      total: r2(cash + card),
+      float: r2(floatVal),
+      due: r2(cash + floatVal),
+      delivered,
+      unpaid
     };
-  }, [drivers, liveActiveOrders]);
+  }, [drivers, orders, unpaidChoice]);
 
-  const settlementDrivers = useMemo(() => {
-    return drivers.filter(d => {
-      const stats = getFinancials(d.id);
-      return d.is_driver_online || parseFloat(stats.due) > 0 || stats.count > 0;
-    });
-  }, [drivers, getFinancials]);
+  const settlementDrivers = useMemo(() => drivers.filter(d => {
+    const f = getFinancials(d.id);
+    return d.is_driver_online || f.due > 0 || f.count > 0;
+  }), [drivers, getFinancials]);
 
-  const selectedDriverForSettlement = useMemo(() => {
-    return drivers.find(d => String(d.id) === String(selectedDriverIdForSettlement)) || null;
-  }, [drivers, selectedDriverIdForSettlement]);
+  const selectedDriverForSettlement = useMemo(
+    () => drivers.find(d => String(d.id) === String(selectedDriverIdForSettlement)) || null,
+    [drivers, selectedDriverIdForSettlement]
+  );
 
-  // ── ACTIONS SUPABASE ──
-  const handleAssignSingle = async (orderId: string | number, driverId: string) => {
-    const iso = new Date().toISOString();
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, driver_id: driverId, delivery_status: 'in_transit', picked_up_at: iso } : o));
+  // ── ACTIONS ──
+  const patchOrders = (ids: (string | number)[], patch: Partial<DeliveryOrder>) => {
+    const set = new Set(ids.map(String));
+    setOrders(prev => prev.map(o => set.has(String(o.id)) ? { ...o, ...patch } : o));
+  };
+
+  // Mise à jour optimiste + retour arrière si la base refuse
+  const updateOrdersSafely = async (ids: (string | number)[], patch: Partial<DeliveryOrder>, okMsg: string) => {
+    const set = new Set(ids.map(String));
+    const backup = orders.filter(o => set.has(String(o.id)));
+    patchOrders(ids, patch);
+    const { error } = await supabase.from('orders').update(patch).in('id', ids);
+    if (error) {
+      setOrders(prev => prev.map(o => backup.find(b => String(b.id) === String(o.id)) || o));
+      toast.error('Échec, réessayez');
+      return false;
+    }
+    toast.success(okMsg);
+    return true;
+  };
+
+  const handleAssign = async (ids: (string | number)[], driverId: string) => {
+    if (ids.length === 0) return;
     setAssigningOrderId(null);
-    await supabase.from('orders').update({ driver_id: driverId, delivery_status: 'in_transit', picked_up_at: iso }).eq('id', orderId);
-    toast.success("Course assignée");
-  };
-
-  const handleAssignBatchTour = async (driverId: string) => {
-    if (selectedOrderIdsForBatch.length === 0) return;
-    const iso = new Date().toISOString();
-    setOrders(prev => prev.map(o => selectedOrderIdsForBatch.includes(o.id) ? { ...o, driver_id: driverId, delivery_status: 'in_transit', picked_up_at: iso } : o));
-    await supabase.from('orders').update({ driver_id: driverId, delivery_status: 'in_transit', picked_up_at: iso }).in('id', selectedOrderIdsForBatch);
-    toast.success(`Tournée lancée (${selectedOrderIdsForBatch.length})`);
-    setSelectedOrderIdsForBatch([]);
     setShowBatchAssignModal(false);
-  };
+    const name = drivers.find(d => d.id === driverId)?.customer_name || 'Livreur';
 
-  const handleUnassignDriver = async (orderId: string | number) => {
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, driver_id: null, delivery_status: 'pending', picked_up_at: null } : o));
-    await supabase.from('orders').update({ driver_id: null, delivery_status: 'pending', picked_up_at: null }).eq('id', orderId);
-    toast.info("Remise en attente");
-  };
-
-  const handleUpdateCashFloat = async (driver: DriverProfile, amt: number) => {
-    const newFloat = Math.max(0, Number(driver.cash_float || 0) + amt);
-    setDrivers(prev => prev.map(d => d.id === driver.id ? { ...d, cash_float: newFloat } : d));
-    await supabase.from('profiles').update({ cash_float: newFloat }).eq('id', driver.id);
-    toast.success(`Sacoche : ${newFloat.toFixed(2)} €`);
-    setDriverForCashReload(null);
-  };
-
-  const handleSettleAndLogout = async (driver: DriverProfile) => {
-    const fin = getFinancials(driver.id);
-    const driverName = driver.customer_name || driver.email || 'Livreur';
-    
-    if (fin.inTransitCount > 0) {
-      toast.error(`${driverName} a ${fin.inTransitCount} course(s) en cours`);
+    // 1. Vérification en direct : le livreur est-il toujours en ligne, dans ce restaurant ?
+    const { data: live, error: liveErr } = await supabase
+      .from('profiles')
+      .select('id, is_driver_online')
+      .eq('id', driverId)
+      .eq('restaurant_id', activeRestoId)
+      .maybeSingle();
+    if (liveErr || live?.is_driver_online !== true) {
+      setDrivers(prev => prev.map(d => d.id === driverId ? { ...d, is_driver_online: false } : d));
+      toast.error(`${name} n'est pas en ligne`);
       return;
     }
 
-    if (!window.confirm(`Encaisser ${fin.due} € et clôturer ${driverName} ?`)) return;
+    // 2. Assignation : seulement les commandes encore libres (pas de vol de course)
+    const patch: Partial<DeliveryOrder> = { driver_id: driverId, delivery_status: 'in_transit', picked_up_at: new Date().toISOString() };
+    const idSet = new Set(ids.map(String));
+    const backup = orders.filter(o => idSet.has(String(o.id)));
+    patchOrders(ids, patch);
 
+    const { data: updated, error } = await supabase
+      .from('orders')
+      .update(patch)
+      .in('id', ids)
+      .or('driver_id.is.null,delivery_status.eq.pending,delivery_status.eq.failed')
+      .select('id');
+
+    const okIds = new Set((updated || []).map((r: any) => String(r.id)));
+    const failed = error ? backup : backup.filter(b => !okIds.has(String(b.id)));
+    if (failed.length > 0) {
+      setOrders(prev => prev.map(o => failed.find(b => String(b.id) === String(o.id)) || o));
+    }
+
+    if (error) {
+      toast.error(/hors ligne/i.test(error.message || '') ? `${name} n'est pas en ligne` : 'Échec, réessayez');
+      return;
+    }
+    if (failed.length > 0) {
+      toast.error(`${failed.length} commande(s) déjà prise(s)`);
+      loadInitialData();
+    }
+    if (okIds.size > 0) {
+      toast.success(okIds.size > 1 ? `Tournée ${okIds.size} → ${name}` : `→ ${name}`);
+      setSelectedOrderIdsForBatch(prev => prev.filter(id => !okIds.has(String(id))));
+    }
+  };
+
+  const handleUnassign = (o: DeliveryOrder) =>
+    updateOrdersSafely([o.id], { driver_id: null, delivery_status: 'pending', picked_up_at: null }, `#${orderNum(o)} remise en attente`);
+
+  const handleMarkDelivered = (o: DeliveryOrder) =>
+    updateOrdersSafely([o.id], { delivery_status: 'delivered', delivered_at: new Date().toISOString() }, `#${orderNum(o)} livrée`);
+
+  const toggleBatch = (id: string | number) =>
+    setSelectedOrderIdsForBatch(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  // Toucher un code postal : sélectionne toutes les commandes de la zone
+  const toggleZone = (zone: string) => {
+    const zoneIds = unassignedOrders.filter(o => extractZone(o.customer_address) === zone).map(o => o.id);
+    const allSelected = zoneIds.every(id => selectedOrderIdsForBatch.includes(id));
+    setSelectedOrderIdsForBatch(prev => allSelected
+      ? prev.filter(id => !zoneIds.includes(id))
+      : [...prev, ...zoneIds.filter(id => !prev.includes(id))]);
+  };
+
+  const handleUpdateCashFloat = async (driver: DriverProfile, amt: number) => {
+    const before = Number(driver.cash_float || 0);
+    const newFloat = Math.max(0, before + amt);
+    setDrivers(prev => prev.map(d => d.id === driver.id ? { ...d, cash_float: newFloat } : d));
+    setDriverForCashReload(null);
+    const { error } = await supabase.from('profiles').update({ cash_float: newFloat }).eq('id', driver.id);
+    if (error) {
+      setDrivers(prev => prev.map(d => d.id === driver.id ? { ...d, cash_float: before } : d));
+      toast.error('Échec, réessayez');
+      return;
+    }
+    toast.success(`Sacoche ${money(newFloat)}`);
+  };
+
+  const findOpenSessionId = async (): Promise<string | null> => {
+    const { data } = await supabase
+      .from('cash_sessions')
+      .select('id')
+      .eq('restaurant_id', activeRestoId)
+      .eq('status', 'OPEN')
+      .is('closed_at', null)
+      .order('opened_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return data?.id || null;
+  };
+
+  const printDriverTicket = (payload: any) => {
+    if (!(window as any).electronAPI?.printReceipt) return false;
+    (window as any).electronAPI.printReceipt({ type: 'DRIVER_SETTLEMENT', ...payload });
+    return true;
+  };
+
+  const handleSettleAndLogout = async (driver: DriverProfile) => {
+    if (settlingRef.current) return;
+    const fin = getFinancials(driver.id);
+    const driverName = driver.customer_name || driver.email || 'Livreur';
+
+    if (fin.inTransitCount > 0) {
+      toast.error(`${driverName} : ${fin.inTransitCount} course(s) en route`);
+      return;
+    }
+    if (!window.confirm(`Encaisser ${money(fin.due)} et clôturer ${driverName} ?`)) return;
+
+    settlingRef.current = true;
+    setIsSettling(true);
     const nowIso = new Date().toISOString();
-    const deliveredOrderIds = fin.delivered.map(o => o.id);
-    const collectedAmt = parseFloat(receivedCashStr) || parseFloat(fin.due);
+    const collectedAmt = receivedCashStr.trim() !== '' ? (parseFloat(receivedCashStr) || 0) : fin.due;
 
     try {
-      if (deliveredOrderIds.length > 0) {
-        await supabase
-          .from('orders')
-          .update({ is_settled: true, settled_at: nowIso })
-          .in('id', deliveredOrderIds);
+      // 1. Les commandes non payées passent en payées (dans la session de caisse ouverte → rapport Z)
+      if (fin.unpaid.length > 0) {
+        const sessionId = await findOpenSessionId();
+        if (!sessionId) {
+          toast.error("Ouvrez la caisse d'abord");
+          return;
+        }
+        for (const o of fin.unpaid) {
+          const isCash = (unpaidChoice[String(o.id)] ?? defaultUnpaidChoice(o)) === 'cash';
+          const { error } = await supabase.from('orders').update({
+            is_paid: true,
+            payment_status: 'paid',
+            payment_method: isCash ? 'Espèces' : 'Carte bancaire',
+            cash_amount: isCash ? orderTotal(o) : 0,
+            session_id: sessionId
+          }).eq('id', o.id);
+          if (error) throw error;
+        }
       }
 
-      await supabase
+      // 2. Courses soldées
+      const deliveredIds = fin.delivered.map(o => o.id);
+      if (deliveredIds.length > 0) {
+        const { error } = await supabase.from('orders').update({ is_settled: true, settled_at: nowIso }).in('id', deliveredIds);
+        if (error) throw error;
+      }
+
+      // 3. Fin de service
+      const { error: shiftErr } = await supabase
         .from('driver_shifts')
-        .update({
-          is_active: false,
-          ended_at: nowIso,
-          total_deliveries: fin.count,
-          total_cash_collected: parseFloat(fin.cash)
-        })
+        .update({ is_active: false, ended_at: nowIso, total_deliveries: fin.count, total_cash_collected: fin.cash })
         .eq('driver_id', driver.id)
         .eq('is_active', true);
+      if (shiftErr) throw shiftErr;
 
-      await supabase
+      const { error: profileErr } = await supabase
         .from('profiles')
         .update({ is_driver_online: false, cash_float: 0 })
         .eq('id', driver.id);
+      if (profileErr) throw profileErr;
 
-      setOrders(prev => prev.map(o => deliveredOrderIds.includes(o.id) ? { ...o, is_settled: true, settled_at: nowIso } : o));
+      setOrders(prev => prev.map(o => deliveredIds.includes(o.id) ? { ...o, is_settled: true, settled_at: nowIso } : o));
       setDrivers(prev => prev.map(d => d.id === driver.id ? { ...d, is_driver_online: false, cash_float: 0 } : d));
 
-      if ((window as any).electronAPI?.printReceipt) {
-        (window as any).electronAPI.printReceipt({
-          title: "CLÔTURE LIVREUR",
-          driverName: driverName,
-          date: new Date().toLocaleString('fr-FR'),
-          totalCourses: fin.count,
-          cashOrders: fin.cash,
-          cashFloat: fin.float,
-          expectedTotal: fin.due,
-          collectedTotal: collectedAmt.toFixed(2),
-          cbTotal: fin.cb
-        });
-      }
+      printDriverTicket({
+        title: 'CLÔTURE LIVREUR',
+        driverName,
+        date: new Date().toLocaleString('fr-FR'),
+        totalCourses: fin.count,
+        cashOrders: fin.cash.toFixed(2),
+        cbTotal: fin.card.toFixed(2),
+        cashFloat: fin.float.toFixed(2),
+        expectedTotal: fin.due.toFixed(2),
+        collectedTotal: collectedAmt.toFixed(2),
+        orders: fin.delivered.map(o => {
+          const kind = getPayKind(o);
+          const choice = kind === 'unpaid' ? (unpaidChoice[String(o.id)] ?? defaultUnpaidChoice(o)) : null;
+          return {
+            number: orderNum(o),
+            client: o.customer_name || '',
+            total: orderTotal(o).toFixed(2),
+            mode: choice ? (choice === 'cash' ? 'ESP' : 'CB') : PAY_BADGE[kind].label
+          };
+        })
+      });
 
-      toast.success(`Clôturé : ${driverName}`);
+      toast.success(`${driverName} clôturé`);
       setSelectedDriverIdForSettlement(null);
       setReceivedCashStr('');
+      setUnpaidChoice({});
       loadInitialData();
     } catch (err: any) {
-      toast.error("Erreur clôture");
+      console.error('Erreur clôture livreur :', err);
+      toast.error(`Erreur clôture${err?.message ? ` : ${err.message}` : ''}`);
+      loadInitialData();
+    } finally {
+      settlingRef.current = false;
+      setIsSettling(false);
     }
   };
 
   const handlePrintPastShift = (shift: DriverShiftHistory) => {
-    if (!(window as any).electronAPI?.printReceipt) {
-      toast.error("Uniquement sur Caisse");
-      return;
-    }
     const driver = drivers.find(d => d.id === shift.driver_id);
-    (window as any).electronAPI.printReceipt({
-      title: "DUPLICATA CLÔTURE LIVREUR",
+    const ok = printDriverTicket({
+      title: 'DUPLICATA CLÔTURE LIVREUR',
       driverName: driver?.customer_name || driver?.email || 'Livreur',
       date: new Date(shift.ended_at || shift.started_at).toLocaleString('fr-FR'),
       totalCourses: shift.total_deliveries || 0,
       cashOrders: Number(shift.total_cash_collected || 0).toFixed(2),
       expectedTotal: Number(shift.total_cash_collected || 0).toFixed(2)
     });
-    toast.success("Duplicata imprimé");
+    if (ok) toast.success('Duplicata imprimé');
+    else toast.error('Uniquement sur la caisse');
   };
 
   const targetedMapDriver = useMemo(() => {
@@ -649,11 +823,12 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
       || null;
   }, [activeDriverIdForMap, drivers]);
 
-  const targetedOverview = useMemo(() => {
-    return targetedMapDriver ? getDriverOverview(targetedMapDriver.id) : null;
-  }, [targetedMapDriver, getDriverOverview]);
+  const targetedOverview = useMemo(
+    () => targetedMapDriver ? getDriverOverview(targetedMapDriver.id) : null,
+    [targetedMapDriver, getDriverOverview]
+  );
 
-  // Stabilisation à 4 décimales (~11 mètres) pour éviter de faire clignoter l'iframe quand le GPS tremble
+  // Arrondi à ~11 m pour ne pas recharger la carte à chaque tremblement du GPS
   const mapEmbedUrl = useMemo(() => {
     if (!targetedMapDriver?.latitude || !targetedMapDriver?.longitude) return '';
     const lat = Number(targetedMapDriver.latitude).toFixed(4);
@@ -670,291 +845,179 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     targetedOverview?.currentOrder?.customer_address
   ]);
 
-  const changeDue = useMemo(() => {
-    if (!selectedDriverForSettlement) return 0;
-    const needed = parseFloat(getFinancials(selectedDriverForSettlement.id).due) || 0;
-    return Math.max(0, (parseFloat(receivedCashStr) || 0) - needed);
-  }, [selectedDriverForSettlement, receivedCashStr, getFinancials]);
+  const openDriverOnMap = (driverId: string) => {
+    setActiveDriverIdForMap(driverId);
+    setSubTab('map');
+  };
+
+  const selectDriverForSettlement = (id: string) => {
+    setSelectedDriverIdForSettlement(id);
+    setReceivedCashStr('');
+    setUnpaidChoice({});
+  };
+
+  // ── RENDU ──
+  const tabBtn = (active: boolean, activeCls: string) =>
+    `h-9 px-3.5 rounded-none text-xs font-black uppercase flex items-center gap-1.5 transition-all active:scale-95 shrink-0 ${active ? `${activeCls} shadow-md` : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`;
+
+  const segBtn = (active: boolean) =>
+    `h-7 px-2.5 rounded-none text-[10.5px] font-black uppercase ${active ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-white'}`;
+
+  const settleFin = selectedDriverForSettlement ? getFinancials(selectedDriverForSettlement.id) : null;
+  const receivedNum = parseFloat(receivedCashStr);
+  const changeDue = settleFin && !isNaN(receivedNum) ? Math.max(0, receivedNum - settleFin.due) : 0;
+  const missingCash = settleFin && !isNaN(receivedNum) && receivedCashStr.trim() !== '' ? Math.max(0, settleFin.due - receivedNum) : 0;
 
   return (
     <div className="flex flex-col h-full w-full bg-[#0f172a] text-slate-100 font-helvetica select-none">
-      
-      {/* ── TOPBAR TACTILE ── */}
-      <div className="bg-[#0b1329] px-4 py-3 border-b border-slate-800 flex items-center justify-between shrink-0 gap-3">
-        <div className="flex items-center gap-2">
-          <button onClick={() => setSubTab('dispatch')} className={`h-11 px-4 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all active:scale-95 ${subTab === 'dispatch' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-900 text-slate-400 hover:text-white'}`}>
-            <Send className="w-4 h-4" /> <span>DISPATCH ({unassignedOrders.length})</span>
+
+      {/* ── BARRE DU HAUT ── */}
+      <div className="bg-[#1e293b] px-3 h-12 border-b border-slate-700 flex items-center justify-between shrink-0 gap-2">
+        <div className="flex items-center gap-1.5 overflow-x-auto">
+          <button onClick={() => setSubTab('dispatch')} className={tabBtn(subTab === 'dispatch', 'bg-blue-600 text-white')}>
+            <Send className="w-4 h-4" /> Dispatch
           </button>
-          <button onClick={() => setSubTab('map')} className={`h-11 px-4 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all active:scale-95 ${subTab === 'map' ? 'bg-amber-500 text-slate-950 shadow-md' : 'bg-slate-900 text-slate-400 hover:text-white'}`}>
-            <Compass className="w-4 h-4" /> <span>SUIVI GPS ({onlineDrivers.length})</span>
+          <button onClick={() => setSubTab('map')} className={tabBtn(subTab === 'map', 'bg-amber-500 text-slate-950')}>
+            <Compass className="w-4 h-4" /> Carte
           </button>
-          <button onClick={() => setSubTab('settlement')} className={`h-11 px-4 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all active:scale-95 ${subTab === 'settlement' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-900 text-slate-400 hover:text-white'}`}>
-            <DollarSign className="w-4 h-4" /> <span>CAISSE ({settlementDrivers.length})</span>
+          <button onClick={() => setSubTab('settlement')} className={tabBtn(subTab === 'settlement', 'bg-[#04B855] text-white')}>
+            <Banknote className="w-4 h-4" /> Caisse livreurs
           </button>
         </div>
 
-        {subTab === 'dispatch' && (
-          <div className="flex items-center gap-2">
-            {selectedOrderIdsForBatch.length > 0 && (
-              <button onClick={() => setShowBatchAssignModal(true)} className="h-9 px-3.5 bg-purple-600 hover:bg-purple-500 text-white font-black text-xs uppercase rounded-xl flex items-center gap-1.5 shadow-lg animate-pulse">
-                <Layers className="w-4 h-4" /> <span>Tournée ({selectedOrderIdsForBatch.length})</span>
-              </button>
-            )}
-            <div className="flex items-center bg-slate-900 p-1 rounded-xl border border-slate-800">
-              {['all', 'late', 'cash', 'failed'].map((type) => (
-                <button key={type} onClick={() => setFilterType(type as any)} className={`h-8 px-2.5 rounded-lg text-[10.5px] font-black uppercase ${filterType === type ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>
-                  {type === 'all' ? 'Toutes' : type === 'late' ? 'Retard' : type === 'cash' ? 'Espèces' : 'Incidents'}
-                </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* Indicateurs */}
+          <span title="En retard" className={`h-8 px-2 flex items-center gap-1 text-xs font-black tabular-nums ${lateCount > 0 ? 'bg-red-600 text-white' : 'bg-slate-900 text-slate-500'}`}>
+            <AlertTriangle className="w-3.5 h-3.5" /> {lateCount}
+          </span>
+          <span title="À assigner" className="h-8 px-2 flex items-center gap-1 text-xs font-black tabular-nums bg-slate-900 text-amber-400">
+            <Send className="w-3.5 h-3.5" /> {unassignedOrders.length}
+          </span>
+          <span title="Livreurs libres / en ligne" className="h-8 px-2 flex items-center gap-1 text-xs font-black tabular-nums bg-slate-900 text-emerald-400">
+            <Users className="w-3.5 h-3.5" /> {freeDriversCount}/{onlineDrivers.length}
+          </span>
+
+          {subTab === 'dispatch' && (
+            <div className="hidden lg:flex items-center bg-slate-900 p-0.5 border border-slate-700 ml-1">
+              {[['all', 'Toutes'], ['late', 'Retard'], ['cash', 'Argent'], ['failed', 'Incidents']].map(([type, label]) => (
+                <button key={type} onClick={() => setFilterType(type as any)} className={segBtn(filterType === type)}>{label}</button>
               ))}
             </div>
-          </div>
-        )}
+          )}
 
-        {subTab === 'settlement' && (
-          <div className="flex items-center bg-slate-900 p-1 rounded-xl border border-slate-800">
-            <button 
-              onClick={() => setSettlementView('pending')}
-              className={`h-8 px-3 rounded-lg text-[10.5px] font-black uppercase flex items-center gap-1.5 ${settlementView === 'pending' ? 'bg-emerald-600 text-white' : 'text-slate-400'}`}
-            >
-              <DollarSign className="w-3.5 h-3.5" /> À Régler ({settlementDrivers.length})
-            </button>
-            <button 
-              onClick={() => setSettlementView('history')}
-              className={`h-8 px-3 rounded-lg text-[10.5px] font-black uppercase flex items-center gap-1.5 ${settlementView === 'history' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}
-            >
-              <History className="w-3.5 h-3.5" /> Clôturés ({pastShifts.length})
-            </button>
-          </div>
-        )}
+          {subTab === 'settlement' && (
+            <div className="flex items-center bg-slate-900 p-0.5 border border-slate-700 ml-1">
+              <button onClick={() => setSettlementView('pending')} className={segBtn(settlementView === 'pending')}>À régler</button>
+              <button onClick={() => setSettlementView('history')} className={segBtn(settlementView === 'history')}>
+                <History className="w-3 h-3 inline -mt-0.5" /> {pastShifts.length}
+              </button>
+            </div>
+          )}
 
-        <button onClick={loadInitialData} className="h-11 w-11 rounded-xl bg-slate-800 text-slate-200 flex items-center justify-center active:scale-95 transition-all">
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-blue-400' : ''}`} />
-        </button>
+          <button onClick={loadInitialData} title="Actualiser" className="h-8 w-8 bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center active:scale-95 ml-1">
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-blue-400' : ''}`} />
+          </button>
+        </div>
       </div>
 
-      {/* ── CORPS PRINCIPAL ── */}
-      <div className="flex-1 overflow-hidden p-3">
+      {/* ── CORPS ── */}
+      <div className="flex-1 overflow-hidden p-2">
         {loading ? (
           <div className="h-full flex items-center justify-center"><RefreshCw className="w-8 h-8 animate-spin text-blue-500" /></div>
         ) : subTab === 'dispatch' ? (
 
-          /* 1. DISPATCH DUAL */
-          <div className="h-full grid grid-cols-2 gap-3.5">
-            {/* À Assigner (< 4h) */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 flex flex-col overflow-hidden">
-              <div className="flex items-center justify-between pb-2.5 border-b border-slate-800 shrink-0">
-                <span className="text-xs font-black uppercase text-amber-400 flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4" /> À assigner ({unassignedOrders.length})
-                </span>
-              </div>
+          /* ═══ 1. DISPATCH ═══ */
+          <div className="h-full grid grid-cols-2 gap-2">
 
-              <div className="flex-1 overflow-y-auto space-y-2.5 pt-2.5 pr-1 custom-scrollbar">
+            {/* À ASSIGNER */}
+            <div className="bg-slate-900 border-2 border-slate-700 flex flex-col overflow-hidden">
+              <ColumnHeader cls="bg-amber-500 text-slate-950" icon={Send} label="À assigner" count={unassignedOrders.length}>
+                {selectedOrderIdsForBatch.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setShowBatchAssignModal(true)} className="h-7 px-2.5 bg-slate-950 text-white text-[11px] font-black uppercase flex items-center gap-1 active:scale-95">
+                      <Layers className="w-3.5 h-3.5" /> Tournée ({selectedOrderIdsForBatch.length})
+                    </button>
+                    <button onClick={() => setSelectedOrderIdsForBatch([])} title="Vider la sélection" className="h-7 w-7 bg-black/20 flex items-center justify-center active:scale-95">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </ColumnHeader>
+
+              <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
                 {unassignedOrders.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-slate-500 text-xs font-bold py-16">Aucune commande en attente</div>
-                ) : (
-                  unassignedOrders.map(order => {
-                    const isSel = assigningOrderId === order.id;
-                    const zone = extractZone(order.customer_address);
-                    const isChecked = selectedOrderIdsForBatch.includes(order.id);
-                    const isIncident = order.delivery_status === 'failed';
-
-                    return (
-                      <div key={order.id} className={`bg-slate-800/90 border rounded-xl p-3 space-y-2 ${isIncident ? 'border-red-500 bg-red-950/20' : isChecked ? 'border-purple-400 bg-purple-950/20' : isSel ? 'border-amber-400' : 'border-slate-700'}`}>
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <button onClick={() => setSelectedOrderIdsForBatch(prev => prev.includes(order.id) ? prev.filter(x => x !== order.id) : [...prev, order.id])} className="text-slate-400 hover:text-white">
-                              {isChecked ? <CheckSquare className="w-4 h-4 text-purple-400" /> : <Square className="w-4 h-4" />}
-                            </button>
-                            <span className="text-xs font-black bg-blue-600 text-white px-2 py-0.5 rounded-md">#{order.order_number || String(order.id).slice(-4)}</span>
-                            <span className="text-sm font-black text-white">{Number(order.total_price ?? order.total_amount ?? 0).toFixed(2)} €</span>
-                            {zone && <span className="text-[10px] font-black bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded-md">{zone}</span>}
-                            {isIncident && <span className="text-[10px] font-black bg-red-600 text-white px-2 py-0.5 rounded animate-pulse">INCIDENT</span>}
-                          </div>
-                          <OrderDeliveryTimerBadge order={order} now={now} defaultPrepTime={defaultPrepTime} />
-                        </div>
-
-                        <div className="text-xs font-bold text-slate-300">
-                          <p className="text-white font-black">{order.customer_name || 'Client'}</p>
-                          <p className="text-slate-400 truncate flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-red-400 shrink-0" />{order.customer_address || "Adresse manquante"}</p>
-                          {order.customer_address_complement && (
-                            <p className="text-amber-400 text-[11px] font-semibold pl-4">{order.customer_address_complement}</p>
-                          )}
-                          {order.comment && (
-                            <p className="text-amber-300 text-[11px] font-bold bg-amber-500/10 p-1.5 rounded mt-1">{order.comment}</p>
-                          )}
-                        </div>
-
-                        {isSel ? (
-                          <div className="pt-2 border-t border-slate-700 space-y-2">
-                            <div className="flex items-center justify-between text-[11px] font-black uppercase text-amber-400">
-                              <span>Livreur :</span>
-                              <button onClick={() => setAssigningOrderId(null)} className="text-slate-400 underline">Annuler</button>
-                            </div>
-                            <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto">
-                              {drivers.map(d => (
-                                <button key={d.id} onClick={() => handleAssignSingle(order.id, d.id)} className="h-11 px-2.5 bg-slate-900 hover:bg-blue-600 rounded-lg text-left text-xs font-bold text-white flex items-center justify-between border border-slate-700 active:scale-95">
-                                  <span className="truncate">{d.customer_name || d.email}</span>
-                                  <span className={`w-2 h-2 rounded-full ${d.is_driver_online ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        ) : (
-                          <button onClick={() => setAssigningOrderId(order.id)} className="w-full h-10 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-black text-xs uppercase rounded-xl flex items-center justify-center gap-1.5">
-                            <Send className="w-3.5 h-3.5" /> <span>{isIncident ? 'RÉASSIGNER' : 'ASSIGNER'}</span>
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            {/* En cours (< 4h) */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 flex flex-col overflow-hidden">
-              <div className="flex items-center justify-between pb-2.5 border-b border-slate-800 shrink-0">
-                <span className="text-xs font-black uppercase text-blue-400 flex items-center gap-2">
-                  <Bike className="w-4 h-4" /> En route ({inTransitOrders.length})
-                </span>
-              </div>
-
-              <div className="flex-1 overflow-y-auto space-y-2.5 pt-2.5 pr-1 custom-scrollbar">
-                {inTransitOrders.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-slate-500 text-xs font-bold py-16">Aucun livreur en route</div>
-                ) : (
-                  inTransitOrders.map(order => {
-                    const assignedDriver = drivers.find(d => String(d.id) === String(order.driver_id));
-                    return (
-                      <div key={order.id} className="bg-slate-800/90 border border-slate-700 rounded-xl p-3 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-black bg-emerald-600 text-white px-2 py-0.5 rounded-md">#{order.order_number || String(order.id).slice(-4)}</span>
-                          <span className="text-sm font-black text-white">{Number(order.total_price ?? order.total_amount ?? 0).toFixed(2)} €</span>
-                          <OrderDeliveryTimerBadge order={order} now={now} defaultPrepTime={defaultPrepTime} />
-                        </div>
-
-                        <div className="text-xs font-bold text-slate-300">
-                          <p className="text-white font-black">{order.customer_name || 'Client'}</p>
-                          <p className="text-slate-400 truncate">{order.customer_address}</p>
-                        </div>
-
-                        <div className="pt-2 border-t border-slate-700 flex items-center justify-between gap-1.5">
-                          <button
-                            onClick={() => {
-                              if (assignedDriver) {
-                                setActiveDriverIdForMap(assignedDriver.id);
-                                setSubTab('map');
-                              }
-                            }}
-                            className="text-xs font-black text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 px-2.5 py-1 rounded-lg truncate max-w-[160px] flex items-center gap-1"
-                            title="Voir sur la carte"
-                          >
-                            <span>🛵 {assignedDriver?.customer_name || 'Livreur'}</span>
-                          </button>
-                          <div className="flex items-center gap-1">
-                            {order.customer_phone && (
-                              <button onClick={() => window.open(`sms:${order.customer_phone}?body=${encodeURIComponent('Votre livreur arrive !')}`, '_blank')} className="h-8 px-2 bg-blue-600 text-white rounded-lg text-[10px] font-black">SMS</button>
-                            )}
-                            {assignedDriver?.phone && (
-                              <a href={`tel:${assignedDriver.phone}`} className="h-8 px-2 bg-green-600 text-white rounded-lg text-[10px] font-black flex items-center gap-1"><Phone className="w-3 h-3" /></a>
-                            )}
-                            <button onClick={() => handleUnassignDriver(order.id)} className="h-8 px-2 bg-red-600/20 text-red-300 rounded-lg text-[10px] font-black">Retirer</button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </div>
-
-        ) : subTab === 'map' ? (
-
-          /* 2. SUIVI GPS TACTIQUE ULTRA-LISIBLE */
-          <div className="h-full grid grid-cols-12 gap-3.5">
-            
-            {/* COLONNE GAUCHE : FLOTTE AVEC RÉSUMÉ IMMÉDIAT (4/12) */}
-            <div className="col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-3 flex flex-col overflow-hidden">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-800 shrink-0">
-                <span className="text-xs font-black uppercase text-slate-300">Livreurs ({drivers.length})</span>
-                <span className="text-[10px] font-bold text-emerald-400">{onlineDrivers.length} actif(s)</span>
-              </div>
-
-              <div className="flex-1 overflow-y-auto space-y-2.5 pt-2.5 pr-1 custom-scrollbar">
-                {drivers.map(d => {
-                  const ov = getDriverOverview(d.id);
-                  const isSel = targetedMapDriver?.id === d.id;
-                  const hasGps = d.latitude !== null && d.longitude !== null;
-                  const currentStreet = driverAddresses[d.id] || (hasGps ? 'Localisation...' : 'Signal GPS inactif');
-                  const progressPct = ov.totalCount > 0 ? Math.round((ov.deliveredCount / ov.totalCount) * 100) : 0;
+                  <Empty icon={CheckCircle2} label="Rien à assigner" />
+                ) : unassignedOrders.map(order => {
+                  const isPicking = assigningOrderId === order.id;
+                  const zone = extractZone(order.customer_address);
+                  const isChecked = selectedOrderIdsForBatch.includes(order.id);
+                  const isIncident = order.delivery_status === 'failed';
+                  const late = isLate(order);
 
                   return (
-                    <div 
-                      key={d.id} 
-                      onClick={() => setActiveDriverIdForMap(d.id)} 
-                      className={`p-3 rounded-xl border cursor-pointer transition-all space-y-2 ${
-                        isSel 
-                          ? 'bg-blue-600/20 border-blue-400 shadow-lg ring-1 ring-blue-400' 
-                          : 'bg-slate-800/80 border-slate-700/80 hover:border-slate-600'
-                      }`}
-                    >
-                      {/* Ligne 1 : Nom + Badge Signal */}
-                      <div className="flex justify-between items-center">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${hasGps ? 'bg-emerald-400 animate-pulse' : d.is_driver_online ? 'bg-amber-400' : 'bg-slate-600'}`} />
-                          <span className="font-black text-sm text-white truncate">{d.customer_name || d.email}</span>
+                    <div key={order.id} className={`bg-slate-800/70 border-2 ${isIncident ? 'border-red-500' : isChecked ? 'border-purple-400' : isPicking ? 'border-amber-400' : late ? 'border-red-500/50' : 'border-slate-700'}`}>
+                      <div className="flex items-center justify-between gap-2 px-2 py-1.5 bg-slate-800 border-b border-slate-700">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <button onClick={() => toggleBatch(order.id)} className="text-slate-400 hover:text-white shrink-0" title="Ajouter à une tournée">
+                            {isChecked ? <CheckSquare className="w-5 h-5 text-purple-400" /> : <Square className="w-5 h-5" />}
+                          </button>
+                          <span className="text-sm font-black text-white">#{orderNum(order)}</span>
+                          <span className="text-sm font-black text-slate-300 tabular-nums">{money(orderTotal(order))}</span>
+                          <PayBadge order={order} />
+                          {zone && (
+                            <button onClick={() => toggleZone(zone)} title="Sélectionner toute la zone" className="px-1.5 py-0.5 text-[9px] font-black leading-none bg-purple-500/20 text-purple-300 hover:bg-purple-500/40">
+                              {zone}
+                            </button>
+                          )}
+                          {isIncident && <span className="px-1.5 py-0.5 text-[9px] font-black leading-none bg-red-600 text-white">INCIDENT</span>}
                         </div>
-                        <span className={`text-[10px] font-black px-2 py-0.5 rounded shrink-0 ${
-                          ov.inTransitCount > 0 
-                            ? 'bg-amber-500 text-slate-950' 
-                            : ov.isReturning 
-                            ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' 
-                            : 'bg-slate-950 text-slate-400'
-                        }`}>
-                          {ov.inTransitCount > 0 ? `EN COURSE (${ov.currentStepNumber}/${ov.totalCount})` : ov.isReturning ? 'RETOUR RESTO' : 'DISPONIBLE'}
-                        </span>
+                        <TimerBadge order={order} now={now} defaultPrepTime={defaultPrepTime} />
                       </div>
 
-                      {/* Ligne 2 : OÙ IL EST ACTUELLEMENT */}
-                      <div className="bg-slate-950/70 rounded-lg px-2.5 py-1.5 border border-slate-800/80 space-y-1">
-                        <div className="flex items-center gap-1.5 text-[11px]">
-                          <Navigation className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                          <span className="text-slate-400 font-bold shrink-0">Est à :</span>
-                          <span className="text-white font-black truncate">{currentStreet}</span>
+                      <div className="px-2.5 py-2 text-xs font-bold space-y-0.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-white font-black truncate">{order.customer_name || 'Client'}</span>
+                          {order.customer_phone && <span className="text-slate-400 tabular-nums shrink-0">{order.customer_phone}</span>}
                         </div>
-
-                        {/* Ligne 3 : OÙ IL VA */}
-                        {ov.currentOrder ? (
-                          <div className="flex items-center gap-1.5 text-[11px] pt-0.5 border-t border-slate-800/80">
-                            <MapPin className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                            <span className="text-amber-400 font-bold shrink-0">Va à :</span>
-                            <span className="text-amber-300 font-black truncate">
-                              #{ov.currentOrder.order_number} • {ov.currentOrder.customer_address}
-                            </span>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
-                            <Clock className="w-3 h-3 shrink-0" />
-                            <span>{formatGpsAge(d.location_updated_at, now)}</span>
-                          </div>
+                        <p className="text-slate-300 flex items-start gap-1">
+                          <MapPin className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                          <span className="break-words">{order.customer_address || 'Adresse manquante'}</span>
+                        </p>
+                        {order.customer_address_complement && (
+                          <p className="text-amber-400 text-[11px] pl-[18px]">{order.customer_address_complement}</p>
+                        )}
+                        {order.comment && (
+                          <p className="text-amber-200 text-[11px] bg-amber-500/10 border-l-2 border-amber-500 px-1.5 py-1 mt-1">{order.comment}</p>
                         )}
                       </div>
 
-                      {/* Ligne 4 : Barre de progression de la tournée */}
-                      {ov.totalCount > 0 && (
-                        <div className="space-y-1 pt-0.5">
-                          <div className="flex justify-between text-[10px] font-black">
-                            <span className="text-slate-400">Progression : {ov.deliveredCount}/{ov.totalCount} livrées</span>
-                            <span className="text-emerald-400">Reste {ov.inTransitCount}</span>
+                      {isPicking ? (
+                        <div className="px-2 pb-2">
+                          {driversForPicker.length === 0 && (
+                            <div className="h-11 flex items-center justify-center gap-1.5 bg-slate-950 text-slate-500 text-[11px] font-black uppercase">
+                              <Users className="w-4 h-4" /> Aucun livreur en ligne
+                            </div>
+                          )}
+                          <div className="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto custom-scrollbar">
+                            {driversForPicker.map(d => {
+                              const load = driverLoad[d.id] || 0;
+                              return (
+                                <button key={d.id} onClick={() => handleAssign([order.id], d.id)} className={`h-11 px-2 text-left text-xs font-black flex items-center justify-between gap-1 border active:scale-95 ${d.is_driver_online ? 'bg-slate-900 border-slate-600 text-white hover:bg-blue-600' : 'bg-slate-900/60 border-slate-800 text-slate-500 hover:bg-slate-700'}`}>
+                                  <span className="flex items-center gap-1.5 min-w-0">
+                                    <span className={`w-2 h-2 shrink-0 ${d.is_driver_online ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                                    <span className="truncate">{d.customer_name || d.email}</span>
+                                  </span>
+                                  <span className={`px-1.5 text-[10px] tabular-nums shrink-0 ${load ? 'bg-blue-500/30 text-blue-200' : 'bg-emerald-500/20 text-emerald-300'}`}>{load || 'libre'}</span>
+                                </button>
+                              );
+                            })}
                           </div>
-                          <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden">
-                            <div 
-                              className="h-full bg-emerald-500 transition-all duration-300" 
-                              style={{ width: `${progressPct}%` }} 
-                            />
-                          </div>
+                          <button onClick={() => setAssigningOrderId(null)} className="w-full h-8 mt-1 bg-slate-800 text-slate-400 text-[11px] font-black uppercase">Annuler</button>
                         </div>
+                      ) : (
+                        <button onClick={() => setAssigningOrderId(order.id)} className="w-full h-10 bg-blue-600 hover:bg-blue-500 active:scale-[0.99] text-white font-black text-xs uppercase flex items-center justify-center gap-1.5">
+                          <Send className="w-3.5 h-3.5" /> {isIncident ? 'Réassigner' : 'Assigner'}
+                        </button>
                       )}
                     </div>
                   );
@@ -962,391 +1025,427 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
               </div>
             </div>
 
-            {/* COLONNE DROITE : TABLEAU DE BORD MISSION + CARTE (8/12) */}
-            <div className="col-span-8 bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden flex flex-col relative">
-              {targetedMapDriver ? (
-                <>
-                  {/* EN-TÊTE TACTIQUE : POSITION ACTUELLE vs DESTINATION + ÉTAPES TOURNÉE */}
-                  <div className="bg-slate-900 p-3 border-b border-slate-800 space-y-2.5 shrink-0">
-                    
-                    {/* Barre supérieure : Identité livreur + Actions rapides */}
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black shrink-0 shadow">
-                          <Bike className="w-5 h-5" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="font-black text-base text-white truncate">
-                              {targetedMapDriver.customer_name || targetedMapDriver.email}
-                            </span>
-                            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                              {formatGpsAge(targetedMapDriver.location_updated_at, now)}
-                            </span>
-                            {targetedMapDriver.speed ? (
-                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300">
-                                {Math.round(Number(targetedMapDriver.speed) * 3.6)} km/h
-                              </span>
-                            ) : null}
-                          </div>
-                          <span className="text-[11px] font-bold text-slate-400">
-                            Sacoche : <strong className="text-purple-300">{Number(targetedMapDriver.cash_float || 0).toFixed(2)} €</strong>
+            {/* EN ROUTE — GROUPÉ PAR LIVREUR */}
+            <div className="bg-slate-900 border-2 border-slate-700 flex flex-col overflow-hidden">
+              <ColumnHeader cls="bg-blue-600 text-white" icon={Bike} label="En route" count={enRouteFiltered.length} />
+
+              <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
+                {tours.length === 0 ? (
+                  <Empty icon={Bike} label="Aucune course en route" />
+                ) : tours.map(({ driverId, driver, orders: list }) => {
+                  const hasGps = driver?.latitude && driver?.longitude;
+                  return (
+                    <div key={driverId} className="border-2 border-slate-700 bg-slate-800/50">
+                      <div className="flex items-center justify-between gap-2 px-2 h-10 bg-slate-800 border-b border-slate-700">
+                        <button onClick={() => openDriverOnMap(driverId)} className="flex items-center gap-2 min-w-0 hover:text-amber-300" title="Voir sur la carte">
+                          <Bike className="w-4 h-4 text-blue-400 shrink-0" />
+                          <span className="font-black text-sm text-white truncate">{driver?.customer_name || 'Livreur'}</span>
+                          <span className="px-1.5 py-0.5 text-[10px] font-black bg-blue-600 text-white leading-none">{list.length}</span>
+                          <span className={`text-[10px] font-black ${hasGps ? 'text-emerald-400' : 'text-slate-500'}`}>
+                            {formatGpsAge(driver?.location_updated_at, now)}
                           </span>
+                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {driver?.phone && (
+                            <a href={`tel:${driver.phone}`} title={driver.phone} className="h-7 px-2 bg-emerald-600 text-white text-[10px] font-black flex items-center gap-1 tabular-nums">
+                              <Phone className="w-3 h-3" /> {driver.phone}
+                            </a>
+                          )}
+                          <button onClick={() => openDriverOnMap(driverId)} title="Carte" className="h-7 w-7 bg-slate-700 hover:bg-slate-600 flex items-center justify-center">
+                            <Navigation className="w-3.5 h-3.5 text-amber-300" />
+                          </button>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="divide-y divide-slate-700/70">
+                        {list.map((order, idx) => (
+                          <div key={order.id} className="px-2 py-1.5 flex items-center gap-2">
+                            <span className={`w-5 h-5 shrink-0 flex items-center justify-center text-[10px] font-black ${idx === 0 ? 'bg-amber-500 text-slate-950' : 'bg-slate-700 text-slate-300'}`}>{idx + 1}</span>
+                            <div className="min-w-0 flex-1 text-xs font-bold">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-black text-white">#{orderNum(order)}</span>
+                                <span className="text-slate-300 tabular-nums">{money(orderTotal(order))}</span>
+                                <PayBadge order={order} />
+                                <TimerBadge order={order} now={now} defaultPrepTime={defaultPrepTime} />
+                              </div>
+                              <p className="text-slate-400 truncate">
+                                {order.customer_address || 'Adresse manquante'}
+                                {order.customer_address_complement && <span className="text-amber-400"> · {order.customer_address_complement}</span>}
+                              </p>
+                            </div>
+                            <button onClick={() => handleMarkDelivered(order)} title="Marquer livrée" className="h-9 px-2.5 bg-[#04B855] hover:bg-[#039d48] text-white text-[11px] font-black uppercase flex items-center gap-1 active:scale-95 shrink-0">
+                              <Check className="w-4 h-4" /> Livrée
+                            </button>
+                            <button onClick={() => handleUnassign(order)} title="Remettre à assigner" className="h-9 w-9 bg-slate-700 hover:bg-red-600 text-slate-200 flex items-center justify-center active:scale-95 shrink-0">
+                              <Undo2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+        ) : subTab === 'map' ? (
+
+          /* ═══ 2. CARTE ═══ */
+          <div className="h-full grid grid-cols-12 gap-2">
+
+            <div className="col-span-4 bg-slate-900 border-2 border-slate-700 flex flex-col overflow-hidden">
+              <ColumnHeader cls="bg-slate-800 text-slate-200" icon={Users} label="Livreurs" count={drivers.length}>
+                <span className="text-[10px] font-black text-emerald-400">{onlineDrivers.length} en ligne</span>
+              </ColumnHeader>
+
+              <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar">
+                {drivers.length === 0 ? (
+                  <Empty icon={Users} label="Aucun livreur" />
+                ) : drivers.map(d => {
+                  const ov = getDriverOverview(d.id);
+                  const isSel = targetedMapDriver?.id === d.id;
+                  const hasGps = d.latitude !== null && d.longitude !== null && d.latitude !== undefined;
+                  const progressPct = ov.totalCount > 0 ? Math.round((ov.deliveredCount / ov.totalCount) * 100) : 0;
+                  const state = ov.inTransitCount > 0
+                    ? { label: `${ov.currentStepNumber}/${ov.totalCount}`, cls: 'bg-amber-500 text-slate-950' }
+                    : ov.isReturning
+                    ? { label: 'Retour', cls: 'bg-purple-500/30 text-purple-200' }
+                    : { label: 'Libre', cls: 'bg-emerald-500/20 text-emerald-300' };
+
+                  return (
+                    <button key={d.id} onClick={() => setActiveDriverIdForMap(d.id)} className={`w-full text-left p-2 border-2 transition-all ${isSel ? 'bg-blue-600/20 border-blue-400' : 'bg-slate-800/70 border-slate-700 hover:border-slate-500'}`}>
+                      <div className="flex justify-between items-center gap-2">
+                        <span className="flex items-center gap-2 min-w-0">
+                          <span className={`w-2.5 h-2.5 shrink-0 ${hasGps ? 'bg-emerald-400' : d.is_driver_online ? 'bg-amber-400' : 'bg-slate-600'}`} />
+                          <span className="font-black text-sm text-white truncate">{d.customer_name || d.email}</span>
+                        </span>
+                        <span className={`px-1.5 py-0.5 text-[10px] font-black uppercase leading-none shrink-0 ${state.cls}`}>{state.label}</span>
+                      </div>
+                      <div className="mt-1 text-[11px] font-bold text-slate-400 truncate flex items-center gap-1">
+                        <Navigation className="w-3 h-3 text-emerald-400 shrink-0" />
+                        {driverAddresses[d.id] || (hasGps ? '…' : 'Pas de GPS')}
+                        <span className="text-slate-600">· {formatGpsAge(d.location_updated_at, now)}</span>
+                      </div>
+                      {ov.currentOrder && (
+                        <div className="text-[11px] font-black text-amber-300 truncate flex items-center gap-1">
+                          <MapPin className="w-3 h-3 shrink-0" /> #{orderNum(ov.currentOrder)} · {ov.currentOrder.customer_address}
+                        </div>
+                      )}
+                      {ov.totalCount > 0 && (
+                        <div className="w-full h-1 bg-slate-950 mt-1.5 overflow-hidden">
+                          <div className="h-full bg-emerald-500 transition-all duration-300" style={{ width: `${progressPct}%` }} />
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="col-span-8 bg-slate-950 border-2 border-slate-700 overflow-hidden flex flex-col">
+              {targetedMapDriver ? (
+                <>
+                  <div className="bg-slate-900 p-2 border-b border-slate-700 space-y-2 shrink-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-black text-base text-white truncate">{targetedMapDriver.customer_name || targetedMapDriver.email}</span>
+                        <span className="px-1.5 py-0.5 text-[10px] font-black bg-emerald-500/20 text-emerald-300 leading-none">{formatGpsAge(targetedMapDriver.location_updated_at, now)}</span>
+                        {targetedMapDriver.speed ? (
+                          <span className="px-1.5 py-0.5 text-[10px] font-black bg-blue-500/20 text-blue-300 leading-none tabular-nums">{Math.round(Number(targetedMapDriver.speed) * 3.6)} km/h</span>
+                        ) : null}
+                        <span className="px-1.5 py-0.5 text-[10px] font-black bg-purple-500/20 text-purple-300 leading-none tabular-nums" title="Sacoche">
+                          <Coins className="w-3 h-3 inline -mt-0.5" /> {money(Number(targetedMapDriver.cash_float || 0))}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
                         {targetedMapDriver.phone && (
-                          <a 
-                            href={`tel:${targetedMapDriver.phone}`} 
-                            className="h-9 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black flex items-center gap-1.5 active:scale-95"
-                          >
-                            <Phone className="w-3.5 h-3.5" /> <span>Appeler</span>
+                          <a href={`tel:${targetedMapDriver.phone}`} className="h-8 px-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black flex items-center gap-1 tabular-nums">
+                            <Phone className="w-3.5 h-3.5" /> {targetedMapDriver.phone}
                           </a>
                         )}
                         {targetedMapDriver.latitude && targetedMapDriver.longitude && (
-                          <a
-                            href={`https://www.google.com/maps?q=${targetedMapDriver.latitude},${targetedMapDriver.longitude}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="h-9 px-3 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-black flex items-center gap-1.5 border border-slate-700 active:scale-95"
-                          >
-                            <Navigation className="w-3.5 h-3.5 text-blue-400" /> <span>Google Maps</span>
+                          <a href={`https://www.google.com/maps?q=${targetedMapDriver.latitude},${targetedMapDriver.longitude}`} target="_blank" rel="noreferrer" title="Ouvrir dans Google Maps" className="h-8 w-8 bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center justify-center">
+                            <Navigation className="w-3.5 h-3.5 text-blue-400" />
                           </a>
                         )}
-                        <button 
-                          onClick={() => setDriverForCashReload(targetedMapDriver)} 
-                          className="h-9 px-3 bg-amber-500 text-slate-950 rounded-xl text-xs font-black flex items-center gap-1 active:scale-95"
-                        >
-                          <Coins className="w-3.5 h-3.5" /> <span>+ Monnaie</span>
+                        <button onClick={() => setDriverForCashReload(targetedMapDriver)} className="h-8 px-2.5 bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1 active:scale-95">
+                          <Coins className="w-3.5 h-3.5" /> Monnaie
                         </button>
                       </div>
                     </div>
 
-                    {/* DOUBLE ENCADRÉ ULTRA-LISIBLE : OÙ IL EST ACTUELLEMENT -> OÙ IL VA */}
-                    <div className="grid grid-cols-2 gap-2.5">
-                      {/* Bloc 1 : Où il est actuellement */}
-                      <div className="bg-slate-950 border border-emerald-500/40 rounded-xl p-2.5 flex items-start gap-2.5">
-                        <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
-                          <Navigation className="w-4 h-4" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 block">
-                            POSITION ACTUELLE DU LIVREUR
-                          </span>
-                          <p className="text-xs font-black text-white truncate mt-0.5">
-                            {driverAddresses[targetedMapDriver.id] || (
-                              targetedMapDriver.latitude 
-                                ? `${Number(targetedMapDriver.latitude).toFixed(4)}, ${Number(targetedMapDriver.longitude).toFixed(4)}` 
-                                : 'En attente du signal GPS...'
-                            )}
-                          </p>
-                        </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs font-black">
+                      <div className="bg-slate-950 border border-emerald-500/40 px-2 py-1.5 flex items-center gap-2 min-w-0">
+                        <Navigation className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <span className="text-white truncate">
+                          {driverAddresses[targetedMapDriver.id] || (targetedMapDriver.latitude
+                            ? `${Number(targetedMapDriver.latitude).toFixed(4)}, ${Number(targetedMapDriver.longitude).toFixed(4)}`
+                            : 'Pas de signal GPS')}
+                        </span>
                       </div>
-
-                      {/* Bloc 2 : Où il est en train d'aller */}
-                      <div className={`bg-slate-950 border rounded-xl p-2.5 flex items-start gap-2.5 ${
-                        targetedOverview?.currentOrder ? 'border-amber-500/50' : 'border-slate-800'
-                      }`}>
-                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
-                          targetedOverview?.currentOrder ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-800 text-slate-500'
-                        }`}>
-                          <MapPin className="w-4 h-4" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between">
-                            <span className={`text-[10px] font-black uppercase tracking-wider ${
-                              targetedOverview?.currentOrder ? 'text-amber-400' : 'text-slate-500'
-                            }`}>
-                              {targetedOverview?.currentOrder 
-                                ? `DESTINATION (${targetedOverview.currentStepNumber}/${targetedOverview.totalCount}) • #${targetedOverview.currentOrder.order_number}` 
-                                : 'DESTINATION'}
-                            </span>
-                            {targetedOverview?.currentOrder && (
-                              <span className="text-[10px] font-black text-white bg-blue-600 px-1.5 py-0.2 rounded">
-                                {targetedOverview.currentOrder.customer_name}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs font-black text-white truncate mt-0.5">
-                            {targetedOverview?.currentOrder 
-                              ? targetedOverview.currentOrder.customer_address || 'Adresse non renseignée'
-                              : targetedOverview?.isReturning 
-                              ? 'Tournée terminée — Retour au restaurant' 
-                              : 'Aucune livraison en cours'}
-                          </p>
-                        </div>
+                      <div className={`bg-slate-950 border px-2 py-1.5 flex items-center gap-2 min-w-0 ${targetedOverview?.currentOrder ? 'border-amber-500/50' : 'border-slate-800'}`}>
+                        <MapPin className={`w-4 h-4 shrink-0 ${targetedOverview?.currentOrder ? 'text-amber-400' : 'text-slate-600'}`} />
+                        <span className={`truncate ${targetedOverview?.currentOrder ? 'text-white' : 'text-slate-500'}`}>
+                          {targetedOverview?.currentOrder
+                            ? `#${orderNum(targetedOverview.currentOrder)} · ${targetedOverview.currentOrder.customer_address || '?'}${targetedOverview.currentOrder.customer_address_complement ? ` (${targetedOverview.currentOrder.customer_address_complement})` : ''}`
+                            : targetedOverview?.isReturning ? 'Retour au restaurant' : 'Aucune course'}
+                        </span>
                       </div>
                     </div>
 
-                    {/* BARRE D'ÉTAPES DE TOUTE LA TOURNÉE (Où il en est sur tout ce qu'il doit livrer) */}
                     {targetedOverview && targetedOverview.totalCount > 0 && (
-                      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
-                        <span className="text-[10px] font-black uppercase text-slate-400 shrink-0 mr-1">
-                          Tournée ({targetedOverview.deliveredCount}/{targetedOverview.totalCount}) :
-                        </span>
-                        
-                        {/* Commandes déjà livrées */}
-                        {targetedOverview.deliveredOrders.map((ord) => (
-                          <span 
-                            key={ord.id} 
-                            className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-black shrink-0 flex items-center gap-1"
-                          >
-                            <CheckCircle2 className="w-3 h-3" /> #{ord.order_number} Livrée
+                      <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+                        {targetedOverview.deliveredOrders.map(ord => (
+                          <span key={ord.id} className="px-1.5 py-0.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-black shrink-0 flex items-center gap-1">
+                            <Check className="w-3 h-3" /> #{orderNum(ord)}
                           </span>
                         ))}
-
-                        {/* Commande en cours de livraison + suivantes */}
                         {targetedOverview.inTransitOrders.map((ord, idx) => (
-                          <span 
-                            key={ord.id} 
-                            className={`px-2.5 py-0.5 rounded-md text-[10px] font-black shrink-0 flex items-center gap-1 ${
-                              idx === 0 
-                                ? 'bg-amber-500 text-slate-950 shadow-sm' 
-                                : 'bg-slate-800 text-slate-300 border border-slate-700'
-                            }`}
-                          >
-                            {idx === 0 ? <Bike className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
-                            <span>
-                              {idx === 0 ? 'EN ROUTE :' : `SUIVANTE #${idx + 1} :`} #{ord.order_number} ({ord.customer_name || 'Client'})
-                            </span>
+                          <span key={ord.id} className={`px-1.5 py-0.5 text-[10px] font-black shrink-0 flex items-center gap-1 ${idx === 0 ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-300 border border-slate-700'}`}>
+                            {idx === 0 ? <Bike className="w-3 h-3" /> : <span className="tabular-nums">{idx + 1}</span>} #{orderNum(ord)}
                           </span>
                         ))}
                       </div>
                     )}
                   </div>
 
-                  {/* CARTE INTERACTIVE PLEIN ÉCRAN */}
-                  <div className="flex-1 w-full h-full relative">
+                  <div className="flex-1 w-full relative">
                     {mapEmbedUrl ? (
-                      <iframe 
-                        key={mapEmbedUrl} 
-                        title="Maps" 
-                        width="100%" 
-                        height="100%" 
-                        style={{ border: 0 }} 
-                        src={mapEmbedUrl} 
-                      />
+                      <iframe key={mapEmbedUrl} title="Carte" width="100%" height="100%" style={{ border: 0 }} src={mapEmbedUrl} />
                     ) : (
-                      <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs font-bold gap-2">
-                        <Compass className="w-6 h-6 animate-spin text-slate-600" />
-                        <span>Aucun signal GPS reçu pour ce livreur</span>
-                      </div>
+                      <Empty icon={Compass} label="Pas de signal GPS" />
                     )}
                   </div>
                 </>
               ) : (
-                <div className="h-full flex items-center justify-center text-slate-500 text-xs font-bold">
-                  Sélectionnez un livreur à gauche
-                </div>
+                <Empty icon={Users} label="Choisissez un livreur" />
+              )}
+            </div>
+          </div>
+
+        ) : settlementView === 'pending' ? (
+
+          /* ═══ 3. CAISSE LIVREURS ═══ */
+          <div className="h-full grid grid-cols-3 gap-2">
+            <div className="bg-slate-900 border-2 border-slate-700 flex flex-col overflow-hidden">
+              <ColumnHeader cls="bg-[#04B855] text-white" icon={Banknote} label="À régler" count={settlementDrivers.length} />
+              <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar">
+                {settlementDrivers.length === 0 ? (
+                  <Empty icon={CheckCircle2} label="Tout est réglé" />
+                ) : settlementDrivers.map(d => {
+                  const fin = getFinancials(d.id);
+                  const isSel = selectedDriverForSettlement?.id === d.id;
+                  return (
+                    <button key={d.id} onClick={() => selectDriverForSettlement(d.id)} className={`w-full text-left p-2.5 border-2 ${isSel ? 'bg-blue-600 border-blue-400 text-white' : 'bg-slate-800/70 border-slate-700 hover:border-slate-500'}`}>
+                      <div className="flex justify-between items-center font-black text-sm gap-2">
+                        <span className="truncate">{d.customer_name || d.email}</span>
+                        <span className={`tabular-nums shrink-0 ${isSel ? 'text-white' : 'text-amber-400'}`}>{money(fin.due)}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1 text-[10px] font-black">
+                        <span className="px-1 bg-slate-950/60">{fin.count} livrée(s)</span>
+                        {fin.inTransitCount > 0 && <span className="px-1 bg-blue-500/30 text-blue-200">{fin.inTransitCount} en route</span>}
+                        {fin.unpaid.length > 0 && <span className="px-1 bg-red-600 text-white">{fin.unpaid.length} non payée(s)</span>}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="col-span-2 bg-slate-900 border-2 border-slate-700 flex flex-col overflow-hidden">
+              {selectedDriverForSettlement && settleFin ? (
+                <>
+                  <div className="flex justify-between items-center px-3 h-11 bg-slate-800 border-b border-slate-700 shrink-0">
+                    <span className="text-base font-black text-white truncate">{selectedDriverForSettlement.customer_name || selectedDriverForSettlement.email}</span>
+                    <button onClick={() => setDriverForCashReload(selectedDriverForSettlement)} className="h-8 px-2.5 bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1 active:scale-95">
+                      <Coins className="w-3.5 h-3.5" /> Monnaie
+                    </button>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
+                    <div className="grid grid-cols-4 gap-2">
+                      {[
+                        { label: 'Espèces', value: settleFin.cash, cls: 'border-amber-500/40 text-amber-400' },
+                        { label: 'Sacoche', value: settleFin.float, cls: 'border-purple-500/40 text-purple-300' },
+                        { label: 'À remettre', value: settleFin.due, cls: 'border-[#04B855] text-[#04B855] bg-[#04B855]/10' },
+                        { label: 'CB', value: settleFin.card, cls: 'border-slate-600 text-slate-300' },
+                      ].map(t => (
+                        <div key={t.label} className={`border-2 p-2 text-center ${t.cls}`}>
+                          <span className="text-[10px] font-black uppercase block opacity-80">{t.label}</span>
+                          <span className="text-xl font-black tabular-nums">{money(t.value)}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Commandes non payées : le livreur a encaissé, on choisit comment */}
+                    {settleFin.unpaid.length > 0 && (
+                      <div className="border-2 border-red-500/60">
+                        <div className="px-2 h-8 bg-red-600 text-white text-[11px] font-black uppercase flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5" /> Encaissé par le livreur
+                        </div>
+                        <div className="divide-y divide-slate-700">
+                          {settleFin.unpaid.map(o => {
+                            const choice = unpaidChoice[String(o.id)] ?? defaultUnpaidChoice(o);
+                            return (
+                              <div key={o.id} className="px-2 py-1.5 flex items-center justify-between gap-2 text-xs font-black">
+                                <span className="truncate">#{orderNum(o)} <span className="text-slate-400 font-bold">{o.customer_name}</span></span>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span className="tabular-nums">{money(orderTotal(o))}</span>
+                                  <div className="flex border border-slate-600">
+                                    {(['cash', 'card'] as const).map(c => (
+                                      <button key={c} onClick={() => setUnpaidChoice(prev => ({ ...prev, [String(o.id)]: c }))} className={`h-8 px-3 text-[11px] font-black ${choice === c ? (c === 'cash' ? 'bg-amber-500 text-slate-950' : 'bg-slate-500 text-white') : 'bg-slate-900 text-slate-400'}`}>
+                                        {c === 'cash' ? 'ESP' : 'CB'}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="bg-slate-950 p-2.5 border border-slate-700 space-y-2">
+                      <div className="flex items-center gap-1.5">
+                        <div className="relative flex-1">
+                          <input
+                            type="number"
+                            step="0.01"
+                            inputMode="decimal"
+                            value={receivedCashStr}
+                            onChange={e => setReceivedCashStr(e.target.value)}
+                            placeholder={`Reçu · ${settleFin.due.toFixed(2)}`}
+                            className="w-full h-11 bg-slate-900 border border-slate-700 px-3 font-black text-lg text-white outline-none focus:border-[#04B855] tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                          />
+                          <span className="absolute right-3 top-2.5 text-slate-500 font-bold">€</span>
+                        </div>
+                        {[20, 50, 100].map(amt => (
+                          <button key={amt} onClick={() => setReceivedCashStr(String(amt))} className="h-11 px-3 bg-slate-800 hover:bg-slate-700 text-white font-black text-xs active:scale-95">{amt}</button>
+                        ))}
+                        <button onClick={() => setReceivedCashStr(settleFin.due.toFixed(2))} className="h-11 px-3 bg-blue-600 text-white font-black text-xs active:scale-95">Exact</button>
+                        <button onClick={() => setReceivedCashStr('')} className="h-11 w-11 bg-slate-800 text-slate-400 flex items-center justify-center"><X className="w-4 h-4" /></button>
+                      </div>
+                      {changeDue > 0 && <div className="h-8 bg-[#04B855] text-white text-sm font-black flex items-center justify-center tabular-nums">Rendre {money(changeDue)}</div>}
+                      {missingCash > 0 && <div className="h-8 bg-red-600 text-white text-sm font-black flex items-center justify-center tabular-nums">Manque {money(missingCash)}</div>}
+                    </div>
+
+                    <div className="space-y-1">
+                      {settleFin.delivered.length === 0 ? (
+                        <p className="text-[11px] font-black uppercase text-slate-600 text-center py-4">Aucune course livrée</p>
+                      ) : settleFin.delivered.map(o => (
+                        <div key={o.id} className="bg-slate-800/70 px-2 py-1.5 flex justify-between items-center text-xs font-bold gap-2">
+                          <span className="truncate">#{orderNum(o)} <span className="text-slate-400">{o.customer_name}</span></span>
+                          <span className="flex items-center gap-1.5 shrink-0">
+                            <span className="tabular-nums">{money(orderTotal(o))}</span>
+                            <PayBadge order={o} />
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleSettleAndLogout(selectedDriverForSettlement)}
+                    disabled={settleFin.inTransitCount > 0 || isSettling}
+                    className={`w-full h-14 shrink-0 font-black text-sm uppercase flex items-center justify-center gap-2 active:scale-[0.99] transition-all ${settleFin.inTransitCount > 0 || isSettling ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-[#04B855] hover:bg-[#039d48] text-white'}`}
+                  >
+                    {isSettling ? <RefreshCw className="w-5 h-5 animate-spin" /> : <CheckCircle2 className="w-5 h-5" />}
+                    {settleFin.inTransitCount > 0 ? `${settleFin.inTransitCount} course(s) en route` : `Encaisser ${money(settleFin.due)} & clôturer`}
+                  </button>
+                </>
+              ) : (
+                <Empty icon={Banknote} label="Choisissez un livreur" />
               )}
             </div>
           </div>
 
         ) : (
 
-          /* 3. CAISSE LIVREURS / HISTORIQUE */
-          settlementView === 'pending' ? (
-            <div className="h-full grid grid-cols-3 gap-3.5">
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 flex flex-col overflow-hidden">
-                <span className="text-xs font-black uppercase text-slate-400 pb-2 border-b border-slate-800">
-                  À solder ({settlementDrivers.length})
-                </span>
-                <div className="flex-1 overflow-y-auto space-y-2 pt-2 pr-1 custom-scrollbar">
-                  {settlementDrivers.length === 0 ? (
-                    <div className="h-full flex items-center justify-center text-slate-500 text-xs font-bold text-center py-16">
-                      Aucun compte à régler
+          /* ═══ 3b. CLÔTURES DU JOUR ═══ */
+          <div className="h-full bg-slate-900 border-2 border-slate-700 flex flex-col overflow-hidden">
+            <ColumnHeader cls="bg-slate-800 text-slate-200" icon={History} label="Clôtures du jour" count={pastShifts.length}>
+              <span className="text-xs font-black text-amber-400 tabular-nums">{money(pastShifts.reduce((s, sh) => s + Number(sh.total_cash_collected || 0), 0))}</span>
+            </ColumnHeader>
+
+            <div className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar">
+              {pastShifts.length === 0 ? (
+                <Empty icon={History} label="Aucune clôture aujourd'hui" />
+              ) : pastShifts.map(shift => {
+                const driver = drivers.find(d => String(d.id) === String(shift.driver_id));
+                return (
+                  <div key={shift.id} className="bg-slate-800/70 border-2 border-slate-700 px-3 py-2 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 text-sm font-black">
+                      <span className="text-white truncate">{driver?.customer_name || driver?.email || 'Livreur'}</span>
+                      <span className="px-1.5 py-0.5 text-[10px] bg-slate-950 text-slate-400 tabular-nums">
+                        {shift.ended_at ? new Date(shift.ended_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '—'}
+                      </span>
+                      <span className="text-xs text-slate-400">{shift.total_deliveries || 0} course(s)</span>
+                      <span className="text-amber-400 tabular-nums">{money(Number(shift.total_cash_collected || 0))}</span>
                     </div>
-                  ) : (
-                    settlementDrivers.map(d => {
-                      const fin = getFinancials(d.id);
-                      const isSel = selectedDriverForSettlement?.id === d.id;
-                      return (
-                        <div key={d.id} onClick={() => { setSelectedDriverIdForSettlement(d.id); setReceivedCashStr(fin.due); }} className={`p-3 rounded-xl border cursor-pointer ${isSel ? 'bg-blue-600 border-blue-400 text-white' : 'bg-slate-800/80 border-slate-700'}`}>
-                          <div className="flex justify-between font-black text-sm">
-                            <span className="truncate">{d.customer_name || d.email}</span>
-                            <span className="text-amber-400 shrink-0">{fin.due} €</span>
-                          </div>
-                          <div className="text-[11px] opacity-80 mt-0.5">Esp: {fin.cash}€ • Sac: {fin.float}€ ({fin.count})</div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-
-              <div className="col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between overflow-hidden">
-                {selectedDriverForSettlement ? (
-                  (() => {
-                    const fin = getFinancials(selectedDriverForSettlement.id);
-                    return (
-                      <div className="h-full flex flex-col justify-between">
-                        <div>
-                          <div className="flex justify-between items-center pb-3 border-b border-slate-800">
-                            <h3 className="text-xl font-black text-white">{selectedDriverForSettlement.customer_name || selectedDriverForSettlement.email}</h3>
-                            <button onClick={() => setDriverForCashReload(selectedDriverForSettlement)} className="h-9 px-3 bg-amber-500 text-slate-950 rounded-xl text-xs font-black">+ Monnaie</button>
-                          </div>
-
-                          <div className="grid grid-cols-4 gap-2.5 my-3.5">
-                            <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 text-center">
-                              <span className="text-[10px] font-black uppercase text-red-400 block">Espèces</span>
-                              <span className="text-xl font-black text-red-500">{fin.cash} €</span>
-                            </div>
-                            <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-3 text-center">
-                              <span className="text-[10px] font-black uppercase text-purple-400 block">Sacoche</span>
-                              <span className="text-xl font-black text-purple-400">{fin.float} €</span>
-                            </div>
-                            <div className="bg-emerald-500/15 border border-emerald-500/40 rounded-xl p-3 text-center">
-                              <span className="text-[10px] font-black uppercase text-emerald-400 block">Total Dû</span>
-                              <span className="text-xl font-black text-emerald-400">{fin.due} €</span>
-                            </div>
-                            <div className="bg-slate-800 border border-slate-700 rounded-xl p-3 text-center">
-                              <span className="text-[10px] font-black uppercase text-slate-400 block">Total Livré</span>
-                              <span className="text-xl font-black text-white">{fin.total} €</span>
-                            </div>
-                          </div>
-
-                          <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 mb-3 space-y-2">
-                            <div className="flex justify-between items-center">
-                              <span className="text-xs font-black uppercase text-slate-400">Reçu du livreur :</span>
-                              {changeDue > 0 && <span className="bg-emerald-500 text-slate-950 text-xs font-black px-2.5 py-0.5 rounded-lg">RENDRE : {changeDue.toFixed(2)} €</span>}
-                            </div>
-                            
-                            <div className="flex items-center gap-2">
-                              <div className="relative flex-1">
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  value={receivedCashStr}
-                                  onChange={e => setReceivedCashStr(e.target.value)}
-                                  placeholder={fin.due}
-                                  className="w-full h-11 bg-slate-900 border border-slate-700 rounded-xl px-3 font-black text-lg text-white outline-none focus:border-emerald-500"
-                                />
-                                <span className="absolute right-3 top-2.5 text-slate-400 font-bold">€</span>
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                {[20, 50, 100].map(amt => (
-                                  <button key={amt} onClick={() => setReceivedCashStr(String(amt))} className="h-11 px-3 bg-slate-800 hover:bg-slate-700 text-white font-black text-xs rounded-xl active:scale-95">{amt}€</button>
-                                ))}
-                                <button onClick={() => setReceivedCashStr(fin.due)} className="h-11 px-3 bg-blue-600 text-white font-black text-xs rounded-xl active:scale-95">Exact</button>
-                                <button onClick={() => setReceivedCashStr('')} className="h-11 px-2.5 bg-red-600/20 text-red-300 rounded-xl text-xs font-black">X</button>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="space-y-1 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
-                            {fin.delivered.map(o => (
-                              <div key={o.id} className="bg-slate-800/80 px-3 py-1.5 rounded-lg flex justify-between text-xs font-bold">
-                                <span>#{o.order_number} ({o.customer_name})</span>
-                                <span className={(o.payment_method || '').toLowerCase().includes('esp') ? 'text-amber-400' : 'text-slate-300'}>
-                                  {Number(o.total_price ?? o.total_amount ?? 0).toFixed(2)} € ({o.payment_method || 'CB'})
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <button 
-                          onClick={() => handleSettleAndLogout(selectedDriverForSettlement)} 
-                          disabled={fin.inTransitCount > 0}
-                          className={`w-full h-14 font-black text-sm uppercase rounded-xl flex items-center justify-center gap-2 shadow-xl active:scale-95 transition-all ${fin.inTransitCount > 0 ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'}`}
-                        >
-                          <CheckCircle2 className="w-5 h-5" /> 
-                          <span>{fin.inTransitCount > 0 ? `EN ROUTE (${fin.inTransitCount})` : `ENCAISSER ${fin.due} € & CLÔTURER`}</span>
-                        </button>
-                      </div>
-                    );
-                  })()
-                ) : (
-                  <div className="h-full flex items-center justify-center text-slate-500 text-xs font-bold">Sélectionnez un livreur</div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="h-full bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col overflow-hidden">
-              <div className="flex justify-between items-center pb-3 border-b border-slate-800 shrink-0">
-                <span className="text-xs font-black uppercase text-white flex items-center gap-2">
-                  <History className="w-4 h-4 text-emerald-400" /> Services clôturés ({pastShifts.length})
-                </span>
-                <span className="text-xs text-slate-400 font-bold">Total : {pastShifts.reduce((s, sh) => s + Number(sh.total_cash_collected || 0), 0).toFixed(2)} €</span>
-              </div>
-
-              <div className="flex-1 overflow-y-auto space-y-2.5 pt-3 pr-1 custom-scrollbar">
-                {pastShifts.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-slate-500 text-xs font-bold py-16">
-                    Aucune clôture aujourd'hui
+                    <button onClick={() => handlePrintPastShift(shift)} title="Réimprimer" className="h-9 px-3 bg-slate-700 hover:bg-slate-600 text-white text-xs font-black flex items-center gap-1.5 active:scale-95 shrink-0">
+                      <Printer className="w-4 h-4" /> Ticket
+                    </button>
                   </div>
-                ) : (
-                  pastShifts.map(shift => {
-                    const driver = drivers.find(d => String(d.id) === String(shift.driver_id));
-                    return (
-                      <div key={shift.id} className="bg-slate-800 border border-slate-700 rounded-xl p-3.5 flex items-center justify-between">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-black text-sm text-white">{driver?.customer_name || driver?.email || 'Livreur'}</span>
-                            <span className="text-[10px] bg-slate-950 px-2 py-0.5 rounded text-slate-400 font-bold">
-                              {shift.ended_at ? new Date(shift.ended_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : 'Terminé'}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-400">
-                            {shift.total_deliveries || 0} course(s) • <strong className="text-amber-400">{Number(shift.total_cash_collected || 0).toFixed(2)} €</strong>
-                          </p>
-                        </div>
-
-                        <button 
-                          onClick={() => handlePrintPastShift(shift)}
-                          className="h-10 px-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs font-black flex items-center gap-1.5 active:scale-95"
-                        >
-                          <Printer className="w-4 h-4" /> <span>Ticket</span>
-                        </button>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+                );
+              })}
             </div>
-          )
-
+          </div>
         )}
       </div>
 
-      {/* ── MODALE APPOINT MONNAIE SACOCHE ── */}
+      {/* ── SACOCHE : AJOUT DE MONNAIE ── */}
       {driverForCashReload && (
-        <div className="fixed inset-0 z-[999999] bg-black/75 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border-2 border-amber-500 w-[400px] rounded-2xl p-5 shadow-2xl space-y-4">
-            <div className="flex justify-between items-center border-b border-slate-800 pb-2.5">
-              <span className="font-black text-sm text-white">Sacoche : {driverForCashReload.customer_name || 'Livreur'}</span>
-              <button onClick={() => setDriverForCashReload(null)} className="text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+        <div className="fixed inset-0 z-[999999] bg-black/75 flex items-center justify-center p-4" onClick={() => setDriverForCashReload(null)}>
+          <div className="bg-slate-900 border-2 border-amber-500 w-[380px] shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center px-3 h-11 bg-amber-500 text-slate-950">
+              <span className="font-black text-sm uppercase flex items-center gap-1.5"><Coins className="w-4 h-4" /> {driverForCashReload.customer_name || 'Livreur'}</span>
+              <button onClick={() => setDriverForCashReload(null)}><X className="w-5 h-5" /></button>
             </div>
-            <div className="grid grid-cols-4 gap-2">
-              {[10, 20, 30, 50].map(amt => (
-                <button key={amt} onClick={() => setReloadAmount(amt)} className={`h-12 rounded-xl font-black text-sm border ${reloadAmount === amt ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-white border-slate-700'}`}>
-                  +{amt}€
-                </button>
-              ))}
+            <div className="p-3 space-y-3">
+              <div className="text-center text-xs font-black text-slate-400 tabular-nums">Sacoche actuelle {money(Number(driverForCashReload.cash_float || 0))}</div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[10, 20, 30, 50].map(amt => (
+                  <button key={amt} onClick={() => setReloadAmount(amt)} className={`h-12 font-black text-sm border-2 ${reloadAmount === amt ? 'bg-amber-500 border-amber-500 text-slate-950' : 'bg-slate-800 text-white border-slate-700'}`}>
+                    +{amt}
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => handleUpdateCashFloat(driverForCashReload, reloadAmount)} className="w-full h-12 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm uppercase flex items-center justify-center gap-1.5 active:scale-95">
+                <Check className="w-4 h-4" /> Ajouter {reloadAmount} €
+              </button>
             </div>
-            <button onClick={() => handleUpdateCashFloat(driverForCashReload, reloadAmount)} className="w-full h-12 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm uppercase rounded-xl flex items-center justify-center gap-1.5 active:scale-95">
-              <CheckCircle2 className="w-4 h-4" /> <span>Ajouter +{reloadAmount} €</span>
-            </button>
           </div>
         </div>
       )}
 
-      {/* ── MODALE TOURNÉE GROUPÉE ── */}
+      {/* ── TOURNÉE GROUPÉE ── */}
       {showBatchAssignModal && (
-        <div className="fixed inset-0 z-[999999] bg-black/75 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border-2 border-purple-500 w-[420px] rounded-2xl p-5 shadow-2xl space-y-3">
-            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-              <span className="font-black text-sm text-white">Tournée ({selectedOrderIdsForBatch.length})</span>
-              <button onClick={() => setShowBatchAssignModal(false)} className="text-slate-400">✕</button>
+        <div className="fixed inset-0 z-[999999] bg-black/75 flex items-center justify-center p-4" onClick={() => setShowBatchAssignModal(false)}>
+          <div className="bg-slate-900 border-2 border-purple-500 w-[420px] shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center px-3 h-11 bg-purple-600 text-white">
+              <span className="font-black text-sm uppercase flex items-center gap-1.5"><Layers className="w-4 h-4" /> Tournée · {selectedOrderIdsForBatch.length}</span>
+              <button onClick={() => setShowBatchAssignModal(false)}><X className="w-5 h-5" /></button>
             </div>
-            <div className="space-y-1.5 max-h-56 overflow-y-auto">
-              {drivers.map(d => (
-                <button key={d.id} onClick={() => handleAssignBatchTour(d.id)} className="w-full h-12 px-3 bg-slate-800 hover:bg-purple-600 rounded-xl flex justify-between items-center text-xs font-black text-white active:scale-95">
-                  <span>{d.customer_name || d.email}</span>
-                  <span className={`w-2 h-2 rounded-full ${d.is_driver_online ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-                </button>
-              ))}
+            <div className="p-2 space-y-1 max-h-72 overflow-y-auto custom-scrollbar">
+              {driversForPicker.length === 0 && (
+                <div className="h-12 flex items-center justify-center gap-1.5 bg-slate-950 text-slate-500 text-xs font-black uppercase">
+                  <Users className="w-4 h-4" /> Aucun livreur en ligne
+                </div>
+              )}
+              {driversForPicker.map(d => {
+                const load = driverLoad[d.id] || 0;
+                return (
+                  <button key={d.id} onClick={() => handleAssign(selectedOrderIdsForBatch, d.id)} className={`w-full h-12 px-3 flex justify-between items-center text-sm font-black active:scale-[0.99] border ${d.is_driver_online ? 'bg-slate-800 border-slate-700 text-white hover:bg-purple-600' : 'bg-slate-900 border-slate-800 text-slate-500 hover:bg-slate-700'}`}>
+                    <span className="flex items-center gap-2 min-w-0">
+                      <span className={`w-2 h-2 shrink-0 ${d.is_driver_online ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                      <span className="truncate">{d.customer_name || d.email}</span>
+                    </span>
+                    <span className={`px-1.5 text-[11px] tabular-nums ${load ? 'bg-blue-500/30 text-blue-200' : 'bg-emerald-500/20 text-emerald-300'}`}>{load || 'libre'}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
