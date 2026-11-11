@@ -36,6 +36,7 @@ import CashSessionModal from '@/components/CashSessionModal';
 import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
 import PosSetup from '@/components/PosSetup';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
+import { announceDevicePresence } from '@/lib/devicePresence';
 
 export interface Product {
   id: number | string;
@@ -652,6 +653,27 @@ const Caisse = () => {
     return () => window.removeEventListener('restaurant_id_changed', handleRestoChanged);
   }, []);
 
+  // Présence en direct (Supabase Realtime) : signale au panneau admin que cette caisse est allumée
+  useEffect(() => {
+    if (!posRestoId) return;
+    let deviceId: string | null = null;
+    try {
+      deviceId = localStorage.getItem('pos_device_id');
+      if (!deviceId) {
+        deviceId = crypto.randomUUID();
+        localStorage.setItem('pos_device_id', deviceId);
+      }
+    } catch {
+      deviceId = deviceId || crypto.randomUUID();
+    }
+    return announceDevicePresence(supabase, {
+      restaurantId: posRestoId,
+      deviceId,
+      deviceType: 'pos',
+      deviceName: 'Caisse Principale',
+    });
+  }, [posRestoId]);
+
   useEffect(() => {
     const loadMapping = async () => {
       if (cartState.items && cartState.items.length > 0) {
@@ -679,6 +701,38 @@ const Caisse = () => {
     return () => { clearInterval(timer); window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
   }, []);
 
+  // Session réellement ouverte en base pour ce restaurant.
+  // string = id ouvert, null = aucune session ouverte, undefined = base injoignable
+  const fetchOpenSessionId = async (): Promise<string | null | undefined> => {
+    const restoId = posRestoId || getActiveRestaurantId();
+    if (!restoId) return null;
+    try {
+      const { data, error } = await supabase
+        .from('cash_sessions')
+        .select('id')
+        .eq('restaurant_id', restoId)
+        .eq('status', 'OPEN')
+        .is('closed_at', null)
+        .order('opened_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) return undefined;
+      return data?.id ?? null;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // Ne jamais rattacher une vente à une session fermée (ex : clôturée depuis un autre poste).
+  // Hors-ligne, impossible de vérifier : la synchro recontrôlera avant l'envoi.
+  const ensureOpenSession = async (): Promise<string | null> => {
+    if (!isOnline) return currentSessionId;
+    const openId = await fetchOpenSessionId();
+    if (openId === undefined) return currentSessionId;
+    if (openId !== currentSessionId) setCurrentSessionId(openId);
+    return openId;
+  };
+
   const syncOfflineOrders = async () => {
     if (!(window as any).electronAPI?.getOfflineOrders) return;
     // Verrou : une seule synchro à la fois, sinon les mêmes tickets sont envoyés deux fois
@@ -689,10 +743,25 @@ const Caisse = () => {
       const offlineOrders = await (window as any).electronAPI.getOfflineOrders();
       if (!offlineOrders || offlineOrders.length === 0) return;
 
+      // Les tickets hors-ligne ne doivent jamais partir sur une session clôturée entre-temps
+      const openSessionId = await fetchOpenSessionId();
+      if (openSessionId === undefined) return; // base injoignable : on réessaiera
+      if (openSessionId !== currentSessionId) setCurrentSessionId(openSessionId);
+
       customToast(`Sync de ${offlineOrders.length} ticket(s) local...`, "success");
 
       for (const order of offlineOrders) {
         const { offline_id, is_update, target_id, order_number, ...supabasePayload } = order;
+
+        if (supabasePayload.session_id !== openSessionId) {
+          if (!openSessionId) {
+            // Aucune session ouverte : on garde le ticket en local jusqu'à la prochaine ouverture
+            failedCount++;
+            continue;
+          }
+          // Session d'origine clôturée : rattachement à la session ouverte (comptée dans le prochain Z)
+          supabasePayload.session_id = openSessionId;
+        }
         if (supabasePayload.payment_method) {
           supabasePayload.payment_method = normalizeCaissePaymentMethod(supabasePayload.payment_method);
         }
@@ -732,7 +801,8 @@ const Caisse = () => {
     if (isOnline && isAuthenticated && posRestoId) {
       syncOfflineOrders();
     }
-  }, [isOnline, isAuthenticated, posRestoId]);
+    // currentSessionId : une ouverture de caisse relance l'envoi des tickets restés en local
+  }, [isOnline, isAuthenticated, posRestoId, currentSessionId]);
 
   useEffect(() => {
     if (pinCode.length === 4) {
@@ -1130,8 +1200,9 @@ const Caisse = () => {
     setIsProcessing(true);
 
     try {
-      if (!currentSessionId) {
-        customToast("Veuillez ouvrir la caisse d'abord !", "error");
+      const sessionId = await ensureOpenSession();
+      if (!sessionId) {
+        customToast("Caisse fermée : ouvrez une session pour encaisser", "error");
         setIsCashSessionModalOpen(true);
         setIsPaymentModalOpen(false);
         return;
@@ -1167,7 +1238,7 @@ const Caisse = () => {
         customer_address: effectiveClient?.address ? String(effectiveClient.address).trim() : null,
         customer_address_complement: getClientComplement(effectiveClient) || null,
         order_number: targetOrderNumber,
-        session_id: currentSessionId 
+        session_id: sessionId 
       };
 
       if (!isOnline) {
@@ -1220,7 +1291,7 @@ const Caisse = () => {
             order_details: cleanOrderDetails, 
             total_price: parseFloat(finalTotal.toFixed(2)), 
             delivery_fee: activeDeliveryFee,
-            session_id: currentSessionId 
+            session_id: sessionId 
           };
 
           if (effectiveClient?.name) updateData.customer_name = effectiveClient.name;
@@ -1334,8 +1405,9 @@ const Caisse = () => {
     setIsProcessing(true);
 
     try {
-      if (!currentSessionId) {
-        customToast("Veuillez ouvrir la caisse d'abord !", "error");
+      const sessionId = await ensureOpenSession();
+      if (!sessionId) {
+        customToast("Caisse fermée : ouvrez une session pour encaisser", "error");
         setIsCashSessionModalOpen(true);
         return;
       }
@@ -1367,7 +1439,7 @@ const Caisse = () => {
         customer_address: effectiveClient?.address ? String(effectiveClient.address).trim() : null,
         customer_address_complement: getClientComplement(effectiveClient) || null,
         order_number: targetOrderNumber,
-        session_id: currentSessionId 
+        session_id: sessionId 
       };
 
       if (!isOnline) {
@@ -1406,7 +1478,7 @@ const Caisse = () => {
             order_details: cleanOrderDetails, 
             total_price: parseFloat(finalTotal.toFixed(2)), 
             delivery_fee: activeDeliveryFee, 
-            session_id: currentSessionId 
+            session_id: sessionId 
           };
 
           if (effectiveClient?.name) updateData.customer_name = effectiveClient.name;

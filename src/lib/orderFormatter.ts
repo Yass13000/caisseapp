@@ -718,7 +718,8 @@ export const buildKitchenReceiptPayload = (params: {
     const notes = optionGroups.flatMap(grp => grp.items.map(opt => ({
       id: opt.id,
       name: (opt.qty > 1 ? `${opt.qty}x ` : '') + (opt.name_kds || opt.name),
-      name_kds: opt.name_kds || opt.name,
+      // L'imprimante cuisine lit name_kds en priorité : la quantité doit y figurer aussi
+      name_kds: (opt.qty > 1 ? `${opt.qty}x ` : '') + (opt.name_kds || opt.name),
       isSans: opt.isSans,
       group_name: grp.originalGroupName || ''
     })));
