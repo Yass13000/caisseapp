@@ -627,7 +627,9 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
       .update(patch)
       .in('id', ids)
       .or('driver_id.is.null,delivery_status.eq.pending,delivery_status.eq.failed')
-      .select('id');
+      // Les colonnes du filtre .or() doivent figurer dans le select, sinon Supabase
+      // répond 400 « column orders.driver_id does not exist » sur un update
+      .select('id, driver_id, delivery_status');
 
     const okIds = new Set((updated || []).map((r: any) => String(r.id)));
     const failed = error ? backup : backup.filter(b => !okIds.has(String(b.id)));
