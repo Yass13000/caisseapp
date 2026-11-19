@@ -819,7 +819,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
             sels.forEach((opt, optIndex) => {
                 const finalOptPrice = mappedSels[optIndex].price;
-                let hasSelectedChildren = false;
                 const childrenToPush: any[] = [];
                 const cleanOptId = cleanId(opt.id);
 
@@ -828,7 +827,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                     childGroups.forEach(cg => {
                         if (currentSolo && isStepHiddenInSolo(cg)) return;
                         const childSels = latestSelections[`sub_${cg.id}`] || [];
-                        if (childSels.length > 0) hasSelectedChildren = true;
                         
                         const mappedChild = childSels.map((cOpt, cIndex) => ({ ...cOpt, originalCIndex: cIndex }));
                         const paidChild = mappedChild.filter(x => x.price > 0).sort((a,b) => a.price - b.price);
@@ -850,7 +848,6 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                                 option_group_name: groupName, 
                                 groupName: groupName, 
                                 option_group_id: cOpt.option_group_id || cg.id || step.option_group_id, 
-                                _print_order: absoluteOrder++, 
                                 isSubOption: true, 
                                 is_sub_option: true 
                             });
@@ -858,7 +855,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                     });
                 }
 
-                if (!hasSelectedChildren) {
+                // L'option choisie est toujours gardée (nom + prix), ses sous-options suivent
+                {
                     const groupName = opt.group_name || step.group_name || 'Options';
                     flatOrderedOptions.push({
                         id: opt.id, 
@@ -877,7 +875,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                     });
                 }
 
-                if (childrenToPush.length > 0) flatOrderedOptions.push(...childrenToPush);
+                childrenToPush.forEach(child => flatOrderedOptions.push({ ...child, _print_order: absoluteOrder++ }));
             });
         });
 
