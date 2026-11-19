@@ -168,6 +168,36 @@ const extractAllChoicesFromSource = (...sources: any[]): any[] => {
   return flat;
 };
 
+
+/**
+ * Sous-options d'une option fusionnées dans son nom et son prix :
+ * Frites (0 €) + Mayonnaise (1 €) + Ketchup (1 €) → « Frites (Mayonnaise, Ketchup) » à 2 €.
+ * Les choix restent lisibles dans sub_choices.
+ */
+const mergeChildChoices = (list: any[]): any[] => {
+  const out: any[] = [];
+  for (const o of list) {
+    const parent = out[out.length - 1];
+    if (o?._child && parent) {
+      (parent.sub_choices ||= []).push({ id: o.id, name: o.name, price: Number(o.price) || 0 });
+    } else {
+      const copy = { ...o };
+      delete copy._child;
+      out.push(copy);
+    }
+  }
+  return out.map((p) => {
+    if (!p.sub_choices?.length) return p;
+    const extra = p.sub_choices.reduce((sum: number, c: any) => sum + c.price, 0);
+    const name = `${p.name} (${p.sub_choices.map((c: any) => c.name).join(', ')})`;
+    const price = Math.round(((Number(p.price) || 0) + extra) * 100) / 100;
+    const merged: any = { ...p, name, option_name: name, price };
+    if (p.unit_price !== undefined) merged.unit_price = price;
+    if (p.effective_price !== undefined) merged.effective_price = price;
+    return merged;
+  });
+};
+
 const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [baseSteps, setBaseSteps] = useState<StepData[]>([]);
@@ -856,7 +886,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                                 option_group_name: groupName, 
                                 groupName: groupName, 
                                 option_group_id: cOpt.option_group_id || cg.id || step.option_group_id, 
-                                isSubOption: true, 
+                                isSubOption: true, _child: true, 
                                 is_sub_option: true 
                             });
                         });
@@ -888,12 +918,13 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         });
 
         const removedList = ingredients.filter(ing => removedIngredientIds.has(ing.id));
-        const optionsSignature = flatOrderedOptions.map(o => `${o.id}${o.isSubOption ? '_sub' : ''}`).join('-');
+        const mergedOptions = mergeChildChoices(flatOrderedOptions);
+        const optionsSignature = mergedOptions.map(o => `${o.id}${o.isSubOption ? '_sub' : ''}`).join('-');
         const removedSignature = removedList.map(i => `no_${i.id}`).join('-');
         const soloSignature = currentSolo ? 'solo' : 'menu';
         const cartItemId = `${product.id}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}-${optionsSignature}-${removedSignature}-${soloSignature}`;
 
-        const finalOptionsToCart = flatOrderedOptions.map(opt => ({
+        const finalOptionsToCart = mergedOptions.map(opt => ({
             ...opt,
             _fusionId: cartItemId 
         }));
