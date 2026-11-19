@@ -50,6 +50,14 @@ const cleanId = (id: any) => {
   return String(id).replace(/^dyn_/, '').trim();
 };
 
+/**
+ * Parent d'un groupe de sous-options : une vraie option (option_id) ou un produit
+ * importé dans une étape (import_product_id, affiché comme l'option « dyn_<id> »).
+ * Les deux sont distingués pour qu'un produit n°754 ne récupère pas les sous-options de l'option n°754.
+ */
+const parentKeyOfGroup = (g: any) => (g?.import_product_id != null ? `p${g.import_product_id}` : `o${cleanId(g?.option_id)}`);
+const parentKeyOfOption = (opt: any) => (/^dyn_/.test(String(opt?.id ?? '')) ? `p${cleanId(opt.id)}` : `o${cleanId(opt?.id)}`);
+
 const normalizeStr = (s: any) => String(s || '')
   .normalize("NFD")
   .replace(/[\u0300-\u036f]/g, "")
@@ -339,8 +347,8 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             .order('step_order'),
           supabase
             .from('sub_option_groups')
-            .select(`id, name, min_choices, max_choices, free_choices_count, sort_order, option_id, product_id, is_menu, sub_option_choices ( id, name, price, is_available, sort_order )`)
-            .eq('product_id', realProductId),
+            .select(`id, name, min_choices, max_choices, free_choices_count, sort_order, option_id, product_id, import_product_id, is_menu, sub_option_choices ( id, name, price, is_available, sort_order )`)
+            .or(`product_id.eq.${realProductId},and(restaurant_id.eq.${activeRestoId},import_product_id.not.is.null)`),
           realProductId ? supabase
             .from('product_ingredients')
             .select(`global_ingredients ( id, name, image_url, is_available )`)
@@ -503,7 +511,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         if (optArray.length > 0) {
             const { data: sgOpt } = await supabase
               .from('sub_option_groups')
-              .select(`id, name, min_choices, max_choices, free_choices_count, sort_order, option_id, product_id, is_menu, sub_option_choices ( id, name, price, is_available, sort_order )`)
+              .select(`id, name, min_choices, max_choices, free_choices_count, sort_order, option_id, product_id, import_product_id, is_menu, sub_option_choices ( id, name, price, is_available, sort_order )`)
               .in('option_id', optArray);
             if (sgOpt) subGroupsData = [...subGroupsData, ...sgOpt];
         }
@@ -751,7 +759,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   }, [activeSteps]);
 
   const firstIncompleteStepIndex = useMemo(() => {
-    const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
+    const parentOptionIds = new Set(allSubGroups.map(parentKeyOfGroup));
 
     for (let i = 0; i < activeSteps.length; i++) {
       const step = activeSteps[i];
@@ -764,9 +772,9 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
       }
 
       for (const opt of sels) {
-        const cleanOptId = cleanId(opt.id);
-        if (parentOptionIds.has(cleanOptId)) {
-          const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
+        const cleanOptId = cleanId(opt.id); const optParentKey = parentKeyOfOption(opt);
+        if (parentOptionIds.has(optParentKey)) {
+          const childGroups = allSubGroups.filter(g => parentKeyOfGroup(g) === optParentKey);
           for (const cg of childGroups) {
             if (isSoloMode && isStepHiddenInSolo(cg)) continue;
             const min = cg.min_choices != null ? Number(cg.min_choices) : 0;
@@ -797,7 +805,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     setTimeout(() => {
         const flatOrderedOptions: any[] = [];
         let absoluteOrder = 1;
-        const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
+        const parentOptionIds = new Set(allSubGroups.map(parentKeyOfGroup));
 
         const latestSelections = stepSelectionsRef.current;
         const currentSolo = isSoloModeRef.current;
@@ -820,10 +828,10 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             sels.forEach((opt, optIndex) => {
                 const finalOptPrice = mappedSels[optIndex].price;
                 const childrenToPush: any[] = [];
-                const cleanOptId = cleanId(opt.id);
+                const cleanOptId = cleanId(opt.id); const optParentKey = parentKeyOfOption(opt);
 
-                if (parentOptionIds.has(cleanOptId)) {
-                    const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
+                if (parentOptionIds.has(optParentKey)) {
+                    const childGroups = allSubGroups.filter(g => parentKeyOfGroup(g) === optParentKey);
                     childGroups.forEach(cg => {
                         if (currentSolo && isStepHiddenInSolo(cg)) return;
                         const childSels = latestSelections[`sub_${cg.id}`] || [];
@@ -964,7 +972,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
       const currentSels = prev[stepId] || [];
       const newState = { ...prev, [stepId]: [] };
       currentSels.forEach(opt => {
-        const cgs = allSubGroups.filter(g => cleanId(g.option_id) === cleanId(opt.id));
+        const cgs = allSubGroups.filter(g => parentKeyOfGroup(g) === parentKeyOfOption(opt));
         cgs.forEach(cg => { newState[`sub_${cg.id}`] = []; });
       });
       return newState;
@@ -975,7 +983,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
   const handleRemoveOption = useCallback((option: CustomizationOption, e: React.MouseEvent) => {
     e.stopPropagation();
     const stepId = activeSteps[currentStep].id;
-    const cleanOptId = cleanId(option.id);
+    const cleanOptId = cleanId(option.id); const optParentKey = parentKeyOfOption(option);
     
     setStepSelections(prev => {
         const currentSels = prev[stepId] || [];
@@ -987,7 +995,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
             const newState = { ...prev, [stepId]: newSels };
             
             if (!newSels.some(s => cleanId(s.id) === cleanOptId)) {
-                const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
+                const childGroups = allSubGroups.filter(g => parentKeyOfGroup(g) === optParentKey);
                 childGroups.forEach(cg => { newState[`sub_${cg.id}`] = []; });
             }
             return newState;
@@ -1001,14 +1009,14 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     const stepId = stepData.id;
     const max = stepData.max_choices;
     const allowMultiple = stepData.allow_multiple || max > 1;
-    const cleanOptId = cleanId(option.id);
+    const cleanOptId = cleanId(option.id); const optParentKey = parentKeyOfOption(option);
     
     setStepSelections(prev => {
         const currentSels = prev[stepId] || [];
         const occurrenceCount = currentSels.filter(s => cleanId(s.id) === cleanOptId || String(s.id) === String(option.id)).length;
         const isAlreadySelected = occurrenceCount > 0;
         
-        const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId)
+        const childGroups = allSubGroups.filter(g => parentKeyOfGroup(g) === optParentKey)
                                         .filter(g => formatSubGroup(g).options.length > 0)
                                         .sort((a,b)=> (a.sort_order||0) - (b.sort_order||0));
 
@@ -1050,7 +1058,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
         const newState = { ...prev, [stepId]: newSels };
         removedOptions.forEach(removedOpt => {
-            const cgs = allSubGroups.filter(g => cleanId(g.option_id) === cleanId(removedOpt.id));
+            const cgs = allSubGroups.filter(g => parentKeyOfGroup(g) === parentKeyOfOption(removedOpt));
             cgs.forEach(cg => { newState[`sub_${cg.id}`] = []; });
         });
 
@@ -1132,7 +1140,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
 
           const newState = { ...prev, [baseStepId]: newSels };
           removedOptions.forEach(removedOpt => {
-              const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanId(removedOpt.id));
+              const childGroups = allSubGroups.filter(g => parentKeyOfGroup(g) === parentKeyOfOption(removedOpt));
               childGroups.forEach(cg => { newState[`sub_${cg.id}`] = []; });
           });
 
@@ -1152,7 +1160,7 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
     const basePrice = calculateBasePrice(originalCatalogPrice, isSoloMode, defaultType, soloDiscount);
     
     let t = basePrice;
-    const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
+    const parentOptionIds = new Set(allSubGroups.map(parentKeyOfGroup));
 
     activeSteps.forEach((step) => {
         if (step.isIngredientStep) return;
@@ -1161,10 +1169,10 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
         let stepPrices: number[] = [];
 
         sels.forEach((opt) => {
-            const cleanOptId = cleanId(opt.id);
-            if (parentOptionIds.has(cleanOptId)) {
+            const cleanOptId = cleanId(opt.id); const optParentKey = parentKeyOfOption(opt);
+            if (parentOptionIds.has(optParentKey)) {
                 stepPrices.push(opt.price || 0);
-                const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
+                const childGroups = allSubGroups.filter(g => parentKeyOfGroup(g) === optParentKey);
                 childGroups.forEach(cg => {
                     const childSels = stepSelections[`sub_${cg.id}`] || [];
                     const subFreeCount = cg.free_choices_count || 0;
@@ -1292,11 +1300,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
                 
                 let isMissingRequired = !s.isIngredientStep && sels.length < s.min_choices;
                 if (!isMissingRequired && !s.isIngredientStep) {
-                  const parentOptionIds = new Set(allSubGroups.map(g => cleanId(g.option_id)));
+                  const parentOptionIds = new Set(allSubGroups.map(parentKeyOfGroup));
                   for (const opt of sels) {
-                    const cleanOptId = cleanId(opt.id);
-                    if (parentOptionIds.has(cleanOptId)) {
-                      const childGroups = allSubGroups.filter(g => cleanId(g.option_id) === cleanOptId);
+                    const cleanOptId = cleanId(opt.id); const optParentKey = parentKeyOfOption(opt);
+                    if (parentOptionIds.has(optParentKey)) {
+                      const childGroups = allSubGroups.filter(g => parentKeyOfGroup(g) === optParentKey);
                       for (const cg of childGroups) {
                         if (isSoloMode && isStepHiddenInSolo(cg)) continue;
                         const min = cg.min_choices != null ? Number(cg.min_choices) : 0;
