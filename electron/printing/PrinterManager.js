@@ -292,6 +292,8 @@ async function getTargetPrinter(desiredPrinterName, mainWindow, role = 'caisse')
   let rolePrinterName = '';
   if (role === 'cuisine') {
     rolePrinterName = settings.imprimante_cuisine || settings.imprimante_caisse;
+  } else if (role === 'livraison') {
+    rolePrinterName = settings.imprimante_livraison || settings.imprimante_caisse;
   } else if (role === 'rapports') {
     rolePrinterName = settings.imprimante_rapports || settings.imprimante_caisse || settings.imprimante_cuisine;
   } else {
@@ -851,7 +853,8 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
     fontSize = '13px'; headerFontSize = '19px';
   }
 
-  const bodyPadding = settings.receipt_margin_type === 'standard' ? '6px 4mm 6px 2mm' : '2px 3mm 2px 1mm';
+  // 3 mm à gauche minimum : certains pilotes commencent la zone imprimable plus loin du bord
+  const bodyPadding = settings.receipt_margin_type === 'standard' ? '6px 3mm 6px 5mm' : '2px 2mm 2px 3mm';
 
   const showHeaderInfo = settings.show_header_info !== 'false';
   const showLogo = settings.show_logo !== 'false';
@@ -1064,7 +1067,6 @@ async function buildReceiptHtml(orderData, widthMm = '72') {
   let qrCodeHtml = '';
   if (showQrCode) {
     let qrUrl = settings.qr_code_custom_url || 'https://google.com';
-    if (settings.qr_code_type === 'tracking') qrUrl = `https://caisseapp.vercel.app/#/track/${cleanOrderNumber}`;
     try {
       const qrDataUrl = await QRCode.toDataURL(qrUrl, { margin: 1, width: 100 });
       qrCodeHtml = `
@@ -1277,7 +1279,12 @@ const PrinterManager = {
       copiesCount = Math.max(1, Math.min(5, Number(rawCopies) || 1));
     }
 
-    const targetPrinter = await getTargetPrinter(desiredPrinterName, mainWindow, role);
+    // Ticket client d'une livraison : sur l'imprimante livraison si elle est réglée
+    const isDeliveryTicket = !isKitchen && !isReport && !isDriverSettlement && rawType.includes('LIVRAISON');
+    const deliveryPrinterName = isDeliveryTicket ? String(settings.imprimante_livraison || '').trim() : '';
+    const targetPrinter = deliveryPrinterName
+      ? ((await getTargetPrinter(deliveryPrinterName, mainWindow, 'livraison')) || (await getTargetPrinter(desiredPrinterName, mainWindow, role)))
+      : await getTargetPrinter(desiredPrinterName, mainWindow, role);
     const deviceName = targetPrinter ? targetPrinter.name : '';
 
     const runSinglePrintJob = () => new Promise(async (resolve) => {

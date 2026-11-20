@@ -729,20 +729,9 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                       </label>
 
                       {showQrCode && (
-                        <div className="grid grid-cols-2 gap-4">
+                        <div>
                           <div>
-                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Type de QR Code</label>
-                            <select 
-                              value={qrCodeType}
-                              onChange={(e) => { setQrCodeType(e.target.value); setSecureSetting('qr_code_type', e.target.value); }}
-                              className="w-full bg-white border border-gray-300 rounded-xl px-3 py-2 text-sm font-bold text-secondary"
-                            >
-                              <option value="google">Avis Google / URL Custom</option>
-                              <option value="tracking">Suivi de commande</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">URL Cible</label>
+                            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Lien du QR code (avis Google, site, Instagram…)</label>
                             <input 
                               type="text" value={qrCodeUrl}
                               onChange={(e) => { setQrCodeUrl(e.target.value); setSecureSetting('qr_code_custom_url', e.target.value); }}

@@ -635,7 +635,8 @@ export const buildClientReceiptPayload = (params: {
       name: finalItemName,
       unitPrice: item.price !== undefined ? item.price : (item.product?.price || 0),
       notes,
-      categoryName: item.product?.category_name || item.category || ''
+      // Catégorie du produit (la caisse la range dans product.category) : sert au routage par catégorie
+      categoryName: item.product?.category_name || item.product?.category || item.category_name || item.category || ''
     };
   });
 
@@ -735,7 +736,8 @@ export const buildKitchenReceiptPayload = (params: {
       unitPrice: 0,
       notes,
       options: notes,
-      categoryName: item.product?.category_name || item.category || ''
+      // Catégorie du produit (la caisse la range dans product.category) : sert au routage par catégorie
+      categoryName: item.product?.category_name || item.product?.category || item.category_name || item.category || ''
     };
   });
 
