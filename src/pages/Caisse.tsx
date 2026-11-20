@@ -37,7 +37,7 @@ import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
 import PosSetup from '@/components/PosSetup';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 import { announceDevicePresence } from '@/lib/devicePresence';
-import { buildLoadedProduct, normalizeLinesForSave } from '@/lib/loadedOrderPricing';
+import { buildLoadedCartItem, normalizeLinesForSave, tillLineTotal, extractRealProductId } from '@/lib/loadedOrderPricing';
 
 export interface Product {
   id: number | string;
@@ -72,18 +72,6 @@ const ORDER_TYPE_CONFIG: Record<string, { label: string; icon: string }> = {
 };
 
 // 🟢 Extraction fiable de l'ID numérique produit (même sur 'loaded-15196-0-208' ou '208-var_12')
-const extractRealProductId = (rawId: any): number | string => {
-  if (typeof rawId === 'number') return rawId;
-  const str = String(rawId || '').trim();
-  if (!str) return '';
-  if (str.startsWith('loaded-')) {
-    const parts = str.split('-');
-    const last = parseInt(parts[parts.length - 1], 10);
-    if (!isNaN(last)) return last;
-  }
-  const first = parseInt(str.split('-')[0].replace(/^dyn_/, ''), 10);
-  return !isNaN(first) ? first : rawId;
-};
 
 // Erreur renvoyée par PostgREST/Postgres (a un code) vs coupure réseau (pas de code)
 const isDbRejection = (e: any): boolean =>
@@ -188,24 +176,8 @@ const hexToHslString = (hex: string) => {
   return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
 };
 
-const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
-  const groups = getFormattedOrderOptions(item, groupMapping);
-  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
-  
-  let basePrice = parseFloat(item.product?.price !== undefined ? item.product.price : (item.price || 0));
-
-  if (item.price !== undefined && item.product?.price !== undefined && optsPrice > 0) {
-    if (Math.abs(Number(item.price) - (Number(item.product.price) + optsPrice)) < 0.01) {
-      basePrice = Number(item.product.price);
-    }
-  } else if (item.price !== undefined && optsPrice > 0 && Number(item.price) > optsPrice && !item.product?.price) {
-    if (item.is_total_price || item.includes_options) {
-      basePrice = Math.max(0, Number(item.price) - optsPrice);
-    }
-  }
-
-  return (basePrice + optsPrice) * (item.quantity || 1);
-};
+// Total d'une ligne : calcul commun (aussi vérifié par « npm run verif:encaissement »)
+const getItemTotal = tillLineTotal;
 
 const getInitialRestaurantId = (): string | null => {
   const val = getSecureSetting('pos_restaurant_id', null);
@@ -1105,39 +1077,8 @@ const Caisse = () => {
 
     setTimeout(() => {
       items.forEach((item, idx) => {
-        const productObj = item.product || item;
-        const rawId = productObj.id ?? item.id;
-        const realProductId = extractRealProductId(rawId);
-        // Infos du catalogue (catégorie, réglages…) : utiles pour modifier la ligne, jamais pour son prix
-        const catalogProduct = menuData.find(p => String(p.id) === String(realProductId)) || null;
-
-        const rawSelections = item.rawSelections || productObj.rawSelections || null;
-        const selectedSubOptions = item.selectedSubOptions || productObj.selectedSubOptions || item.options || [];
-        const removedIngredients = item.removedIngredients || productObj.removedIngredients || [];
-        const isSolo = item.isSolo === true || item.product?.isSolo === true || item.is_solo === true || /\bseul\b/i.test(item.name || productObj.name || '');
-
-        const uniqueKey = `loaded-${orderId}-${idx}-${realProductId}`;
-
-        const formattedItem = {
-          ...item,
-          id: uniqueKey,
-          isSolo,
-          // Nom et prix de la commande conservés (variante, menu, seul) : le prix du catalogue ne les remplace pas
-          product: buildLoadedProduct(item, catalogProduct, {
-            isSolo,
-            rawSelections,
-            selectedSubOptions,
-            removedIngredients,
-            options: selectedSubOptions
-          }),
-          rawSelections,
-          selectedSubOptions,
-          removedIngredients,
-          quantity: item.quantity || 1,
-          cartKey: uniqueKey,
-          customKey: uniqueKey
-        };
-        addToCart(formattedItem);
+        // Ligne rouverte : calcul commun (aussi vérifié par « npm run verif:encaissement »)
+        addToCart(buildLoadedCartItem(item, idx, orderId, menuData));
       });
       customToast(`Commande #${orderId} chargée (${loadedOrderType || 'SUR PLACE'})`, "success");
     }, 150);

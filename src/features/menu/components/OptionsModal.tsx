@@ -156,6 +156,14 @@ const extractAllChoicesFromSource = (...sources: any[]): any[] => {
             groupId: val.groupId ?? opt.groupId
           });
         });
+      } else if (Array.isArray(val.sub_choices) && val.sub_choices.length > 0) {
+        // Option regroupée « Frites (Mayo, Blanche) » : on retrouve l'option seule (prix hors sauces)
+        // puis chaque sous-option, pour que la modification ne compte pas les sauces deux fois.
+        const subTotal = val.sub_choices.reduce((sum: number, c: any) => sum + (Number(c?.price) || 0), 0);
+        const own = (v: any) => (v === undefined || v === null || isNaN(Number(v)) ? v : Math.max(0, Math.round((Number(v) - subTotal) * 100) / 100));
+        const baseName = String(val.name || '').replace(/\s*\([^()]*\)\s*$/, '');
+        flat.push({ ...val, name: baseName, option_name: baseName, price: own(val.price), unit_price: own(val.unit_price), effective_price: own(val.effective_price), sub_choices: undefined });
+        val.sub_choices.forEach((c: any) => flat.push({ ...c, isSubOption: true }));
       } else if (val.id !== undefined || val.name !== undefined) {
         flat.push(val);
       } else {

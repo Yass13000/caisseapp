@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "noEmit": true,
+    "paths": {
+      "@/lib/supabaseClient": ["./stub-supabase.ts"],
+      "@/*": ["../../src/*"]
+    }
+  }
+}

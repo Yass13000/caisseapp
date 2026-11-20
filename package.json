@@ -8,6 +8,7 @@
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
+    "verif:encaissement": "TSX_TSCONFIG_PATH=scripts/verif-encaissement/tsconfig.json tsx scripts/verif-encaissement/run.ts",
     "dev": "vite",
     "build": "vite build",
     "build:dev": "vite build --mode development",

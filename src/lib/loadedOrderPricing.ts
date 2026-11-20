@@ -95,3 +95,156 @@ export const normalizeLinesForSave = (items: any[], groupMapping: Record<string,
     if (line.price !== undefined) out.price = base;
     return out;
   });
+
+// ─── Chemin complet d'une commande rouverte à la caisse ───────────────────────
+// Suivi des commandes → ticket → total. Utilisé par la caisse ET par le test
+// « npm run verif:encaissement » : le test vérifie donc exactement le code de la caisse.
+
+/** Lignes d'une commande, quel que soit le format enregistré. */
+export const extractOrderItems = (detailsRaw: any): any[] => {
+  try {
+    const parsed = typeof detailsRaw === 'string' ? JSON.parse(detailsRaw) : detailsRaw;
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && Array.isArray(parsed.items)) return parsed.items;
+    if (parsed && parsed.cart && Array.isArray(parsed.cart.items)) return parsed.cart.items;
+    if (parsed && parsed.cart && Array.isArray(parsed.cart)) return parsed.cart;
+    if (parsed) return [parsed];
+    return [];
+  } catch {
+    return [];
+  }
+};
+
+/** Nom affiché d'une ligne. */
+export const orderItemName = (item: any): string => {
+  if (!item) return 'Produit inconnu';
+  if (item.product && item.product.name) return item.product.name;
+  if (item.name) return item.name;
+  if (item.title) return item.title;
+  return 'Produit inconnu';
+};
+
+/** Suivi des commandes : lignes d'une commande préparées pour être rouvertes à la caisse. */
+export const mapOrderItemsForTill = (order: any, groupMapping: Record<string, string> = {}): any[] =>
+  extractOrderItems(order?.order_details).map((item: any, index: number) => {
+    const productObj = item.product || item;
+    // Commande déjà rouverte à la caisse : le nom complet (« Menu … », « … (6) ») est sur la ligne
+    const alreadyLoaded = String(item.id || '').startsWith('loaded-');
+    const productName = (alreadyLoaded && item.name) ? String(item.name) : orderItemName(item);
+    const isReward = item.isReward === true || item.is_reward === true;
+    const productPrice = isReward ? 0 : resolveBaseUnitPrice(item, groupMapping);
+
+    const rawId = productObj.id ?? item.id;
+    const parsed = typeof rawId === 'number' ? rawId : parseInt(String(rawId).split('-')[0], 10);
+    const realProductId = !isNaN(parsed) ? parsed : rawId;
+
+    const rawSelections = item.rawSelections || productObj.rawSelections || item.selections || productObj.selections || null;
+    const rawOptions = item.selectedSubOptions || productObj.selectedSubOptions || item.flatOptions || productObj.flatOptions || item.options || productObj.options || item.selectedOptions || productObj.selectedOptions || [];
+    const removedIngredients = item.removedIngredients || productObj.removedIngredients || [];
+    const isSolo = item.isSolo === true || productObj.isSolo === true || item.is_solo === true || productObj.is_solo === true;
+
+    const optionsHash = btoa(encodeURIComponent(JSON.stringify(rawOptions))).substring(0, 15);
+    const antiFusionId = `loaded-${order.id}-${index}-${realProductId}-${optionsHash}`;
+
+    return {
+      ...item,
+      id: antiFusionId,
+      customKey: antiFusionId,
+      cartKey: antiFusionId,
+      name: productName,
+      price: productPrice,
+      base_price: productPrice,
+      isSolo,
+      isReward,
+      product: {
+        ...productObj,
+        id: realProductId,
+        name: productName,
+        price: productPrice,
+        base_price: productPrice,
+        is_available: true,
+        category: productObj.category || '',
+        isSolo,
+        isReward,
+        rawSelections,
+        options: rawOptions,
+        selectedSubOptions: rawOptions,
+        flatOptions: rawOptions,
+        removedIngredients,
+      },
+      selectedSubOptions: rawOptions,
+      options: rawOptions,
+      flatOptions: rawOptions,
+      rawSelections,
+      removedIngredients,
+    };
+  });
+
+/** Identifiant produit réel à partir des différents formats d'identifiant de ligne. */
+export const extractRealProductId = (rawId: any): number | string => {
+  if (typeof rawId === 'number') return rawId;
+  const str = String(rawId || '').trim();
+  if (!str) return '';
+  if (str.startsWith('loaded-')) {
+    const parts = str.split('-');
+    const last = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(last)) return last;
+  }
+  const first = parseInt(str.split('-')[0].replace(/^dyn_/, ''), 10);
+  return !isNaN(first) ? first : rawId;
+};
+
+/** Ticket de caisse : une ligne de commande rouverte, prête à être ajoutée au panier. */
+export const buildLoadedCartItem = (item: any, idx: number, orderId: string | number, catalog: any[]): any => {
+  const productObj = item.product || item;
+  const rawId = productObj.id ?? item.id;
+  const realProductId = extractRealProductId(rawId);
+  // Infos du catalogue (catégorie, réglages…) : utiles pour modifier la ligne, jamais pour son prix
+  const catalogProduct = (catalog || []).find((p: any) => String(p.id) === String(realProductId)) || null;
+
+  const rawSelections = item.rawSelections || productObj.rawSelections || null;
+  const selectedSubOptions = item.selectedSubOptions || productObj.selectedSubOptions || item.options || [];
+  const removedIngredients = item.removedIngredients || productObj.removedIngredients || [];
+  const isSolo = item.isSolo === true || item.product?.isSolo === true || item.is_solo === true || /\bseul\b/i.test(item.name || productObj.name || '');
+
+  const uniqueKey = `loaded-${orderId}-${idx}-${realProductId}`;
+  return {
+    ...item,
+    id: uniqueKey,
+    isSolo,
+    // Nom et prix de la commande conservés (variante, menu, seul) : le prix du catalogue ne les remplace pas
+    product: buildLoadedProduct(item, catalogProduct, {
+      isSolo,
+      rawSelections,
+      selectedSubOptions,
+      removedIngredients,
+      options: selectedSubOptions,
+    }),
+    rawSelections,
+    selectedSubOptions,
+    removedIngredients,
+    quantity: item.quantity || 1,
+    cartKey: uniqueKey,
+    customKey: uniqueKey,
+  };
+};
+
+/** Total d'une ligne du ticket de caisse (prix hors options + options payantes) × quantité. */
+export const tillLineTotal = (item: any, groupMapping: Record<string, string> = {}): number => {
+  const groups = getFormattedOrderOptions(item, groupMapping);
+  const optsPrice = groups.flatMap((g) => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
+
+  let basePrice = parseFloat(item.product?.price !== undefined ? item.product.price : (item.price || 0));
+
+  if (item.price !== undefined && item.product?.price !== undefined && optsPrice > 0) {
+    if (Math.abs(Number(item.price) - (Number(item.product.price) + optsPrice)) < 0.01) {
+      basePrice = Number(item.product.price);
+    }
+  } else if (item.price !== undefined && optsPrice > 0 && Number(item.price) > optsPrice && !item.product?.price) {
+    if (item.is_total_price || item.includes_options) {
+      basePrice = Math.max(0, Number(item.price) - optsPrice);
+    }
+  }
+
+  return (basePrice + optsPrice) * (item.quantity || 1);
+};

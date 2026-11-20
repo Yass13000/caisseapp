@@ -23,7 +23,7 @@ import {
 import { toast } from 'sonner';
 import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload, stripComplementFromAddress } from '@/lib/orderFormatter';
 import { addLoyaltyPointsThreadSafe, getActiveRestoId } from '@/lib/loyaltyPoints';
-import { resolveBaseUnitPrice } from '@/lib/loadedOrderPricing';
+import { mapOrderItemsForTill, extractOrderItems, orderItemName } from '@/lib/loadedOrderPricing';
 import { PaymentModal } from '@/pages/Caisse';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 
@@ -85,29 +85,9 @@ const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   return (base + optsPrice) * qty;
 };
 
-// Extraction sécurisée des items de commande
-const extractItemsSafely = (detailsRaw: any) => {
-  try {
-    let parsed = typeof detailsRaw === 'string' ? JSON.parse(detailsRaw) : detailsRaw;
-    if (Array.isArray(parsed)) return parsed;
-    if (parsed && Array.isArray(parsed.items)) return parsed.items;
-    if (parsed && parsed.cart && Array.isArray(parsed.cart.items)) return parsed.cart.items;
-    if (parsed && parsed.cart && Array.isArray(parsed.cart)) return parsed.cart;
-    if (parsed) return [parsed];
-    return [];
-  } catch (e) {
-    return [];
-  }
-};
-
-// Extraction robuste du nom du produit
-const extractProductName = (item: any) => {
-  if (!item) return 'Produit inconnu';
-  if (item.product && item.product.name) return item.product.name;
-  if (item.name) return item.name;
-  if (item.title) return item.title;
-  return 'Produit inconnu';
-};
+// Lecture des lignes d'une commande : calcul commun de la caisse
+const extractItemsSafely = extractOrderItems;
+const extractProductName = orderItemName;
 
 // 🟢 Détection des commandes créées depuis la caisse (numéro commençant par C)
 const isCaisseOrder = (order: any): boolean => {
@@ -287,63 +267,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
   const handleSelectOrder = (order: any) => {
     let items = [];
     try {
-      const rawItems = extractItemsSafely(order.order_details);
-      
-      items = rawItems.map((item: any, index: number) => {
-         const productObj = item.product || item;
-         // Commande déjà rouverte à la caisse : le nom complet (« Menu … », « … (6) ») est sur la ligne
-         const alreadyLoaded = String(item.id || '').startsWith('loaded-');
-         const productName = (alreadyLoaded && item.name) ? String(item.name) : extractProductName(item);
-         const isReward = item.isReward === true || item.is_reward === true;
-         const rawBasePrice = resolveBaseUnitPrice(item, optionGroupMapping);
-         const productPrice = isReward ? 0 : rawBasePrice;
-
-         const rawId = productObj.id ?? item.id;
-         const parsed = typeof rawId === 'number' ? rawId : parseInt(String(rawId).split('-')[0], 10);
-         const realProductId = !isNaN(parsed) ? parsed : rawId;
-
-         const rawSelections = item.rawSelections || productObj.rawSelections || item.selections || productObj.selections || null;
-         const rawOptions = item.selectedSubOptions || productObj.selectedSubOptions || item.flatOptions || productObj.flatOptions || item.options || productObj.options || item.selectedOptions || productObj.selectedOptions || [];
-         const removedIngredients = item.removedIngredients || productObj.removedIngredients || [];
-         const isSolo = item.isSolo === true || productObj.isSolo === true || item.is_solo === true || productObj.is_solo === true;
-
-         const optionsString = JSON.stringify(rawOptions);
-         const optionsHash = btoa(encodeURIComponent(optionsString)).substring(0, 15);
-         const antiFusionId = `loaded-${order.id}-${index}-${realProductId}-${optionsHash}`;
-
-         return {
-             ...item,
-             id: antiFusionId,            
-             customKey: antiFusionId,     
-             cartKey: antiFusionId,       
-             name: productName,           
-             price: productPrice,
-             base_price: productPrice,
-             isSolo,
-             isReward,
-             product: { 
-               ...productObj,
-               id: realProductId, 
-               name: productName, 
-               price: productPrice,
-               base_price: productPrice,
-               is_available: true,
-               category: productObj.category || '',
-               isSolo,
-               isReward,
-               rawSelections,
-               options: rawOptions,
-               selectedSubOptions: rawOptions,
-               flatOptions: rawOptions,
-               removedIngredients
-             }, 
-             selectedSubOptions: rawOptions,
-             options: rawOptions,
-             flatOptions: rawOptions,
-             rawSelections,
-             removedIngredients
-         };
-      });
+      // Calcul commun (aussi vérifié par « npm run verif:encaissement »)
+      items = mapOrderItemsForTill(order, optionGroupMapping);
     } catch (e) {
       toast.error("Format de commande invalide");
       return;
