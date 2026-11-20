@@ -19,7 +19,7 @@ import {
   UserRound, CalendarDays, LayoutDashboard, AlertTriangle,
   CreditCard, Banknote, CheckCircle2, Store, ArchiveRestore,
   Calculator, Hourglass, Plus, RotateCcw, RotateCw,
-  X, Check, Equal, Receipt, ArrowLeftRight, Loader2
+  X, Check, Equal, Receipt, ArrowLeftRight, Loader2, MessageSquare
 } from 'lucide-react';
 
 // Composants
@@ -687,6 +687,55 @@ const Caisse = () => {
 
   const subtotal = cartState.items.reduce((total, item) => total + getItemTotal(item, optionGroupMapping), 0);
   const cartItemCount = cartState.items.reduce((sum, item) => sum + (item.quantity || 1), 0);
+
+  // Commentaire du ticket (bandeau sous les articles) → colonne « comment » de la commande
+  const [ticketComment, setTicketComment] = useState('');
+  const ticketCommentRef = useRef('');
+  ticketCommentRef.current = ticketComment;
+  // Ticket vidé (encaissé, mis en attente ou annulé) : le commentaire repart à zéro
+  const prevCartCountRef = useRef(cartItemCount);
+  useEffect(() => {
+    if (prevCartCountRef.current > 0 && cartItemCount === 0) setTicketComment('');
+    prevCartCountRef.current = cartItemCount;
+  }, [cartItemCount]);
+
+  // Compteur des commandes du jour en attente de paiement (même périmètre que le suivi des commandes)
+  const [pendingPaymentCount, setPendingPaymentCount] = useState(0);
+  useEffect(() => {
+    const restoId = getActiveRestaurantId() || RESTAURANT_ID;
+    if (!restoId || restoId === 'undefined' || restoId === 'null') return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    const refresh = async () => {
+      const now = new Date();
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).toISOString();
+      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString();
+      const { count, error } = await supabase
+        .from('orders')
+        .select('id', { count: 'exact', head: true })
+        .eq('restaurant_id', restoId)
+        .eq('is_paid', false)
+        .neq('status', 'Annulée')
+        .gte('created_at', start)
+        .lte('created_at', end);
+      if (!cancelled && !error) setPendingPaymentCount(count || 0);
+    };
+    const scheduleRefresh = () => { clearTimeout(timer); timer = setTimeout(refresh, 400); };
+    refresh();
+    const channel = supabase
+      .channel('caisse_pending_payment_count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `restaurant_id=eq.${restoId}` }, scheduleRefresh)
+      .subscribe();
+    // Retour sur la caisse (veille, autre fenêtre) : on se remet à jour
+    const onVisible = () => { if (document.visibilityState === 'visible') scheduleRefresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      supabase.removeChannel(channel);
+    };
+  }, []);
   const activeDeliveryFee = orderType === 'LIVRAISON' ? (parseFloat(deliveryFee) || 0) : 0;
   const finalTotal = subtotal + activeDeliveryFee;
 
@@ -1025,6 +1074,8 @@ const Caisse = () => {
       setOrderType(loadedOrderType as any);
     }
 
+    setTicketComment(String(loadedClientInfo?.comment || loadedClientInfo?.notes || ''));
+
     if (loadedClientInfo && Object.keys(loadedClientInfo).length > 0) {
       clientInfoRef.current = loadedClientInfo;
       setClientInfo(loadedClientInfo);
@@ -1237,6 +1288,7 @@ const Caisse = () => {
         customer_phone: effectiveClient?.phone || null,
         customer_address: effectiveClient?.address ? String(effectiveClient.address).trim() : null,
         customer_address_complement: getClientComplement(effectiveClient) || null,
+        comment: ticketCommentRef.current.trim() || effectiveClient?.comment || effectiveClient?.notes || null,
         order_number: targetOrderNumber,
         session_id: sessionId 
       };
@@ -1262,7 +1314,7 @@ const Caisse = () => {
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
           if (isKitchenTicketEnabled && (!loadedOrderId || !loadedOrderFromCaisseRef.current)) {
             setTimeout(async () => {
-              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, effectiveClient?.comment || effectiveClient?.notes || '');
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '');
             }, 500);
           }
 
@@ -1294,6 +1346,7 @@ const Caisse = () => {
             session_id: sessionId 
           };
 
+          updateData.comment = orderPayload.comment;
           if (effectiveClient?.name) updateData.customer_name = effectiveClient.name;
           if (effectiveClient?.phone) updateData.customer_phone = effectiveClient.phone;
           if (effectiveClient?.address) {
@@ -1342,7 +1395,7 @@ const Caisse = () => {
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
         if (isKitchenTicketEnabled && (!loadedOrderId || !loadedOrderFromCaisseRef.current)) {
           setTimeout(async () => {
-            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, effectiveClient?.comment || effectiveClient?.notes || '');
+            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '');
           }, 500);
         }
 
@@ -1376,7 +1429,7 @@ const Caisse = () => {
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
           if (isKitchenTicketEnabled && (!loadedOrderId || !loadedOrderFromCaisseRef.current)) {
             setTimeout(async () => {
-              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, effectiveClient?.comment || effectiveClient?.notes || '');
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '');
             }, 500);
           }
           
@@ -1438,6 +1491,7 @@ const Caisse = () => {
         customer_phone: effectiveClient?.phone || null,
         customer_address: effectiveClient?.address ? String(effectiveClient.address).trim() : null,
         customer_address_complement: getClientComplement(effectiveClient) || null,
+        comment: ticketCommentRef.current.trim() || effectiveClient?.comment || effectiveClient?.notes || null,
         order_number: targetOrderNumber,
         session_id: sessionId 
       };
@@ -1450,7 +1504,7 @@ const Caisse = () => {
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
           if (isKitchenTicketEnabled && !loadedOrderId) {
             setTimeout(async () => {
-              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '');
             }, 500);
           }
 
@@ -1481,6 +1535,7 @@ const Caisse = () => {
             session_id: sessionId 
           };
 
+          updateData.comment = orderPayload.comment;
           if (effectiveClient?.name) updateData.customer_name = effectiveClient.name;
           if (effectiveClient?.phone) updateData.customer_phone = effectiveClient.phone;
           if (effectiveClient?.address) {
@@ -1516,7 +1571,7 @@ const Caisse = () => {
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
         if (isKitchenTicketEnabled && !loadedOrderId) {
           setTimeout(async () => {
-            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping);
+            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '');
           }, 500);
         }
 
@@ -1840,6 +1895,24 @@ const Caisse = () => {
               </div>
             )}
 
+            <label className="mb-3 flex items-center gap-2 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-2.5 py-1.5 focus-within:border-solid focus-within:bg-white" style={{ borderColor: ticketComment ? themeColors.primary : undefined }}>
+              <MessageSquare size={14} className="shrink-0 text-gray-400" style={{ color: ticketComment ? themeColors.primary : undefined }} />
+              <input
+                type="text"
+                value={ticketComment}
+                onChange={e => setTicketComment(e.target.value)}
+                maxLength={200}
+                placeholder="Ajouter un commentaire…"
+                aria-label="Commentaire de la commande"
+                className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-gray-700 outline-none placeholder:font-normal placeholder:text-gray-400"
+              />
+              {ticketComment && (
+                <button type="button" onClick={() => setTicketComment('')} aria-label="Effacer le commentaire" className="shrink-0 text-gray-400 hover:text-gray-600 cursor-pointer">
+                  <X size={14} />
+                </button>
+              )}
+            </label>
+
             <div className="flex justify-between items-end mb-3">
               <span className="text-gray-400 font-bold text-xs uppercase tracking-wider">Total</span>
               <span className="text-2xl font-black whitespace-nowrap" style={{ color: themeColors.secondary }}>{finalTotal.toFixed(2)} €</span>
@@ -1892,7 +1965,37 @@ const Caisse = () => {
             <div className="w-full h-px bg-white/10 my-1"></div>
             
             <button onClick={() => setIsDashboardOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><LayoutDashboard size={24} /></button>
-            <button onClick={() => setIsOrderTrackerOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><ClipboardList size={24} /></button>
+            <button
+              onClick={() => setIsOrderTrackerOpen(true)}
+              className={`${rightBarBtnClass} relative`}
+              style={{ color: themeColors.primary }}
+              title={pendingPaymentCount > 0 ? `${pendingPaymentCount} commande${pendingPaymentCount > 1 ? 's' : ''} en attente de paiement` : 'Suivi des commandes'}
+            >
+              <ClipboardList size={24} />
+              <AnimatePresence>
+                {pendingPaymentCount > 0 && (
+                  <motion.span
+                    key="pending-badge"
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    exit={{ scale: 0 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 18 }}
+                    className="pointer-events-none absolute -right-1.5 -top-1.5 flex h-6 min-w-6 items-center justify-center"
+                  >
+                    <span className="absolute inset-0 animate-ping rounded-full bg-red-500 opacity-60" />
+                    <motion.span
+                      key={pendingPaymentCount}
+                      initial={{ scale: 1.5 }}
+                      animate={{ scale: 1 }}
+                      transition={{ type: 'spring', stiffness: 600, damping: 15 }}
+                      className="relative flex h-6 min-w-6 items-center justify-center rounded-full bg-red-600 px-1.5 text-[12px] font-black leading-none text-white shadow-md ring-2 ring-white"
+                    >
+                      {pendingPaymentCount > 99 ? '99+' : pendingPaymentCount}
+                    </motion.span>
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </button>
             <button onClick={() => setIsHistoryOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><History size={24} /></button>
             <button onClick={() => openCashDrawer(false)} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Ouvrir le tiroir caisse"><ArchiveRestore size={24} /></button>
             

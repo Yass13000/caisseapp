@@ -1117,7 +1117,11 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
       });
   }, []);
 
+  // Compteur de choix faits dans la fenêtre des sous-options (sert à la validation automatique)
+  const [bubbleTick, setBubbleTick] = useState(0);
+
   const handleBubbleChoice = (stepId: string, choice: any, max: number, allowMultiple: boolean) => {
+      setBubbleTick(t => t + 1);
       setStepSelections(prev => {
           const currentSels = prev[stepId] || [];
           const isAlreadySelected = currentSels.some(s => cleanId(s.id) === cleanId(choice.id));
@@ -1175,16 +1179,43 @@ const OptionsModal = ({ product, onAddToCart, onClose, initialSelections }: any)
               childGroups.forEach(cg => { newState[`sub_${cg.id}`] = []; });
           });
 
+          // Option complète : on passe à l'étape suivante une fois la sélection enregistrée
           if (newSels.length >= max && currentSels.length < max) {
-            setTimeout(() => {
-                handleNextStep();
-            }, 200);
+            pendingAdvanceRef.current = true;
           }
           
           return newState;
       });
       setBubbleOption(null);
   };
+
+  // Passage à l'étape suivante après validation des sous-options : lancé APRÈS l'enregistrement
+  // de la sélection, avec l'état à jour (sinon la dernière étape ne se validait pas)
+  const pendingAdvanceRef = useRef(false);
+  const handleNextStepRef = useRef(handleNextStep);
+  handleNextStepRef.current = handleNextStep;
+  useEffect(() => {
+    if (!pendingAdvanceRef.current) return;
+    const timer = setTimeout(() => {
+      if (!pendingAdvanceRef.current) return;
+      pendingAdvanceRef.current = false;
+      handleNextStepRef.current();
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [stepSelections]);
+
+  // Maximum atteint dans toutes les questions de la fenêtre : on valide et on passe à la suite
+  useEffect(() => {
+    if (!bubbleTick || !bubbleOption) return;
+    const allAtMax = bubbleOption.childGroups.every((group: any) => {
+      const max = Number(group.max_choices) || 1;
+      return (stepSelections[`sub_${group.id}`] || []).length >= max;
+    });
+    if (!allAtMax) return;
+    const timer = setTimeout(() => validateBubble(), 250);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bubbleTick]);
 
   const total = useMemo(() => {
     const originalCatalogPrice = Number(product.original_base_price ?? product.base_price ?? product.product?.price ?? product.price ?? 0);
