@@ -44,6 +44,12 @@ const normalizePaymentMethod = (rawMethod?: string): string => {
 
 // --- GÉNÉRATEUR DE SIGNATURE (ANTI-FUSION) ---
 const generateCartKey = (payload: any) => {
+    // Ligne d'une commande rechargée (borne, app, caisse) : elle garde sa propre clé et n'est jamais
+    // fusionnée avec une autre. Sans ça, « Nuggets (6) » et « Nuggets (12) » (même produit, sans option)
+    // devenaient une seule ligne « ×2 » au prix de la première.
+    const loadedKey = [payload?.cartKey, payload?.id].find((k: any) => typeof k === 'string' && k.startsWith('loaded-'));
+    if (loadedKey) return loadedKey;
+
     const productId = payload.product ? payload.product.id : payload.id;
     const optIds: string[] = [];
 
