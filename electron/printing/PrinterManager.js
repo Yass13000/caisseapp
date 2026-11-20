@@ -1307,14 +1307,28 @@ const PrinterManager = {
 
         printWindow.shadowWindow = printWindow;
 
+        // Pilote qui ne répond jamais : on ferme la fenêtre cachée au bout de 30 s
+        // (sinon elle garde l'application ouverte en arrière-plan)
+        let settled = false;
+        const watchdog = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try { if (printWindow && !printWindow.isDestroyed()) printWindow.destroy(); } catch (e) {}
+          printWindow = null;
+          resolve({ success: false, error: "Délai dépassé (30 s) : l'imprimante ne répond pas" });
+        }, 30000);
+
         printWindow.webContents.print({
           silent: true,
           printBackground: true,
           deviceName: deviceName,
           margins: { marginType: 'none' }
         }, (success, failureReason) => {
+          clearTimeout(watchdog);
+          if (settled) return;
+          settled = true;
           try {
-            printWindow.destroy();
+            if (printWindow && !printWindow.isDestroyed()) printWindow.destroy();
             printWindow = null;
           } catch (e) {}
 

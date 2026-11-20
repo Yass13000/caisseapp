@@ -89,6 +89,13 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
+
+  // Fenêtre principale fermée = application fermée, même si une fenêtre d'impression cachée
+  // est restée ouverte (pilote qui ne répond pas) : sinon l'installateur croit l'app ouverte.
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    app.quit();
+  });
 }
 
 app.whenReady().then(() => {

@@ -4,7 +4,7 @@
   "description": "Application de caisse enregistreuse tactile haute performance",
   "author": "Votre Nom",
   "private": true,
-  "version": "1.2.2",
+  "version": "1.2.3",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
@@ -172,7 +172,8 @@
       "installerHeaderIcon": "build/icon.ico",
       "license": "LICENSE.txt",
       "runAfterFinish": true,
-      "shortcutName": "Yaiba Caisse"
+      "shortcutName": "Yaiba Caisse",
+      "include": "build/installer.nsh"
     },
     "portable": {
       "artifactName": "${productName}-Portable-${version}.${ext}"
