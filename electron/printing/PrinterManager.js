@@ -561,7 +561,7 @@ function buildKitchenHtml(orderData, widthMm = '72') {
           html, body { 
             font-family: Arial, Helvetica, sans-serif; 
             margin: 0; 
-            padding: 2px 3mm 2px 1mm; 
+            padding: 2px 2mm 2px 3mm; 
             width: ${bodyWidth}; 
             max-width: ${bodyWidth}; 
             height: auto; 
@@ -623,7 +623,7 @@ function buildDriverSettlementHtml(data, widthMm = '72') {
             font-family: Arial, Helvetica, sans-serif;
             font-size: ${fontSize};
             margin: 0;
-            padding: 2px 3mm 2px 1mm;
+            padding: 2px 2mm 2px 3mm;
             width: ${bodyWidth};
             max-width: ${bodyWidth};
             height: auto;
@@ -709,7 +709,7 @@ function buildZReportHtml(reportData, widthMm = '72') {
             font-family: Arial, Helvetica, sans-serif; 
             font-size: ${fontSize}; 
             margin: 0; 
-            padding: 2px 3mm 2px 1mm; 
+            padding: 2px 2mm 2px 3mm; 
             width: ${bodyWidth}; 
             max-width: ${bodyWidth};
             height: auto;
