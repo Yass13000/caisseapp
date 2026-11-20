@@ -19,7 +19,7 @@ import {
   UserRound, CalendarDays, LayoutDashboard, AlertTriangle,
   CreditCard, Banknote, CheckCircle2, Store, ArchiveRestore,
   Calculator, Hourglass, Plus, RotateCcw, RotateCw,
-  X, Check, Equal, Receipt, ArrowLeftRight, Loader2, MessageSquare
+  X, Check, Equal, Receipt, ArrowLeftRight, Loader2, MessageSquare, Ticket
 } from 'lucide-react';
 
 // Composants
@@ -297,7 +297,8 @@ const generateAndPrintKitchenTicket = async (
   }
 };
 
-type PayMethod = 'CB' | 'Espèces';
+// TR = titre-restaurant (Swile, Edenred, Up, Pluxee…)
+type PayMethod = 'CB' | 'Espèces' | 'TR';
 type PayLine = { id: number; method: PayMethod; amount: number; tendered: number }; // centimes
 
 const toCents = (v: number) => Math.round((Number(v) || 0) * 100);
@@ -328,13 +329,15 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
     const sum = finalLines.reduce((s, l) => s + l.amount, 0);
     if (sum !== totalCents) return;
     confirmLockRef.current = true;
-    const label = (m: PayMethod) => (m === 'CB' ? 'Carte bancaire' : 'Espèces');
-    const merged = (['CB', 'Espèces'] as PayMethod[])
+    const label = (m: PayMethod) => (m === 'CB' ? 'Carte bancaire' : m === 'TR' ? 'Titre restaurant' : 'Espèces');
+    const merged = (['CB', 'Espèces', 'TR'] as PayMethod[])
       .map(m => ({ m, c: finalLines.filter(l => l.method === m).reduce((s, l) => s + l.amount, 0) }))
       .filter(x => x.c > 0);
     // payment_method est un varchar(50) : un total par mode, libellé court (max ~46 car.)
+    const split = (short: boolean) =>
+      `Fractionné (${merged.map(x => `${short && x.m === 'Espèces' ? 'ESP' : x.m}: ${(x.c / 100).toFixed(2)}€`).join(' + ')})`;
     const method = merged.length > 1
-      ? `Fractionné (${merged.map(x => `${x.m}: ${(x.c / 100).toFixed(2)}€`).join(' + ')})`
+      ? (split(false).length <= 50 ? split(false) : split(true))
       : label(merged[0].m);
     const cash = (merged.find(x => x.m === 'Espèces')?.c || 0) / 100;
     Promise.resolve(onConfirm(method, cash)).finally(() => { confirmLockRef.current = false; });
@@ -344,7 +347,7 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
     if (busy || remainingCents <= 0) return;
     const asked = inputCents > 0 ? inputCents : remainingCents;
     const amount = Math.min(asked, remainingCents);
-    // CB : jamais plus que le reste. Espèces : on garde le montant remis pour calculer le rendu.
+    // CB et titre-restaurant : jamais plus que le reste (pas de rendu). Espèces : on garde le montant remis pour calculer le rendu.
     const tendered = method === 'Espèces' ? asked : amount;
     const next = [...lines, { id: ++lineIdRef.current, method, amount, tendered }];
     setLines(next);
@@ -458,7 +461,9 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
                 >
                   {l.method === 'CB'
                     ? <CreditCard size={20} className="text-blue-600 flex-shrink-0" />
-                    : <Banknote size={20} className="flex-shrink-0" style={{ color: primary }} />}
+                    : l.method === 'TR'
+                      ? <Ticket size={20} className="text-orange-500 flex-shrink-0" />
+                      : <Banknote size={20} className="flex-shrink-0" style={{ color: primary }} />}
                   <div className="flex-1 min-w-0">
                     <div className="font-black text-secondary tabular-nums">{fmtCents(l.amount)} €</div>
                     {l.tendered > l.amount && (
@@ -538,7 +543,7 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 h-20 flex-shrink-0">
+          <div className="grid grid-cols-3 gap-3 h-20 flex-shrink-0">
             <button
               onClick={() => addLine('CB')}
               disabled={busy || isComplete}
@@ -557,6 +562,19 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
             >
               <Banknote size={30} />
               <span className="text-xl font-black tabular-nums opacity-90">{fmtCents(inputCents || remainingCents)}</span>
+            </button>
+            <button
+              onClick={() => addLine('TR')}
+              disabled={busy || isComplete}
+              aria-label="Titre restaurant"
+              title="Titre restaurant (Swile, Edenred, Up, Pluxee…)"
+              className="rounded-2xl bg-orange-500 text-white flex flex-col items-center justify-center active:scale-[0.97] transition-transform shadow-md cursor-pointer disabled:opacity-40"
+            >
+              <span className="flex items-center gap-2">
+                <Ticket size={26} />
+                <span className="text-xl font-black tabular-nums opacity-90">{fmtCents(Math.min(inputCents || remainingCents, remainingCents))}</span>
+              </span>
+              <span className="text-[10px] font-black uppercase tracking-wider opacity-90">Titre resto</span>
             </button>
           </div>
         </div>

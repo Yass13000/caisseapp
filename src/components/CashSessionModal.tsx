@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { 
   X, Calculator, Printer, Lock, CheckCircle2, AlertTriangle, 
-  Banknote, CreditCard, Receipt, Plus, RotateCcw, ArrowRight
+  Banknote, CreditCard, Receipt, Plus, RotateCcw, ArrowRight, Ticket
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -102,8 +102,12 @@ const CashSessionModal = ({
         // ⚠️ Le fractionné doit être testé EN PREMIER : son libellé contient aussi "Carte bancaire"
         if (method.includes('fractionn') || method.includes('mixte')) {
           const cashPart = round2(Math.min(amount, o.cash_amount || 0));
-          const cardPart = round2(Math.max(0, amount - cashPart));
+          // Part titre-restaurant inscrite dans le libellé, ex. « Fractionné (CB: 10.00€ + TR: 9.00€) »
+          const trMatch = method.match(/\btr:\s*([0-9]+(?:[.,][0-9]+)?)/);
+          const trPart = round2(Math.min(Math.max(0, amount - cashPart), trMatch ? parseFloat(trMatch[1].replace(',', '.')) || 0 : 0));
+          const cardPart = round2(Math.max(0, amount - cashPart - trPart));
           totalCash = round2(totalCash + cashPart);
+          totalTicketResto = round2(totalTicketResto + trPart);
           totalCard = round2(totalCard + cardPart);
           cardSalesCaisse = round2(cardSalesCaisse + cardPart);
         } else if (method.includes('carte') || method.includes('cb') || method.includes('card') || method.includes('sumup')) {
@@ -113,7 +117,7 @@ const CashSessionModal = ({
           else cardSalesCaisse = round2(cardSalesCaisse + amount);
         } else if (method === 'counter' || method.includes('espece') || method.includes('cash')) {
           totalCash = round2(totalCash + amount);
-        } else if (method.includes('ticket') || method.includes('resto')) {
+        } else if (method.includes('titre') || method.includes('ticket') || method.includes('resto')) {
           totalTicketResto = round2(totalTicketResto + amount);
         } else {
           totalCash = round2(totalCash + amount);
@@ -408,7 +412,7 @@ const CashSessionModal = ({
             <div className="space-y-5">
               
               {/* Synthèse financière */}
-              <div className="grid grid-cols-4 gap-3">
+              <div className={`grid gap-3 ${sessionReport.totalTicketResto > 0 ? 'grid-cols-5' : 'grid-cols-4'}`}>
                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
                   <span className="text-slate-400 font-medium text-[11px] block mb-1">Chiffre d'Affaires</span>
                   <div className="text-2xl font-bold text-slate-900">{sessionReport.totalSales.toFixed(2)} €</div>
@@ -430,6 +434,16 @@ const CashSessionModal = ({
                   <div className="text-2xl font-bold text-blue-600">{sessionReport.totalCard.toFixed(2)} €</div>
                   <div className="text-[10px] text-slate-500 mt-1">TPE & Bornes</div>
                 </div>
+
+                {sessionReport.totalTicketResto > 0 && (
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+                    <span className="text-slate-400 font-medium text-[11px] flex items-center gap-1 mb-1">
+                      <Ticket size={13} className="text-orange-500" /> Titres resto
+                    </span>
+                    <div className="text-2xl font-bold text-orange-600">{sessionReport.totalTicketResto.toFixed(2)} €</div>
+                    <div className="text-[10px] text-slate-500 mt-1">Swile, Edenred, Up…</div>
+                  </div>
+                )}
 
                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
                   <span className="text-slate-400 font-medium text-[11px] block mb-1">Fond initial</span>
