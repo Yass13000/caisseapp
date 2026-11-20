@@ -7,6 +7,7 @@ import https from 'https';
 import http from 'http';
 import { exec } from 'child_process';
 import QRCode from 'qrcode';
+import { printHtmlAsImage, VIRTUAL_PRINTER } from './rasterPrint.js';
 
 const { BrowserWindow, app } = electron;
 
@@ -1331,6 +1332,18 @@ const PrinterManager = {
       }
     });
 
+    // Impression directe en image (ticket net, rien de coupé), pilote Windows en secours.
+    // Réglage « print_mode: driver » pour forcer l'ancien mode si une imprimante ne suit pas.
+    if (process.platform === 'win32' && deviceName && !VIRTUAL_PRINTER.test(deviceName) && settings.print_mode !== 'driver') {
+      try {
+        const direct = await printHtmlAsImage(htmlContent, deviceName, { paperWidthMm: widthMm, copies: copiesCount });
+        if (direct.success) return { success: true, printerName: deviceName };
+        console.warn(`[PrinterManager] Impression directe impossible sur "${deviceName}", passage par le pilote :`, direct.error);
+      } catch (err) {
+        console.warn(`[PrinterManager] Impression directe impossible sur "${deviceName}", passage par le pilote :`, err && err.message);
+      }
+    }
+
     let lastResult = { success: false };
     for (let i = 0; i < copiesCount; i++) {
       lastResult = await runSinglePrintJob();
@@ -1416,4 +1429,4 @@ const PrinterManager = {
 };
 
 export default PrinterManager;
-export { PrinterManager };
+export { PrinterManager };export { buildReceiptHtml };
