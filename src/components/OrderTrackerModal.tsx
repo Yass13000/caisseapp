@@ -23,6 +23,7 @@ import {
 import { toast } from 'sonner';
 import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload, stripComplementFromAddress } from '@/lib/orderFormatter';
 import { addLoyaltyPointsThreadSafe, getActiveRestoId } from '@/lib/loyaltyPoints';
+import { resolveBaseUnitPrice } from '@/lib/loadedOrderPricing';
 import { PaymentModal } from '@/pages/Caisse';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 
@@ -106,30 +107,6 @@ const extractProductName = (item: any) => {
   if (item.name) return item.name;
   if (item.title) return item.title;
   return 'Produit inconnu';
-};
-
-// 🟢 Extraction robuste du prix de base pour ouverture en caisse
-const extractProductPrice = (item: any, groupMapping: Record<string, string> = {}) => {
-  if (!item) return 0;
-  if (item.isReward || item.is_reward) return 0;
-
-  if (item.base_price !== undefined && item.base_price !== null && !isNaN(Number(item.base_price))) {
-    return parseFloat(item.base_price);
-  }
-  if (item.product?.base_price !== undefined && item.product?.base_price !== null && !isNaN(Number(item.product.base_price))) {
-    return parseFloat(item.product.base_price);
-  }
-
-  const groups = getFormattedOrderOptions(item, groupMapping);
-  const optsPrice = groups.flatMap(g => g.items).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
-
-  const rawPrice = parseFloat(item.price ?? item.unit_price ?? item.product?.price ?? 0);
-
-  if (rawPrice > 0 && optsPrice > 0 && rawPrice >= optsPrice) {
-    return Math.max(0, rawPrice - optsPrice);
-  }
-
-  return rawPrice;
 };
 
 // 🟢 Détection des commandes créées depuis la caisse (numéro commençant par C)
@@ -314,9 +291,11 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       
       items = rawItems.map((item: any, index: number) => {
          const productObj = item.product || item;
-         const productName = extractProductName(item);
+         // Commande déjà rouverte à la caisse : le nom complet (« Menu … », « … (6) ») est sur la ligne
+         const alreadyLoaded = String(item.id || '').startsWith('loaded-');
+         const productName = (alreadyLoaded && item.name) ? String(item.name) : extractProductName(item);
          const isReward = item.isReward === true || item.is_reward === true;
-         const rawBasePrice = extractProductPrice(item, optionGroupMapping);
+         const rawBasePrice = resolveBaseUnitPrice(item, optionGroupMapping);
          const productPrice = isReward ? 0 : rawBasePrice;
 
          const rawId = productObj.id ?? item.id;

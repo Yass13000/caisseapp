@@ -37,6 +37,7 @@ import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
 import PosSetup from '@/components/PosSetup';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 import { announceDevicePresence } from '@/lib/devicePresence';
+import { buildLoadedProduct, normalizeLinesForSave } from '@/lib/loadedOrderPricing';
 
 export interface Product {
   id: number | string;
@@ -1107,7 +1108,8 @@ const Caisse = () => {
         const productObj = item.product || item;
         const rawId = productObj.id ?? item.id;
         const realProductId = extractRealProductId(rawId);
-        const fullProduct = menuData.find(p => String(p.id) === String(realProductId)) || productObj;
+        // Infos du catalogue (catégorie, réglages…) : utiles pour modifier la ligne, jamais pour son prix
+        const catalogProduct = menuData.find(p => String(p.id) === String(realProductId)) || null;
 
         const rawSelections = item.rawSelections || productObj.rawSelections || null;
         const selectedSubOptions = item.selectedSubOptions || productObj.selectedSubOptions || item.options || [];
@@ -1120,14 +1122,14 @@ const Caisse = () => {
           ...item,
           id: uniqueKey,
           isSolo,
-          product: {
-            ...fullProduct,
+          // Nom et prix de la commande conservés (variante, menu, seul) : le prix du catalogue ne les remplace pas
+          product: buildLoadedProduct(item, catalogProduct, {
             isSolo,
             rawSelections,
             selectedSubOptions,
             removedIngredients,
             options: selectedSubOptions
-          },
+          }),
           rawSelections,
           selectedSubOptions,
           removedIngredients,
@@ -1278,7 +1280,8 @@ const Caisse = () => {
       }
       
       const activeRestoId = getActiveRestaurantId();
-      const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
+      // Montants de chaque ligne recalculés à l'enregistrement (jamais d'ancien total périmé)
+      const cleanOrderDetails = normalizeLinesForSave(JSON.parse(JSON.stringify(cartState.items)), optionGroupMapping);
       const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
       let targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
 
@@ -1484,7 +1487,8 @@ const Caisse = () => {
       }
       
       const activeRestoId = getActiveRestaurantId();
-      const cleanOrderDetails = JSON.parse(JSON.stringify(cartState.items));
+      // Montants de chaque ligne recalculés à l'enregistrement (jamais d'ancien total périmé)
+      const cleanOrderDetails = normalizeLinesForSave(JSON.parse(JSON.stringify(cartState.items)), optionGroupMapping);
       const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
       let targetOrderNumber = `C${String(Date.now()).slice(-4)}`;
       const effectiveClient = clientInfoRef.current || clientInfo;
