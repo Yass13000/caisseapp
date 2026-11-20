@@ -335,7 +335,7 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
       .filter(x => x.c > 0);
     // payment_method est un varchar(50) : un total par mode, libellé court (max ~46 car.)
     const split = (short: boolean) =>
-      `Fractionné (${merged.map(x => `${short && x.m === 'Espèces' ? 'ESP' : x.m}: ${(x.c / 100).toFixed(2)}€`).join(' + ')})`;
+      `Fractionné (${merged.map(x => `${short && x.m === 'Espèces' ? 'ESP' : x.m}: ${(x.c / 100).toFixed(2)}${short ? '' : '€'}`).join(' + ')})`;
     const method = merged.length > 1
       ? (split(false).length <= 50 ? split(false) : split(true))
       : label(merged[0].m);
