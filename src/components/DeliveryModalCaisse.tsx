@@ -25,6 +25,38 @@ const splitAddress = (fullAddress: string) => {
   return { num: '', street: clean }; 
 };
 
+// Recherche d'adresse (API Adresse du gouvernement) limitée autour du restaurant.
+// L'API classe d'abord les adresses proches du point lat/lon ; on retire ensuite
+// celles qui sont au-delà du rayon (zone de livraison la plus large + 3 km de marge).
+const ADDRESS_API = 'https://api-adresse.data.gouv.fr/search/';
+const DEFAULT_RADIUS_KM = 20;
+
+const searchAddresses = async (
+  text: string,
+  opts: { limit: number; autocomplete?: boolean; center?: { lat: number; lng: number } | null; radiusKm?: number | null }
+): Promise<any[]> => {
+  const { limit, autocomplete = false, center = null, radiusKm = null } = opts;
+  const params = new URLSearchParams({ q: text, limit: String(center ? Math.max(limit, 15) : limit) });
+  if (autocomplete) params.set('autocomplete', '1');
+  if (center) {
+    params.set('lat', String(center.lat));
+    params.set('lon', String(center.lng));
+  }
+  const res = await fetch(`${ADDRESS_API}?${params.toString()}`);
+  const data = await res.json();
+  const features: any[] = data?.features || [];
+  if (!center) return features.slice(0, limit);
+  const withDistance = features.map((f) => {
+    const [lng, lat] = f.geometry.coordinates;
+    return { ...f, _distanceKm: calculateDistance(center.lat, center.lng, lat, lng) };
+  });
+  const maxKm = radiusKm && radiusKm > 0 ? radiusKm : DEFAULT_RADIUS_KM;
+  return withDistance
+    .filter((f) => f._distanceKm <= maxKm)
+    .sort((a, b) => a._distanceKm - b._distanceKm)
+    .slice(0, limit);
+};
+
 const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
   const R = 6371; 
   const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -84,6 +116,10 @@ export const DeliveryModalCaisse = ({
   // Resto & Zones
   const [restoCoords, setRestoCoords] = useState<{lat: number, lng: number} | null>(null);
   const [deliveryZones, setDeliveryZones] = useState<any[]>([]);
+  // Rayon de recherche : zone de livraison la plus large + 3 km (pour voir aussi les adresses juste hors zone)
+  const searchRadiusKm = deliveryZones.length
+    ? Math.max(...deliveryZones.map((z: any) => parseFloat(z.max_distance_km) || 0)) + 3
+    : null;
   const [isRestoGeolocated, setIsRestoGeolocated] = useState<boolean>(false);
 
   // Chargement initial des données
@@ -233,12 +269,11 @@ export const DeliveryModalCaisse = ({
       setCalcStatus({ msg: "Vérification adresse...", isError: false });
       
       try {
-        const safeQuery = encodeURIComponent(client.address.trim());
-        const res = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${safeQuery}&limit=1`);
-        const data = await res.json();
+        // Adresse déjà connue : on garde la plus proche du restaurant (sans couper par distance)
+        const found = await searchAddresses(client.address.trim(), { limit: 1, center: restoCoords, radiusKm: 1000 });
         
-        if (data.features && data.features.length > 0) {
-          const [lng, lat] = data.features[0].geometry.coordinates;
+        if (found.length > 0) {
+          const [lng, lat] = found[0].geometry.coordinates;
           processCalculations(lat, lng);
         } else {
           setCalcStatus({ msg: "Adresse introuvable sur le GPS.", isError: true });
@@ -274,9 +309,8 @@ export const DeliveryModalCaisse = ({
 
     searchTimeoutRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(text)}&autocomplete=1&limit=5`);
-        const data = await res.json();
-        setSuggestions(data.features || []);
+        const found = await searchAddresses(text, { limit: 5, autocomplete: true, center: restoCoords, radiusKm: searchRadiusKm });
+        setSuggestions(found);
         setShowSuggestions(true);
       } catch (err) { console.error("Erreur API Gouv", err); }
     }, 300);
@@ -326,12 +360,11 @@ export const DeliveryModalCaisse = ({
     setCalcStatus({ msg: "Recherche GPS...", isError: false });
 
     try {
-      const safeQuery = encodeURIComponent(addressToTest);
-      const res = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${safeQuery}&limit=1`);
-      const data = await res.json();
+      // La plus proche du restaurant parmi les adresses trouvées (sans couper : le calcul dira « hors zone »)
+      const found = await searchAddresses(addressToTest, { limit: 1, center: restoCoords, radiusKm: 1000 });
       
-      if (data.features && data.features.length > 0) {
-        const [lng, lat] = data.features[0].geometry.coordinates;
+      if (found.length > 0) {
+        const [lng, lat] = found[0].geometry.coordinates;
         processCalculations(lat, lng, "Calcul forcé réussi");
       } else {
         setCalcStatus({ msg: "Adresse introuvable sur le GPS.", isError: true });
@@ -697,12 +730,20 @@ export const DeliveryModalCaisse = ({
                         />
                         {isCheckingDistance && <Loader2 className="absolute right-3 top-2.5 w-4 h-4 animate-spin text-gray-400"/>}
                         
+                        {showSuggestions && suggestions.length === 0 && query.length >= 3 && restoCoords && (
+                          <div className="absolute top-[42px] left-0 w-full bg-white border border-gray-200 rounded-lg shadow-xl z-50 px-3 py-2 text-[11px] font-bold text-gray-400">
+                            Aucune adresse trouvée autour du restaurant ({searchRadiusKm ? Math.round(searchRadiusKm) : DEFAULT_RADIUS_KM} km)
+                          </div>
+                        )}
                         {showSuggestions && suggestions.length > 0 && (
                           <ul className="absolute top-[42px] left-0 w-full bg-white border border-gray-200 rounded-lg shadow-xl z-50 overflow-hidden">
                             {suggestions.map((feature, i) => (
                               <li key={i} onClick={() => handleSelectAddress(feature)} className="px-3 py-2 hover:bg-gray-50 cursor-pointer border-b border-gray-50">
                                 <div className="font-bold text-xs text-secondary">{feature.properties.name}</div>
-                                <div className="text-[10px] text-gray-400">{feature.properties.postcode} {feature.properties.city}</div>
+                                <div className="text-[10px] text-gray-400">
+                                  {feature.properties.postcode} {feature.properties.city}
+                                  {typeof feature._distanceKm === 'number' ? ` · ${feature._distanceKm.toFixed(1)} km` : ''}
+                                </div>
                               </li>
                             ))}
                           </ul>
