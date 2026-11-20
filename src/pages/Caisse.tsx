@@ -1221,6 +1221,11 @@ const Caisse = () => {
       }
       
       const activeRestoId = getActiveRestaurantId();
+      // Jamais de commande sans restaurant (invisible dans l'admin, la cuisine et le Z)
+      if (!activeRestoId) {
+        customToast("Caisse non reliée à un restaurant : reconnectez-la dans les réglages", "error");
+        return;
+      }
       // Montants de chaque ligne recalculés à l'enregistrement (jamais d'ancien total périmé)
       const cleanOrderDetails = normalizeLinesForSave(JSON.parse(JSON.stringify(cartState.items)), optionGroupMapping);
       const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
@@ -1428,6 +1433,11 @@ const Caisse = () => {
       }
       
       const activeRestoId = getActiveRestaurantId();
+      // Jamais de commande sans restaurant (invisible dans l'admin, la cuisine et le Z)
+      if (!activeRestoId) {
+        customToast("Caisse non reliée à un restaurant : reconnectez-la dans les réglages", "error");
+        return;
+      }
       // Montants de chaque ligne recalculés à l'enregistrement (jamais d'ancien total périmé)
       const cleanOrderDetails = normalizeLinesForSave(JSON.parse(JSON.stringify(cartState.items)), optionGroupMapping);
       const currentOrderTypeId = ORDER_TYPE_IDS[orderType];
