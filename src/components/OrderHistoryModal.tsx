@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { 
@@ -9,30 +9,48 @@ import {
   Search, 
   ChevronDown, 
   ChevronUp, 
-  ShoppingBag, 
   ChevronLeft, 
   ChevronRight, 
   Printer, 
   ChefHat,
-  Utensils,
-  Truck,
-  Store,
-  Smartphone,
-  Monitor,
   Layers,
+  Banknote,
+  Ban,
+  Gift,
+  Tag,
   ArrowUpDown,
   MessageSquare,
   MapPin,
   Info
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload } from '@/lib/orderFormatter';
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload, flattenTicketComment } from '@/lib/orderFormatter';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
+import { MaskIcon } from '@/components/MaskIcon';
 
 interface OrderHistoryModalProps {
   onClose: () => void;
   restaurantName?: string; 
 }
+
+const TYPE_ICONS: Record<string, string> = {
+  'Sur place': 'SVG/SP.svg',
+  'À emporter': 'SVG/EMP.svg',
+  'Livraison': 'SVG/liv.svg'
+};
+
+// Abréviations affichées dans la liste des commandes
+const TYPE_ABBR: Record<string, string> = {
+  'Sur place': 'SP',
+  'À emporter': 'EMP',
+  'Livraison': 'LIV'
+};
+
+const ORIGIN_ICONS: Record<string, string> = {
+  'Borne': 'SVG/BORNE.svg',
+  'App': 'cmd.svg',
+  'Caisse': 'SVG/comptoir.svg'
+};
 
 const getItemTotal = (item: any, groupMapping: Record<string, string> = {}) => {
   if (!item) return 0;
@@ -62,6 +80,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
   // Filtres
   const [selectedOrderType, setSelectedOrderType] = useState<string>('all');
   const [selectedOrigin, setSelectedOrigin] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   
   const getLocalToday = () => {
     const today = new Date();
@@ -124,6 +143,8 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     return 'Sur place';
   }, [orderTypesMap]);
 
+  const isCancelledOrder = (order: any) => String(order?.status || '').toLowerCase().startsWith('annul');
+
   const getOrderOrigin = useCallback((order: any) => {
     const orig = (order.order_origin || 'Caisse').toLowerCase();
     if (orig === 'borne') return 'Borne';
@@ -155,7 +176,8 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
         .from('orders')
         .select('*')
         .eq('restaurant_id', activeRestoId)
-        .eq('is_paid', true)
+        // Commandes encaissées + commandes annulées (consignées, jamais supprimées)
+        .or('is_paid.eq.true,status.eq.Annulée')
         .gte('created_at', startOfDay)
         .lte('created_at', endOfDay)
         .order('created_at', { ascending: sortOrder === 'asc' });
@@ -217,7 +239,11 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     }
   }, [availableTypeCounts, availableOriginCounts, selectedOrderType, selectedOrigin]);
 
+  // Recherche sans accents ni majuscules : « creme » trouve « Crème »
+  const normalizeSearch = (v: any) => String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
   const filteredOrders = useMemo(() => {
+    const q = normalizeSearch(searchQuery.trim());
     return orders.filter(order => {
       if (selectedOrderType !== 'all' && getOrderType(order) !== selectedOrderType) {
         return false;
@@ -225,9 +251,22 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
       if (selectedOrigin !== 'all' && getOrderOrigin(order) !== selectedOrigin) {
         return false;
       }
-      return true;
+      if (!q) return true;
+
+      // Numéro, client, téléphone
+      if ([order.order_number, order.id, order.customer_name, order.customer_phone, order.coupon_title].some(v => normalizeSearch(v).includes(q))) {
+        return true;
+      }
+      // Produits et options de la commande
+      const items = extractItemsSafely(order.order_details) || [];
+      return items.some((item: any) => {
+        const names = [item?.product?.name, item?.name];
+        const opts = [item?.selectedSubOptions, item?.flatOptions, item?.options, item?.selections];
+        opts.forEach(list => Array.isArray(list) && list.forEach((o: any) => names.push(typeof o === 'string' ? o : o?.name)));
+        return names.some(n => normalizeSearch(n).includes(q));
+      });
     });
-  }, [orders, selectedOrderType, selectedOrigin, getOrderType, getOrderOrigin]);
+  }, [orders, selectedOrderType, selectedOrigin, getOrderType, getOrderOrigin, searchQuery]);
 
   const changeDay = (days: number) => {
     const [year, month, day] = filterDate.split('-').map(Number);
@@ -260,6 +299,38 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     setExpandedOrderId(prev => prev === id ? null : id);
   };
 
+  // Glisser pour défiler (écrans tactiles qui envoient des événements souris)
+  // et ne jamais déplier une commande à la fin d'un glissement
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef({ active: false, startY: 0, startTop: 0, moved: false });
+  const DRAG_THRESHOLD = 8;
+
+  const onListPointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    dragRef.current = { active: true, startY: e.clientY, startTop: scrollRef.current?.scrollTop || 0, moved: false };
+  };
+
+  const onListPointerMove = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d.active) return;
+    const dy = e.clientY - d.startY;
+    if (!d.moved && Math.abs(dy) > DRAG_THRESHOLD) d.moved = true;
+    // Le tactile natif défile tout seul ; on ne pilote le défilement que pour la souris / le stylet
+    if (d.moved && e.pointerType !== 'touch' && scrollRef.current) {
+      scrollRef.current.scrollTop = d.startTop - dy;
+    }
+  };
+
+  const onListPointerEnd = () => { dragRef.current.active = false; };
+
+  const onListClickCapture = (e: React.MouseEvent) => {
+    if (dragRef.current.moved) {
+      e.stopPropagation();
+      e.preventDefault();
+      dragRef.current.moved = false;
+    }
+  };
+
   const getPaymentMethodLabel = (method: string) => {
     if (!method) return 'N/A';
     const m = method.toLowerCase();
@@ -268,20 +339,27 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
     return method;
   };
 
-  // --- ICÔNES ASSOCIÉES ---
-  const getTypeIcon = (typeName: string) => {
-    const t = typeName.toLowerCase();
-    if (t.includes('place')) return Utensils;
-    if (t.includes('emporter') || t.includes('collect')) return ShoppingBag;
-    if (t.includes('livraison')) return Truck;
-    return Layers;
-  };
+  // --- ICÔNES ASSOCIÉES (SVG maison) ---
+  const renderTypeIcon = (type: string, size = 22) =>
+    TYPE_ICONS[type] ? <MaskIcon src={TYPE_ICONS[type]} size={size} title={type} /> : <Layers size={size} aria-label={type} />;
 
-  const getOriginIcon = (originName: string) => {
-    const o = originName.toLowerCase();
-    if (o.includes('borne')) return Monitor;
-    if (o.includes('app')) return Smartphone;
-    return Store;
+  const renderOriginIcon = (origin: string, size = 22) =>
+    <MaskIcon src={ORIGIN_ICONS[origin] || ORIGIN_ICONS.Caisse} size={size} title={origin} />;
+
+  // Carte = sans contact, espèces = billet, fractionné = les deux
+  const renderPaymentIcons = (method: string) => {
+    const m = String(method || '').toLowerCase();
+    const label = getPaymentMethodLabel(method);
+    if (m.includes('attente') || m === 'pending') return <Clock size={22} className="text-amber-500" aria-label={label} />;
+    if (m.startsWith('offert')) return <Gift size={22} className="text-violet-600" aria-label={method} title={method} />;
+    const hasCard = /carte|cb|card/.test(m);
+    const hasCash = /esp|cash|counter/.test(m) || (!hasCard && !m.includes('fraction'));
+    return (
+      <span className="flex items-center gap-2" title={label} aria-label={label}>
+        {hasCard && <MaskIcon src="SVG/ttp.svg" size={30} className="text-blue-600" />}
+        {hasCash && <Banknote size={24} className="text-emerald-600" />}
+      </span>
+    );
   };
 
   // 🟢 IMPRESSION DUPLICATA TICKET CLIENT (AVEC COMMENTAIRE & COMPLÉMENT)
@@ -300,7 +378,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
 
       const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping, 'DUPLICATA');
       
-      orderPayloadData.comment = order.comment || order.notes || '';
+      orderPayloadData.comment = flattenTicketComment(order.comment || order.notes || '');
       orderPayloadData.customer_address_complement = order.customer_address_complement || order.address_complement || '';
       orderPayloadData.customer_address = order.customer_address || order.address || '';
       orderPayloadData.customer_name = order.customer_name || '';
@@ -349,7 +427,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
         comment: order.comment || order.notes || ''
       });
 
-      kitchenPayload.comment = order.comment || order.notes || '';
+      kitchenPayload.comment = flattenTicketComment(order.comment || order.notes || '');
 
       const result = await (window as any).electronAPI.printReceipt(kitchenPayload, printerName);
       if (!result.success) toast.error("Erreur avec l'imprimante cuisine !");
@@ -370,7 +448,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
       const orderComplement = order?.customer_address_complement || order?.address_complement || '';
 
       return (
-        <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mt-2 space-y-3">
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
           
           {/* INFORMATIONS ADRESSE & COMPLÉMENT (SI LIVRAISON) */}
           {(orderAddress || orderComplement) && (
@@ -378,13 +456,13 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
               {orderAddress && (
                 <div className="font-bold text-gray-700 flex items-start gap-1.5">
                   <MapPin size={13} className="text-red-500 shrink-0 mt-0.5" />
-                  <span>Adresse : {orderAddress}</span>
+                  <span>{orderAddress}</span>
                 </div>
               )}
               {orderComplement && (
                 <div className="font-bold text-amber-700 flex items-start gap-1.5 pl-5">
                   <Info size={12} className="text-amber-500 shrink-0 mt-0.5" />
-                  <span>Complément : {orderComplement}</span>
+                  <span>{orderComplement}</span>
                 </div>
               )}
             </div>
@@ -394,14 +472,11 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
           {orderComment && (
             <div className="p-2.5 bg-amber-50 border-2 border-amber-300 rounded-lg text-slate-950 font-black text-xs uppercase flex items-start gap-1.5 shadow-sm">
               <MessageSquare size={14} className="text-amber-700 shrink-0 mt-0.5" />
-              <span>NOTE CLIENT : {orderComment}</span>
+              <span>{orderComment}</span>
             </div>
           )}
 
           <div>
-            <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2.5 flex items-center gap-2">
-              <ShoppingBag size={14} /> Contenu de la commande
-            </h4>
             <ul className="space-y-3">
               {items.map((item: any, idx: number) => {
                 const productName = item.product?.name || item.name || 'Produit inconnu';
@@ -457,19 +532,15 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
   const isToday = filterDate === getLocalToday();
 
   return createPortal(
-    <div className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 font-helvetica select-none">
-      <div className="bg-[#F3F4F6] w-[1280px] h-[780px] max-w-[96vw] max-h-[96vh] rounded-[1.5rem] shadow-2xl flex flex-col overflow-hidden border border-white/20">
+    <div className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-0 xl:p-4 font-helvetica select-none">
+      <div className="bg-[#F3F4F6] w-full h-full max-w-[1440px] xl:max-h-[900px] rounded-none xl:rounded-2xl shadow-2xl flex flex-col overflow-hidden">
         
         {/* EN-TÊTE PRINCIPAL MODERNISÉ */}
-        <div className="bg-white border-b border-gray-200 px-6 py-4 flex flex-col gap-3.5 flex-shrink-0">
+        <div className="bg-white border-b border-gray-200 px-2 py-1.5 flex flex-wrap items-center gap-2 flex-shrink-0">
           
           {/* LIGNE SUPÉRIEURE : TITRE, DATE, TRI ET FERMETURE */}
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <h2 className="text-xl font-black text-secondary uppercase tracking-tight">
-                Historique des Ventes
-              </h2>
-
+          <div className="contents">
+            <div className="flex items-center gap-2">
               {/* SÉLECTEUR DE DATE */}
               <div className="flex items-center bg-gray-100 p-0.5 rounded-xl border border-gray-200">
                 <button 
@@ -480,7 +551,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
                   <ChevronLeft className="w-4 h-4" />
                 </button>
                 
-                <div className="flex items-center gap-2 px-3 justify-center min-w-[140px]">
+                <div className="flex items-center gap-1.5 px-2 justify-center min-w-[110px]">
                   <Calendar className="text-primary w-3.5 h-3.5" />
                   <span className="font-bold text-secondary text-xs capitalize">
                     {getFormattedDateLabel()}
@@ -500,16 +571,40 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
               {/* BOUTON TRI CHRONOLOGIQUE */}
               <button 
                 onClick={() => setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-sm active:scale-95 ${
+                className={`w-9 h-9 flex items-center justify-center rounded-xl border transition-all active:scale-95 ${
                   sortOrder === 'desc' 
                     ? 'bg-white border-gray-200 text-secondary' 
-                    : 'bg-primary/10 border-primary/30 text-primary font-black'
+                    : 'bg-primary/10 border-primary/30 text-primary'
                 }`}
-                title="Inverser le tri"
+                title={sortOrder === 'desc' ? 'Plus récents en premier' : 'Plus anciens en premier'}
+                aria-label="Inverser le tri"
               >
-                <ArrowUpDown className="w-3.5 h-3.5" />
-                <span>{sortOrder === 'desc' ? 'Plus récents' : 'Plus anciens'}</span>
+                <ArrowUpDown className={`w-4 h-4 transition-transform ${sortOrder === 'asc' ? 'rotate-180' : ''}`} />
               </button>
+            </div>
+
+            <div className="flex items-center gap-2 order-last flex-1 justify-end min-w-[150px]">
+            {/* RECHERCHE : n° de commande, nom, téléphone ou produit */}
+            <div className="relative flex items-center w-full max-w-[16rem] min-w-0">
+              <Search size={16} className="absolute left-3 text-gray-400 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Rechercher"
+                className="w-full h-9 pl-9 pr-9 bg-gray-100 border border-gray-200 focus:border-primary focus:bg-white rounded-xl text-sm font-bold text-secondary placeholder:text-gray-400 outline-none transition-colors"
+                style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-1 w-7 h-7 flex items-center justify-center text-gray-400 hover:text-secondary"
+                  aria-label="Effacer la recherche"
+                >
+                  <X size={16} />
+                </button>
+              )}
             </div>
 
             <button 
@@ -519,52 +614,50 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
             >
               <X size={20} />
             </button>
+            </div>
           </div>
 
           {/* LIGNE INFÉRIEURE : BARRE DE NAVIGATION PAR ICÔNES */}
-          <div className="flex items-center justify-between gap-4 flex-wrap pt-1 border-t border-gray-100">
+          <div className="contents">
             
             {/* SEGMENT 1 : TYPES DE COMMANDE */}
             <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
-              <span className="text-[10px] font-black uppercase text-gray-400 tracking-wider mr-1">Type</span>
-              
               <div className="flex items-center bg-gray-100 p-1 rounded-xl border border-gray-200 gap-1">
                 <button
                   type="button"
                   onClick={() => setSelectedOrderType('all')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 ${
+                  title="Tous"
+                  className={`h-10 flex items-center gap-1.5 px-3 rounded-lg transition-all active:scale-95 ${
                     selectedOrderType === 'all'
-                      ? 'bg-white text-slate-900 shadow-sm border border-black/5 font-black'
-                      : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
+                      ? 'bg-primary text-white shadow-md'
+                      : 'text-gray-400 hover:text-gray-700 hover:bg-white/50'
                   }`}
                 >
-                  <Layers size={14} className={selectedOrderType === 'all' ? 'text-primary' : 'text-gray-400'} />
-                  <span>Tous</span>
+                  <Layers size={20} />
                   <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${
-                    selectedOrderType === 'all' ? 'bg-primary/10 text-primary' : 'bg-gray-200 text-gray-600'
+                    selectedOrderType === 'all' ? 'bg-white/25 text-white' : 'bg-gray-200 text-gray-600'
                   }`}>
                     {orders.length}
                   </span>
                 </button>
 
                 {Object.entries(availableTypeCounts).map(([type, count]) => {
-                  const IconComponent = getTypeIcon(type);
                   const isSelected = selectedOrderType === type;
                   return (
                     <button
                       key={type}
                       type="button"
                       onClick={() => setSelectedOrderType(type)}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 ${
+                      title={type}
+                      className={`h-10 flex items-center gap-1.5 px-3 rounded-lg transition-all active:scale-95 ${
                         isSelected
-                          ? 'bg-white text-slate-900 shadow-sm border border-black/5 font-black'
-                          : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
+                          ? 'bg-primary text-white shadow-md'
+                          : 'text-gray-400 hover:text-gray-700 hover:bg-white/50'
                       }`}
                     >
-                      <IconComponent size={14} className={isSelected ? 'text-primary' : 'text-gray-400'} />
-                      <span>{type}</span>
+                      {renderTypeIcon(type, 28)}
                       <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${
-                        isSelected ? 'bg-primary/10 text-primary' : 'bg-gray-200 text-gray-600'
+                        isSelected ? 'bg-white/25 text-white' : 'bg-gray-200 text-gray-600'
                       }`}>
                         {count}
                       </span>
@@ -576,45 +669,42 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
 
             {/* SEGMENT 2 : CANAUX / ORIGINES */}
             <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
-              <span className="text-[10px] font-black uppercase text-gray-400 tracking-wider mr-1">Canal</span>
-              
               <div className="flex items-center bg-gray-100 p-1 rounded-xl border border-gray-200 gap-1">
                 <button
                   type="button"
                   onClick={() => setSelectedOrigin('all')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 ${
+                  title="Tous"
+                  className={`h-10 flex items-center gap-1.5 px-3 rounded-lg transition-all active:scale-95 ${
                     selectedOrigin === 'all'
-                      ? 'bg-white text-slate-900 shadow-sm border border-black/5 font-black'
-                      : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
+                      ? 'bg-secondary text-white shadow-md'
+                      : 'text-gray-400 hover:text-gray-700 hover:bg-white/50'
                   }`}
                 >
-                  <Layers size={14} className={selectedOrigin === 'all' ? 'text-secondary' : 'text-gray-400'} />
-                  <span>Tous</span>
+                  <Layers size={20} />
                   <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${
-                    selectedOrigin === 'all' ? 'bg-secondary/10 text-secondary' : 'bg-gray-200 text-gray-600'
+                    selectedOrigin === 'all' ? 'bg-white/25 text-white' : 'bg-gray-200 text-gray-600'
                   }`}>
                     {orders.length}
                   </span>
                 </button>
 
                 {Object.entries(availableOriginCounts).map(([orig, count]) => {
-                  const IconComponent = getOriginIcon(orig);
                   const isSelected = selectedOrigin === orig;
                   return (
                     <button
                       key={orig}
                       type="button"
                       onClick={() => setSelectedOrigin(orig)}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all active:scale-95 ${
+                      title={orig}
+                      className={`h-10 flex items-center gap-1.5 px-3 rounded-lg transition-all active:scale-95 ${
                         isSelected
-                          ? 'bg-white text-slate-900 shadow-sm border border-black/5 font-black'
-                          : 'text-gray-500 hover:text-gray-900 hover:bg-white/50'
+                          ? 'bg-secondary text-white shadow-md'
+                          : 'text-gray-400 hover:text-gray-700 hover:bg-white/50'
                       }`}
                     >
-                      <IconComponent size={14} className={isSelected ? 'text-secondary' : 'text-gray-400'} />
-                      <span>{orig}</span>
+                      {renderOriginIcon(orig, 30)}
                       <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${
-                        isSelected ? 'bg-secondary/10 text-secondary' : 'bg-gray-200 text-gray-600'
+                        isSelected ? 'bg-white/25 text-white' : 'bg-gray-200 text-gray-600'
                       }`}>
                         {count}
                       </span>
@@ -628,7 +718,16 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
         </div>
 
         {/* CONTENU PRINCIPAL */}
-        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto p-2 custom-scrollbar"
+          onPointerDown={onListPointerDown}
+          onPointerMove={onListPointerMove}
+          onPointerUp={onListPointerEnd}
+          onPointerCancel={onListPointerEnd}
+          onPointerLeave={onListPointerEnd}
+          onClickCapture={onListClickCapture}
+        >
           {isLoading ? (
             <div className="h-full flex flex-col items-center justify-center space-y-3">
               <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-primary"></div>
@@ -637,92 +736,99 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
           ) : filteredOrders.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-gray-400">
               <Search size={60} className="mb-4 opacity-20" />
-              <p className="text-xl font-bold italic">
-                {orders.length === 0 
-                  ? `Aucune vente enregistrée pour ${getFormattedDateLabel().toLowerCase()}`
-                  : `Aucune vente pour ces critères de filtre`}
+              <p className="text-lg font-bold">
+                {orders.length === 0 ? 'Aucune vente' : 'Aucun résultat'}
               </p>
             </div>
           ) : (
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
               <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-gray-50 border-b border-gray-100 text-gray-400 font-black uppercase text-xs tracking-widest">
-                    <th className="p-4 w-[110px]">Heure</th>
-                    <th className="p-4 w-[130px]">N° Cmd</th>
-                    <th className="p-4 w-[130px]">Type</th>
-                    <th className="p-4">Client / Origine</th>
-                    <th className="p-4 w-[150px]">Paiement</th>
-                    <th className="p-4 text-right w-[130px]">Total</th>
-                    <th className="p-4 w-[130px] text-center">Action</th>
-                  </tr>
-                </thead>
                 <tbody className="divide-y divide-gray-100">
                   {filteredOrders.map((order) => (
                     <React.Fragment key={order.id}>
                       <tr 
                         onClick={() => toggleExpand(order.id)}
-                        className={`transition-colors cursor-pointer ${expandedOrderId === order.id ? 'bg-primary/5' : 'hover:bg-gray-50/80'}`}
+                        className={`transition-colors cursor-pointer ${
+                          isCancelledOrder(order)
+                            ? 'bg-red-50/70 text-red-400'
+                            : expandedOrderId === order.id ? 'bg-primary/5' : 'hover:bg-gray-50/80'
+                        }`}
+                        title={isCancelledOrder(order) ? 'Commande annulée' : undefined}
                       >
-                        <td className="p-4 font-bold text-secondary text-base">
+                        <td className="px-3 py-1.5 w-[70px] font-bold text-gray-400 text-base tabular-nums">
                           {new Date(order.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                         </td>
                         
-                        <td className="p-4">
-                          <span className="bg-white px-2.5 py-1 rounded-lg font-black text-secondary text-sm border border-gray-200 shadow-sm">
-                            #{order.order_number || order.id.toString().slice(0, 4)}
+                        <td className="px-2 py-1.5 w-[80px]">
+                          <span className="font-black text-secondary text-lg">
+                            {order.order_number || order.id.toString().slice(0, 4)}
                           </span>
                         </td>
 
-                        <td className="p-4">
-                          <span className="px-2 py-0.5 bg-gray-100 text-secondary border border-gray-200 rounded text-xs font-bold uppercase tracking-wider">
-                            {getOrderType(order)}
+                        <td className="px-2 py-1.5 w-[70px]">
+                          <span className="inline-block min-w-[52px] text-center px-2 py-1 rounded-lg bg-gray-100 text-secondary text-sm font-black tracking-wide" title={getOrderType(order)}>
+                            {TYPE_ABBR[getOrderType(order)] || getOrderType(order)}
                           </span>
                         </td>
                         
-                        <td className="p-4">
-                          <div className="font-bold text-gray-800 text-base">
-                            {order.customer_name || "Client Direct"}
+                        <td className="px-2 py-1.5">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-gray-400">{renderOriginIcon(getOrderOrigin(order), 26)}</span>
+                            <span className="font-bold text-gray-800 text-base truncate">
+                              {order.customer_name || ''}
+                            </span>
                           </div>
-                          <span className={`inline-block mt-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest ${
-                            getOrderOrigin(order) === 'Borne' ? 'bg-blue-100 text-blue-700' :
-                            getOrderOrigin(order) === 'App' ? 'bg-purple-100 text-purple-700' :
-                            'bg-emerald-100 text-emerald-700'
-                          }`}>
-                            {getOrderOrigin(order)}
-                          </span>
                         </td>
                         
-                        <td className="p-4 font-bold text-gray-500 text-sm uppercase">
-                          {getPaymentMethodLabel(order.payment_method)}
+                        <td className="px-2 py-1.5 w-[90px]">
+                          {renderPaymentIcons(order.payment_method)}
                         </td>
                         
-                        <td className="p-4 text-right font-black text-lg text-[#04B855]">
-                          {Number(order.total_price).toFixed(2)} €
+                        <td className={`px-2 py-1.5 w-[100px] text-right font-black text-lg tabular-nums ${isCancelledOrder(order) ? 'text-red-400' : 'text-secondary'}`}>
+                          {String(order.payment_method || '').toLowerCase().startsWith('offert') ? (
+                            // Commande offerte : 0 € encaissé, montant réel conservé dans discount_amount
+                            <span className="text-violet-500 italic" title={`${order.coupon_title || order.payment_method} — non encaissé`}>
+                              {Number(order.discount_amount || 0).toFixed(2)} €
+                            </span>
+                          ) : isCancelledOrder(order) ? (
+                            <span className="inline-flex items-center gap-1.5">
+                              <Ban size={18} className="text-red-500" aria-label="Annulée" />
+                              <span className="line-through">{Number(order.total_price).toFixed(2)} €</span>
+                            </span>
+                          ) : Number(order.discount_amount) > 0 ? (
+                            <span className="inline-flex items-center gap-1.5" title={`${order.coupon_title || 'Remise'} : -${Number(order.discount_amount).toFixed(2)} €`}>
+                              <Tag size={16} className="text-violet-500" />
+                              {Number(order.total_price).toFixed(2)} €
+                            </span>
+                          ) : (
+                            <>{Number(order.total_price).toFixed(2)} €</>
+                          )}
                         </td>
                         
-                        <td className="p-4 text-right">
-                          <div className="flex items-center justify-end gap-2.5">
+                        <td className="px-2 py-1 w-[130px] text-right">
+                          <div className="flex items-center justify-end gap-1">
                             <button 
                               onClick={(e) => { e.stopPropagation(); handlePrintPastOrder(order); }}
-                              className="p-2 border-2 border-gray-200 text-gray-500 rounded-lg hover:border-blue-500 hover:text-blue-500 hover:bg-blue-50 transition-all active:scale-95"
+                              className="w-11 h-11 flex items-center justify-center text-gray-400 rounded-xl hover:text-blue-600 hover:bg-blue-50 transition-all active:scale-95"
                               title="Imprimer un duplicata"
+                              aria-label="Imprimer un duplicata"
                             >
-                              <Printer size={16} />
+                              <Printer size={22} />
                             </button>
 
                             <button 
                               onClick={(e) => { e.stopPropagation(); handlePrintKitchenOrder(order); }}
-                              className="p-2 border-2 border-gray-200 text-gray-500 rounded-lg hover:border-orange-500 hover:text-orange-500 hover:bg-orange-50 transition-all active:scale-95"
+                              className="w-11 h-11 flex items-center justify-center text-gray-400 rounded-xl hover:text-orange-600 hover:bg-orange-50 transition-all active:scale-95"
                               title="Imprimer le bon cuisine"
+                              aria-label="Imprimer le bon cuisine"
                             >
-                              <ChefHat size={16} />
+                              <ChefHat size={22} />
                             </button>
                             
-                            <div className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all shadow-sm inline-flex ${
-                              expandedOrderId === order.id ? 'bg-primary text-white' : 'bg-gray-100 text-gray-400'
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all inline-flex ${
+                              expandedOrderId === order.id ? 'bg-primary text-white' : 'text-gray-300'
                             }`}>
-                              {expandedOrderId === order.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                              {expandedOrderId === order.id ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
                             </div>
                           </div>
                         </td>
@@ -730,7 +836,7 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
 
                       {expandedOrderId === order.id && (
                         <tr className="bg-gray-50/30">
-                          <td colSpan={7} className="p-4 border-t border-gray-100">
+                          <td colSpan={7} className="px-3 py-2 border-t border-gray-100">
                             {renderOrderDetails(order.order_details, order)}
                           </td>
                         </tr>
@@ -741,27 +847,6 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
               </table>
             </div>
           )}
-        </div>
-
-        {/* PIED DE FENÊTRE : STATISTIQUES */}
-        <div className="p-5 bg-white border-t border-gray-200 flex items-center justify-center flex-shrink-0">
-          <div className="flex gap-16 items-center bg-gray-50 px-8 py-3.5 rounded-2xl border border-gray-200 shadow-inner">
-            <div className="flex flex-col items-center">
-              <span className="text-gray-400 font-bold uppercase text-[10px] tracking-widest mb-1">
-                {selectedOrderType !== 'all' || selectedOrigin !== 'all' ? 'Ventes Filtrées' : 'Ventes Finalisées'}
-              </span>
-              <span className="text-2xl font-black text-secondary">{filteredOrders.length}</span>
-            </div>
-            
-            <div className="w-px h-9 bg-gray-300"></div>
-            
-            <div className="flex flex-col items-center">
-              <span className="text-gray-400 font-bold uppercase text-[10px] tracking-widest mb-1">Chiffre d'Affaires</span>
-              <span className="text-3xl font-black text-[#04B855]">
-                {filteredOrders.reduce((acc, curr) => acc + (Number(curr.total_price) || 0), 0).toFixed(2)} €
-              </span>
-            </div>
-          </div>
         </div>
 
       </div>

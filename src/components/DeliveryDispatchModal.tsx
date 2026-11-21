@@ -95,10 +95,12 @@ const getTargetMs = (o: DeliveryOrder, defaultPrepTime: number) => o.scheduled_t
   : new Date(o.created_at).getTime() + (Number(o.global_prep_time ?? defaultPrepTime ?? 40) + Number(o.additional_prep_time ?? 0)) * 60000;
 
 // Livraison : uniquement delivery_status (le statut de la commande ne sert pas ici)
-const isCancelled = (o: DeliveryOrder) => o.delivery_status === 'cancelled';
+// Annulée côté livraison, ou commande annulée en caisse (statut « Annulée »)
+const isCancelled = (o: DeliveryOrder) =>
+  o.delivery_status === 'cancelled' || norm((o as any).status).startsWith('annul');
 // « Fermé » veut dire encaissée (souvent avant le départ) : seule la livraison confirmée compte comme livrée
 const isDelivered = (o: DeliveryOrder) => o.delivery_status === 'delivered';
-const isEnRoute = (o: DeliveryOrder) => !!o.driver_id && (o.delivery_status === 'in_transit' || o.delivery_status === 'assigned') && !isDelivered(o);
+const isEnRoute = (o: DeliveryOrder) => !!o.driver_id && (o.delivery_status === 'in_transit' || o.delivery_status === 'assigned') && !isDelivered(o) && !isCancelled(o);
 
 const getPayKind = (o: DeliveryOrder): PayKind => {
   if (!o.is_paid && o.payment_status !== 'paid') return 'unpaid';
@@ -320,6 +322,8 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
           .select('*')
           .eq('restaurant_id', activeRestoId)
           .eq('order_type_id', DELIVERY_ORDER_TYPE_ID)
+          // Les annulées restent chargées : une course livrée puis annulée doit rester dans la sacoche
+          // du livreur. Elles sont écartées des listes « à assigner » / « en route » via isCancelled.
           .gte('created_at', cutoffIso)
           .order('created_at', { ascending: false }),
         supabase

@@ -2,10 +2,11 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { 
-  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft, Eye
+  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft, Eye, Monitor
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PosSetup from '@/components/PosSetup';
+import CustomerDisplaySettings from '@/components/CustomerDisplaySettings';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -223,6 +224,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
 
   const menuItems = [
     { id: 'printing', icon: Printer, label: 'Impression', description: 'Tickets et matériels' },
+    { id: 'customer-display', icon: Monitor, label: 'Écran client', description: 'Second écran' },
     { id: 'security', icon: ShieldCheck, label: 'Sécurité', description: 'Code PIN d\'accès' },
   ];
 
@@ -780,7 +782,17 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
             </div>
           )}
 
-          {/* ONGLET SÉCURITÉ */}
+          {/* ONGLET ÉCRAN CLIENT */}
+          {activeTab === 'customer-display' && (
+            <div className="max-w-3xl animate-in fade-in duration-300">
+              <div className="mb-8">
+                <h2 className="text-3xl font-black text-secondary uppercase">Écran client</h2>
+              </div>
+              <CustomerDisplaySettings />
+            </div>
+          )}
+
+                    {/* ONGLET SÉCURITÉ */}
           {activeTab === 'security' && (
             <div className="max-w-3xl animate-in fade-in duration-300">
               <div className="mb-8">

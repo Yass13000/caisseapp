@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { MapPin, Phone, User, Check, X, Loader2, Search, Users, AlertTriangle, RefreshCw, Plus, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
+import { ClientOrderHistory } from '@/components/ClientOrderHistory';
 
 const generateUUID = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -72,11 +73,13 @@ export const DeliveryModalCaisse = ({
   isOpen, 
   onClose, 
   onConfirm, 
+  onReorder,
   initialData 
 }: { 
   isOpen: boolean, 
   onClose: () => void, 
   onConfirm: (data: any) => void,
+  onReorder?: (order: any) => Promise<any> | any,
   initialData?: any
 }) => {
   // Mode de recherche : 'phone' (pavé tactile) ou 'text' (nom/adresse)
@@ -776,6 +779,9 @@ export const DeliveryModalCaisse = ({
                       placeholder="Code, étage, bâtiment, interphone..."
                     />
                   </div>
+
+                  {/* Historique du client : date, contenu en un toucher, et recommander */}
+                  <ClientOrderHistory clientId={selectedClientId} phone={phone} onReorder={onReorder} />
                 </div>
 
                 {/* Footer Validation */}

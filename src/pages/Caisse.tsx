@@ -19,7 +19,7 @@ import {
   UserRound, CalendarDays, LayoutDashboard, AlertTriangle,
   CreditCard, Banknote, CheckCircle2, Store, ArchiveRestore,
   Calculator, Hourglass, Plus, RotateCcw, RotateCw,
-  X, Check, Equal, Receipt, ArrowLeftRight, Loader2, MessageSquare, Ticket
+  X, Check, Equal, Receipt, ArrowLeftRight, Loader2, Gift, Tag, MoreHorizontal, MessageSquare, Ticket
 } from 'lucide-react';
 
 // Composants
@@ -37,7 +37,9 @@ import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
 import PosSetup from '@/components/PosSetup';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 import { announceDevicePresence } from '@/lib/devicePresence';
-import { buildLoadedCartItem, normalizeLinesForSave, tillLineTotal, extractRealProductId } from '@/lib/loadedOrderPricing';
+import { buildLoadedCartItem, normalizeLinesForSave, tillLineTotal, extractRealProductId, mapOrderItemsForTill, orderItemName } from '@/lib/loadedOrderPricing';
+import { publishCustomerCart, publishCustomerPayment, showCustomerThanks } from '@/lib/customerDisplay';
+import { TapToPayIcon, publicAsset } from '@/components/MaskIcon';
 
 export interface Product {
   id: number | string;
@@ -66,9 +68,9 @@ const ORDER_TYPE_IDS = {
 };
 
 const ORDER_TYPE_CONFIG: Record<string, { label: string; icon: string }> = {
-  'SUR PLACE': { label: 'Sur Place', icon: '/SVG/SP.svg' },
-  'EMPORTER': { label: 'À Emporter', icon: '/SVG/EMP.svg' },
-  'LIVRAISON': { label: 'Livraison', icon: '/SVG/liv.svg' }
+  'SUR PLACE': { label: 'Sur Place', icon: publicAsset('SVG/SP.svg') },
+  'EMPORTER': { label: 'À Emporter', icon: publicAsset('SVG/EMP.svg') },
+  'LIVRAISON': { label: 'Livraison', icon: publicAsset('SVG/liv.svg') }
 };
 
 // 🟢 Extraction fiable de l'ID numérique produit (même sur 'loaded-15196-0-208' ou '208-var_12')
@@ -86,6 +88,11 @@ const describeDbError = (e: any): string =>
 const normalizeCaissePaymentMethod = (rawMethod?: string): string => {
   if (!rawMethod) return 'Espèces';
   const m = String(rawMethod).trim().toLowerCase();
+
+  // Commande offerte (repas employé, promo) : libellé conservé tel quel
+  if (m.startsWith('offert')) {
+    return String(rawMethod).trim();
+  }
 
   if (m.includes('fractionn') || m.includes('mixte')) {
     // Pas d'expansion "CB" → "Carte bancaire" : la colonne payment_method est limitée à 50 caractères
@@ -282,8 +289,160 @@ const parseInputCents = (s: string) => {
   return (parseInt(i || '0', 10) || 0) * 100 + (parseInt((d + '00').slice(0, 2), 10) || 0);
 };
 
-export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProcessing }: any) => {
-  const totalCents = toCents(subtotal);
+// ── Remise : motif (employé avec prénom, promo), % ou €, puis confirmation ──
+type AppliedDiscount = { cents: number; label: string; reason: 'Employé' | 'Promo' };
+
+const DiscountSheet = ({ totalCents, onCancel, onApply, busy }: {
+  totalCents: number;
+  onCancel: () => void;
+  onApply: (d: AppliedDiscount) => void;
+  busy: boolean;
+}) => {
+  const [reason, setReason] = useState<'Employé' | 'Promo' | null>(null);
+  const [firstName, setFirstName] = useState('');
+  // Aucun montant présélectionné : la remise doit être choisie explicitement
+  const [pct, setPct] = useState<number | null>(null);
+  const [eur, setEur] = useState('');
+  const [step, setStep] = useState<'edit' | 'confirm'>('edit');
+
+  const eurCents = Math.min(parseInputCents(eur.replace(',', '.')), totalCents);
+  const discountCents = pct !== null ? Math.round(totalCents * pct / 100) : eurCents;
+  const usingEuros = pct === null && eur.trim() !== '';
+  const netCents = Math.max(0, totalCents - discountCents);
+  const cleanName = firstName.trim().replace(/\s+/g, ' ');
+  const nameOk = reason !== 'Employé' || cleanName.length >= 2;
+  const canValidate = !!reason && nameOk && discountCents > 0;
+  const amountLabel = pct !== null ? `-${pct}%` : `-${fmtCents(discountCents)}€`;
+  const label = reason === 'Employé' ? `Employé : ${cleanName} (${amountLabel})` : `Promo (${amountLabel})`;
+
+  const chip = (active: boolean) =>
+    `h-12 rounded-xl font-black text-base flex items-center justify-center active:scale-95 cursor-pointer transition-colors ${
+      active ? 'bg-violet-600 text-white' : 'bg-gray-100 text-secondary'
+    }`;
+
+  return (
+    <div className="absolute inset-0 z-20 bg-white flex flex-col p-6 gap-4" onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-violet-700 font-black text-xl">
+          <Tag size={24} /> Remise
+        </div>
+        <button type="button" onClick={onCancel} aria-label="Fermer" className="w-12 h-12 rounded-xl bg-gray-100 text-gray-500 flex items-center justify-center active:scale-95 cursor-pointer">
+          <X size={22} />
+        </button>
+      </div>
+
+      {step === 'edit' ? (
+        <>
+          {/* Motif */}
+          <div className="grid grid-cols-2 gap-3">
+            <button type="button" onClick={() => setReason('Employé')} className={`${chip(reason === 'Employé')} h-16 gap-2`}>
+              <UserRound size={22} /> Employé
+            </button>
+            <button type="button" onClick={() => setReason('Promo')} className={`${chip(reason === 'Promo')} h-16 gap-2`}>
+              <Tag size={22} /> Promo
+            </button>
+          </div>
+
+          {reason === 'Employé' && (
+            <input
+              autoFocus
+              type="text"
+              value={firstName}
+              onChange={(e) => setFirstName(e.target.value.slice(0, 30))}
+              placeholder="Prénom de l'employé"
+              className={`h-14 px-4 rounded-xl border-2 text-lg font-bold text-secondary outline-none ${cleanName.length >= 2 ? 'border-violet-300' : 'border-amber-300'} focus:border-violet-500`}
+              style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+            />
+          )}
+
+          {/* Montant de la remise */}
+          <div className="grid grid-cols-5 gap-2">
+            {[10, 20, 50, 100].map(v => (
+              <button key={v} type="button" onClick={() => { setPct(v); setEur(''); }} className={chip(pct === v)}>
+                {v}%
+              </button>
+            ))}
+            <input
+              type="text"
+              inputMode="decimal"
+              value={eur}
+              onFocus={() => setPct(null)}
+              onChange={(e) => { setPct(null); setEur(e.target.value.replace(/[^0-9.,]/g, '').slice(0, 7)); }}
+              placeholder="€"
+              aria-label="Remise en euros"
+              className={`h-12 rounded-xl text-center text-base font-black outline-none border-2 ${usingEuros ? 'border-violet-500 text-violet-700' : 'border-gray-200 text-secondary'} focus:border-violet-500`}
+              style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+            />
+          </div>
+
+          {/* Récapitulatif */}
+          <div className="mt-auto rounded-2xl bg-gray-50 p-4 grid grid-cols-3 text-center tabular-nums">
+            <div>
+              <div className="text-xs font-bold text-gray-400">Total</div>
+              <div className="text-xl font-black text-secondary">{fmtCents(totalCents)} €</div>
+            </div>
+            <div>
+              <div className="text-xs font-bold text-gray-400">Remise</div>
+              <div className="text-xl font-black text-violet-600">-{fmtCents(discountCents)} €</div>
+            </div>
+            <div>
+              <div className="text-xs font-bold text-gray-400">À payer</div>
+              <div className="text-xl font-black text-secondary">{fmtCents(netCents)} €</div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={!canValidate}
+            onClick={() => setStep('confirm')}
+            className="h-16 rounded-2xl bg-violet-600 text-white font-black text-lg flex items-center justify-center gap-2 active:scale-95 cursor-pointer disabled:opacity-40"
+          >
+            <Check size={24} strokeWidth={3} /> Valider
+          </button>
+        </>
+      ) : (
+        <>
+          {/* Message de confirmation */}
+          <div className="flex-1 flex flex-col items-center justify-center text-center gap-3">
+            <div className="w-16 h-16 rounded-full bg-violet-100 text-violet-600 flex items-center justify-center">
+              {reason === 'Employé' ? <UserRound size={32} /> : <Tag size={32} />}
+            </div>
+            <div className="text-2xl font-black text-secondary">
+              {reason === 'Employé' ? `Repas employé · ${cleanName}` : 'Promotion'}
+            </div>
+            <div className="text-lg font-bold text-violet-700 tabular-nums">
+              Remise {pct !== null ? `${pct} % ` : ''}(-{fmtCents(discountCents)} €)
+            </div>
+            <div className="text-base font-bold text-gray-500">
+              {netCents === 0
+                ? 'La commande part en cuisine sans paiement.'
+                : `Il restera ${fmtCents(netCents)} € à encaisser.`}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <button type="button" onClick={() => setStep('edit')} className="h-16 rounded-2xl bg-gray-100 text-secondary font-black text-lg active:scale-95 cursor-pointer">
+              Retour
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onApply({ cents: discountCents, label, reason: reason! })}
+              className="h-16 rounded-2xl bg-violet-600 text-white font-black text-lg flex items-center justify-center gap-2 active:scale-95 cursor-pointer disabled:opacity-50"
+            >
+              {busy ? <Loader2 size={24} className="animate-spin" /> : <Check size={24} strokeWidth={3} />} Confirmer
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, onOffer, isProcessing }: any) => {
+  const [discountOpen, setDiscountOpen] = useState(false);
+  const [discount, setDiscount] = useState<AppliedDiscount | null>(null);
+  const grossCents = toCents(subtotal);
+  const totalCents = Math.max(0, grossCents - (discount?.cents || 0));
   const [lines, setLines] = useState<PayLine[]>([]);
   const [input, setInput] = useState('');
   const lineIdRef = useRef(0);
@@ -296,6 +455,12 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
   const pendingChange = Math.max(0, inputCents - remainingCents);
   const isComplete = totalCents > 0 && remainingCents === 0;
   const busy = !!isProcessing;
+
+  // Écran client : total, reste dû et monnaie à rendre en direct
+  useEffect(() => {
+    publishCustomerPayment({ total: totalCents / 100, paid: paidCents / 100, remaining: remainingCents / 100, change: changeCents / 100 });
+  }, [totalCents, paidCents, remainingCents, changeCents]);
+  useEffect(() => () => publishCustomerPayment(null), []);
 
   const confirm = (finalLines: PayLine[]) => {
     if (confirmLockRef.current || busy) return;
@@ -313,7 +478,8 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
       ? (split(false).length <= 50 ? split(false) : split(true))
       : label(merged[0].m);
     const cash = (merged.find(x => x.m === 'Espèces')?.c || 0) / 100;
-    Promise.resolve(onConfirm(method, cash)).finally(() => { confirmLockRef.current = false; });
+    const discountInfo = discount ? { amount: discount.cents / 100, label: discount.label, reason: discount.reason } : null;
+    Promise.resolve(onConfirm(method, cash, discountInfo)).finally(() => { confirmLockRef.current = false; });
   };
 
   const addLine = (method: PayMethod) => {
@@ -362,6 +528,7 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
   // Clavier physique
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (discountOpen || (e.target as HTMLElement)?.tagName === 'INPUT') return;
       if (/^[0-9]$/.test(e.key)) press(e.key);
       else if (e.key === '.' || e.key === ',') press('.');
       else if (e.key === 'Backspace') press('DEL');
@@ -389,24 +556,70 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
       transition={{ duration: 0.16, ease: 'linear' }}
     >
       <motion.div
-        className="bg-[#F3F4F6] w-[1000px] h-[600px] max-w-[96vw] max-h-[94vh] rounded-[2rem] shadow-2xl flex overflow-hidden"
+        className="relative bg-[#F3F4F6] w-[1000px] h-[600px] max-w-[96vw] max-h-[94vh] rounded-[2rem] shadow-2xl flex overflow-hidden"
         initial={{ y: 20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 20, opacity: 0 }}
         transition={{ type: 'spring', damping: 28, stiffness: 400, mass: 0.5 }}
         onClick={(e) => e.stopPropagation()}
       >
+        {discountOpen && (
+          <DiscountSheet
+            totalCents={grossCents}
+            busy={busy}
+            onCancel={() => setDiscountOpen(false)}
+            onApply={(d) => {
+              setDiscountOpen(false);
+              // Remise totale : envoi direct en cuisine sans paiement
+              if (grossCents - d.cents <= 0) onOffer({ amount: d.cents / 100, label: d.label, reason: d.reason });
+              else setDiscount(d);
+            }}
+          />
+        )}
         {/* Colonne gauche : récap */}
         <div className="w-[36%] bg-white border-r border-gray-200 flex flex-col p-5 gap-4">
           <div className="flex items-center justify-between">
-            <button onClick={onClose} disabled={busy} aria-label="Fermer" className="w-12 h-12 rounded-xl bg-gray-100 text-gray-500 flex items-center justify-center active:scale-95 cursor-pointer disabled:opacity-40">
-              <X size={22} />
-            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={onClose} disabled={busy} aria-label="Fermer" className="w-12 h-12 rounded-xl bg-gray-100 text-gray-500 flex items-center justify-center active:scale-95 cursor-pointer disabled:opacity-40">
+                <X size={22} />
+              </button>
+              {/* Remise (employé, promo) : discrète, uniquement avant tout paiement */}
+              {onOffer && lines.length === 0 && !discount && (
+                <button
+                  type="button"
+                  onClick={() => setDiscountOpen(true)}
+                  disabled={busy}
+                  title="Remise (employé, promo)"
+                  aria-label="Appliquer une remise"
+                  className="w-12 h-12 rounded-xl text-gray-400 hover:text-violet-600 hover:bg-violet-50 flex items-center justify-center active:scale-95 cursor-pointer disabled:opacity-40"
+                >
+                  <MoreHorizontal size={24} />
+                </button>
+              )}
+            </div>
             <div className="flex items-center gap-2 text-secondary">
               <Receipt size={20} className="text-gray-400" />
               <span className="text-2xl font-black tabular-nums">{fmtCents(totalCents)} €</span>
             </div>
           </div>
+
+          {/* Rappel de la remise appliquée (retirable tant qu'aucun paiement n'est saisi) */}
+          {discount && (
+              <div className="flex items-center gap-2 rounded-xl bg-violet-50 border border-violet-200 pl-3 pr-1 py-1">
+                <Tag size={18} className="text-violet-600 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-black text-violet-700 truncate">{discount.label}</div>
+                  <div className="text-xs font-bold text-violet-500 tabular-nums">
+                    <span className="line-through">{fmtCents(grossCents)} €</span> → {fmtCents(totalCents)} €
+                  </div>
+                </div>
+                {lines.length === 0 && (
+                  <button type="button" onClick={() => setDiscount(null)} disabled={busy} aria-label="Retirer la remise" className="w-11 h-11 rounded-lg text-violet-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center active:scale-95 cursor-pointer">
+                    <X size={18} />
+                  </button>
+                )}
+              </div>
+          )}
 
           <div
             className="rounded-2xl p-4 flex items-center justify-center gap-3 transition-colors"
@@ -433,7 +646,7 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
                   className="flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-xl pl-3 pr-1 py-1"
                 >
                   {l.method === 'CB'
-                    ? <CreditCard size={20} className="text-blue-600 flex-shrink-0" />
+                    ? <TapToPayIcon className="h-5 flex-shrink-0 text-blue-600" />
                     : l.method === 'TR'
                       ? <Ticket size={20} className="text-orange-500 flex-shrink-0" />
                       : <Banknote size={20} className="flex-shrink-0" style={{ color: primary }} />}
@@ -517,38 +730,51 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, isProc
           </div>
 
           <div className="grid grid-cols-3 gap-3 h-20 flex-shrink-0">
-            <button
-              onClick={() => addLine('CB')}
-              disabled={busy || isComplete}
-              aria-label="Carte bancaire"
-              className="rounded-2xl bg-blue-600 text-white flex items-center justify-center gap-3 active:scale-[0.97] transition-transform shadow-md cursor-pointer disabled:opacity-40"
-            >
-              <CreditCard size={30} />
-              <span className="text-xl font-black tabular-nums opacity-90">{fmtCents(Math.min(inputCents || remainingCents, remainingCents))}</span>
-            </button>
-            <button
-              onClick={() => addLine('Espèces')}
-              disabled={busy || isComplete}
-              aria-label="Espèces"
-              className="rounded-2xl text-white flex items-center justify-center gap-3 active:scale-[0.97] transition-transform shadow-md cursor-pointer disabled:opacity-40"
-              style={{ backgroundColor: primary }}
-            >
-              <Banknote size={30} />
-              <span className="text-xl font-black tabular-nums opacity-90">{fmtCents(inputCents || remainingCents)}</span>
-            </button>
-            <button
-              onClick={() => addLine('TR')}
-              disabled={busy || isComplete}
-              aria-label="Titre restaurant"
-              title="Titre restaurant (Swile, Edenred, Up, Pluxee…)"
-              className="rounded-2xl bg-orange-500 text-white flex flex-col items-center justify-center active:scale-[0.97] transition-transform shadow-md cursor-pointer disabled:opacity-40"
-            >
-              <span className="flex items-center gap-2">
-                <Ticket size={26} />
-                <span className="text-xl font-black tabular-nums opacity-90">{fmtCents(Math.min(inputCents || remainingCents, remainingCents))}</span>
-              </span>
-              <span className="text-[10px] font-black uppercase tracking-wider opacity-90">Titre resto</span>
-            </button>
+            {[
+              {
+                method: 'CB' as PayMethod,
+                label: 'Carte',
+                aria: 'Carte bancaire',
+                cls: 'bg-blue-600',
+                style: undefined,
+                icon: <TapToPayIcon className="h-9 text-white" />,
+                amount: Math.min(inputCents || remainingCents, remainingCents)
+              },
+              {
+                method: 'Espèces' as PayMethod,
+                label: 'Espèces',
+                aria: 'Espèces',
+                cls: '',
+                style: { backgroundColor: primary },
+                icon: <Banknote size={34} strokeWidth={1.75} />,
+                amount: inputCents || remainingCents
+              },
+              {
+                method: 'TR' as PayMethod,
+                label: 'Titre resto',
+                aria: 'Titre restaurant (Swile, Edenred, Up, Pluxee…)',
+                cls: 'bg-orange-500',
+                style: undefined,
+                icon: <Ticket size={34} strokeWidth={1.75} />,
+                amount: Math.min(inputCents || remainingCents, remainingCents)
+              }
+            ].map(b => (
+              <button
+                key={b.method}
+                onClick={() => addLine(b.method)}
+                disabled={busy || isComplete}
+                aria-label={b.aria}
+                title={b.aria}
+                className={`rounded-2xl text-white flex items-center gap-3 px-4 active:scale-[0.97] transition-transform shadow-md cursor-pointer disabled:opacity-40 ${b.cls}`}
+                style={b.style}
+              >
+                <span className="w-12 flex items-center justify-center shrink-0">{b.icon}</span>
+                <span className="flex flex-col items-start leading-none gap-1.5 min-w-0">
+                  <span className="text-[13px] font-extrabold uppercase tracking-[0.16em] opacity-85 truncate">{b.label}</span>
+                  <span className="text-2xl font-black tabular-nums">{fmtCents(b.amount)} €</span>
+                </span>
+              </button>
+            ))}
           </div>
         </div>
       </motion.div>
@@ -729,6 +955,40 @@ const Caisse = () => {
   }, []);
   const activeDeliveryFee = orderType === 'LIVRAISON' ? (parseFloat(deliveryFee) || 0) : 0;
   const finalTotal = subtotal + activeDeliveryFee;
+
+  // Écran client (second écran) : panier en direct
+  useEffect(() => {
+    const lines = cartState.items.map((item: any, idx: number) => {
+      const key = String(item.customKey || item._cartKey || item.cartKey || item.id || idx);
+      const options = getFormattedOrderOptions(item, optionGroupMapping)
+        .flatMap((grp: any) => grp.items || [])
+        .map((opt: any) => ({ name: `${opt.qty > 1 ? `${opt.qty}× ` : ''}${opt.name}`, sans: !!opt.isSans }));
+      return {
+        key,
+        name: String(item.product?.name || item.name || ''),
+        qty: Number(item.quantity) || 1,
+        total: Number(getItemTotal(item, optionGroupMapping)) || 0,
+        options,
+      };
+    });
+    publishCustomerCart({
+      // Restaurant pas encore chargé : l'écran client garde la dernière identité connue
+      brand: restaurantName === 'VOTRE RESTAURANT' && !restaurantLogo ? null : {
+        id: posRestoId,
+        name: restaurantName === 'VOTRE RESTAURANT' ? '' : restaurantName,
+        logo: restaurantLogo,
+        primary: themeColors.primary,
+        secondary: themeColors.secondary,
+        accent: themeColors.accent,
+      },
+      orderType,
+      lines,
+      count: cartItemCount,
+      deliveryFee: activeDeliveryFee,
+      total: finalTotal,
+      lastKey: null,
+    });
+  }, [cartState.items, optionGroupMapping, orderType, activeDeliveryFee, finalTotal, cartItemCount, restaurantName, restaurantLogo, themeColors, posRestoId]);
 
   const hasActiveOrderData = cartItemCount > 0 || !!clientInfo || !!loadedOrderId || deliveryFee > 0;
 
@@ -1084,6 +1344,72 @@ const Caisse = () => {
     }, 150);
   };
 
+  // ── Recommander une ancienne commande d'un client (fiche livraison) ──
+  // Ajoute les lignes au ticket (sans vider le panier) aux prix de la commande, comme le suivi des
+  // commandes. Sont écartés : produits supprimés ou indisponibles, lignes dont une option n'est plus
+  // disponible, récompenses fidélité offertes. Renvoie le détail pour prévenir le caissier.
+  const handleReorderPastOrder = async (order: any): Promise<{ added: number; skipped: { name: string; reason: string }[] }> => {
+    const lines = mapOrderItemsForTill(order, optionGroupMapping);
+    const skipped: { name: string; reason: string }[] = [];
+
+    // Disponibilité actuelle des options choisies (une seule requête)
+    const optionsOf = (line: any): any[] => {
+      const src = line.selectedSubOptions || line.product?.selectedSubOptions || line.options || line.flatOptions || [];
+      return (Array.isArray(src) ? src : []).flatMap((o: any) => (o && Array.isArray(o.options) ? o.options : [o])).filter(Boolean);
+    };
+    const optionIds = [...new Set(lines.flatMap(l => optionsOf(l))
+      .map((o: any) => String(o.id ?? ''))
+      .filter(id => id && !id.startsWith('dyn_') && /^\d+$/.test(id)))];
+    const optionAvailability = new Map<string, boolean>();
+    if (optionIds.length > 0) {
+      try {
+        const { data } = await supabase.from('options').select('id, is_available').in('id', optionIds);
+        (data || []).forEach((o: any) => optionAvailability.set(String(o.id), o.is_available !== false));
+      } catch {
+        // Hors ligne : on ne bloque pas sur les options
+      }
+    }
+    const findProduct = (rawId: any) => {
+      const realId = extractRealProductId(rawId);
+      return (menuData || []).find((p: any) => String(p.id) === String(realId)) || null;
+    };
+
+    const keep: any[] = [];
+    lines.forEach((line: any) => {
+      const name = orderItemName(line);
+      if (line.isReward === true || line.is_reward === true || line.product?.isReward === true) {
+        skipped.push({ name, reason: 'cadeau fidélité' });
+        return;
+      }
+      const product = findProduct(line.product?.id ?? line.id);
+      if (!product) { skipped.push({ name, reason: 'supprimé' }); return; }
+      if (product.is_available === false) { skipped.push({ name, reason: 'indisponible' }); return; }
+
+      const badOption = optionsOf(line).find((o: any) => {
+        const id = String(o.id ?? '');
+        if (id.startsWith('dyn_')) {
+          const p = findProduct(id.replace(/^dyn_/, ''));
+          return !p || p.is_available === false;
+        }
+        return optionAvailability.get(id) === false || (optionIds.includes(id) && optionAvailability.size > 0 && !optionAvailability.has(id));
+      });
+      if (badOption) {
+        skipped.push({ name, reason: `${badOption.name || 'option'} indisponible` });
+        return;
+      }
+      keep.push(line);
+    });
+
+    const stamp = `re${order.id}-${Date.now().toString(36)}`;
+    keep.forEach((line, idx) => addToCart(buildLoadedCartItem(line, idx, stamp, menuData)));
+
+    if (keep.length > 0) customToast(`${keep.length} article${keep.length > 1 ? 's' : ''} ajouté${keep.length > 1 ? 's' : ''}`, 'success');
+    if (skipped.length > 0) {
+      customToast(`Non ajouté : ${skipped.map(x => `${x.name} (${x.reason})`).join(', ')}`, 'error', { duration: 5000 });
+    }
+    return { added: keep.length, skipped };
+  };
+
   // 🟢 Vérifie à la fois product_option_groups, sub_option_groups et product_ingredients
   const checkHasCustomization = async (productId: number | string): Promise<boolean> => {
     const cleanPid = extractRealProductId(productId);
@@ -1203,7 +1529,26 @@ const Caisse = () => {
     setInitialSelections(null);
   };
 
-  const finalizePayment = async (method: string, cashAmount: number = 0) => {
+  const finalizePayment = async (
+    method: string,
+    cashAmount: number = 0,
+    discount: { amount: number; label: string; reason: string } | null = null
+  ) => {
+    // Remise (employé, promo) : total_price = montant réellement dû, discount_amount = remise,
+    // coupon_title = motif (+ prénom). Remise totale = commande offerte : payée à 0 €,
+    // aucun chiffre d'affaires ne la compte, pas de tiroir ni de ticket client.
+    const discountAmount = discount ? Math.min(Math.round(discount.amount * 100) / 100, parseFloat(finalTotal.toFixed(2))) : 0;
+    const recordedTotal = Math.max(0, Math.round((finalTotal - discountAmount) * 100) / 100);
+    const isOffered = !!discount && recordedTotal === 0;
+    if (isOffered) {
+      method = `Offert (${discount!.reason})`;
+      cashAmount = 0;
+    }
+    const discountFields = discount ? { discount_amount: discountAmount, coupon_title: discount.label.slice(0, 120) } : {};
+    // Ticket client : ligne « REMISE » négative pour que le total imprimé soit juste
+    const receiptItems = discount && !isOffered
+      ? [...cartState.items, { name: `REMISE ${discount.label}`, quantity: 1, price: -discountAmount, isSolo: false }]
+      : cartState.items;
     if (cartState.items.length === 0) return;
     
     // 🛑 Verrou synchrone immédiat : bloque tout double-clic ou rebond tactile
@@ -1241,7 +1586,8 @@ const Caisse = () => {
         is_update: !!loadedOrderId,
         target_id: loadedOrderId || null,
         restaurant_id: activeRestoId,
-        total_price: parseFloat(finalTotal.toFixed(2)),
+        total_price: recordedTotal,
+        ...discountFields,
         delivery_fee: activeDeliveryFee, 
         is_paid: true,
         payment_status: 'paid',
@@ -1263,19 +1609,19 @@ const Caisse = () => {
       if (!isOnline) {
         if ((window as any).electronAPI?.saveOfflineOrder) {
           await (window as any).electronAPI.saveOfflineOrder(orderPayload);
-          customToast(`Encaissé (Hors-ligne) ${finalTotal.toFixed(2)}€`, "success");
+          customToast(isOffered ? `${method} : ${finalTotal.toFixed(2)}€ envoyés en cuisine (hors-ligne)` : `Encaissé (Hors-ligne) ${recordedTotal.toFixed(2)}€`, "success");
 
           const isCashMethodOffline = String(cleanPaymentMethod).toLowerCase().includes('espece') || 
                                       String(cleanPaymentMethod).toLowerCase().includes('espèces') || 
                                       String(cleanPaymentMethod).toLowerCase().includes('cash') || 
                                       cashAmount > 0;
-          if (isCashMethodOffline) {
+          if (isCashMethodOffline && !isOffered) {
             openCashDrawer(true);
           }
           
           const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
-          if (isAutoPrintReceiptEnabled) {
-            await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, cleanPaymentMethod, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, effectiveClient, optionGroupMapping);
+          if (isAutoPrintReceiptEnabled && !isOffered) {
+            await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, cleanPaymentMethod, receiptItems, subtotal, activeDeliveryFee, recordedTotal, cashAmount, effectiveClient, optionGroupMapping);
           }
           
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
@@ -1285,6 +1631,7 @@ const Caisse = () => {
             }, 500);
           }
 
+          showCustomerThanks(recordedTotal);
           clearCart();
           setLoadedOrderId(null);
           setDeliveryFee(0);
@@ -1308,7 +1655,8 @@ const Caisse = () => {
             cash_amount: cashAmount, 
             order_type_id: currentOrderTypeId || undefined, 
             order_details: cleanOrderDetails, 
-            total_price: parseFloat(finalTotal.toFixed(2)), 
+            total_price: recordedTotal, 
+            ...discountFields,
             delivery_fee: activeDeliveryFee,
             session_id: sessionId 
           };
@@ -1344,19 +1692,19 @@ const Caisse = () => {
           }
         }
 
-        customToast(`Encaissé ${finalTotal.toFixed(2)}€`, "success");
+        customToast(isOffered ? `${method} : ${finalTotal.toFixed(2)}€ envoyés en cuisine` : `Encaissé ${recordedTotal.toFixed(2)}€${discount ? ` (remise -${discountAmount.toFixed(2)}€)` : ''}`, "success");
 
         const isCashMethodOnline = String(cleanPaymentMethod).toLowerCase().includes('espece') || 
                                    String(cleanPaymentMethod).toLowerCase().includes('espèces') || 
                                    String(cleanPaymentMethod).toLowerCase().includes('cash') || 
                                    cashAmount > 0;
-        if (isCashMethodOnline) {
+        if (isCashMethodOnline && !isOffered) {
           openCashDrawer(true);
         }
 
         const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
-        if (isAutoPrintReceiptEnabled) {
-          await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, cleanPaymentMethod, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, effectiveClient, optionGroupMapping);
+        if (isAutoPrintReceiptEnabled && !isOffered) {
+          await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, cleanPaymentMethod, receiptItems, subtotal, activeDeliveryFee, recordedTotal, cashAmount, effectiveClient, optionGroupMapping);
         }
         
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
@@ -1366,6 +1714,7 @@ const Caisse = () => {
           }, 500);
         }
 
+        showCustomerThanks(recordedTotal);
         clearCart();
         setLoadedOrderId(null);
         setDeliveryFee(0);
@@ -1386,11 +1735,11 @@ const Caisse = () => {
         if ((window as any).electronAPI?.saveOfflineOrder) {
           orderPayload.order_number = targetOrderNumber;
           await (window as any).electronAPI.saveOfflineOrder(orderPayload);
-          customToast(`Encaissé (Local de secours) ${finalTotal.toFixed(2)}€`, "success");
+          customToast(isOffered ? `${method} : ${finalTotal.toFixed(2)}€ envoyés en cuisine (local)` : `Encaissé (Local de secours) ${recordedTotal.toFixed(2)}€`, "success");
           
           const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
-          if (isAutoPrintReceiptEnabled) {
-            await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, cleanPaymentMethod, cartState.items, subtotal, activeDeliveryFee, finalTotal, cashAmount, effectiveClient, optionGroupMapping);
+          if (isAutoPrintReceiptEnabled && !isOffered) {
+            await generateAndPrintReceipt(restaurantInfo, targetOrderNumber, orderType, cleanPaymentMethod, receiptItems, subtotal, activeDeliveryFee, recordedTotal, cashAmount, effectiveClient, optionGroupMapping);
           }
 
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
@@ -1400,6 +1749,7 @@ const Caisse = () => {
             }, 500);
           }
           
+          showCustomerThanks(recordedTotal);
           clearCart();
           setLoadedOrderId(null);
           setDeliveryFee(0);
@@ -1753,7 +2103,7 @@ const Caisse = () => {
               )}
             </div>
             <span className="flex items-center gap-1.5 bg-gray-200 px-2.5 py-1 rounded-lg font-black text-xs" style={{ color: themeColors.secondary }}>
-              <img src="/SVG/kraft.svg" alt="Panier" className="w-4 h-4 object-contain" /> 
+              <img src={publicAsset('SVG/kraft.svg')} alt="Panier" className="w-4 h-4 object-contain" /> 
               {cartItemCount}
             </span>
           </div>
@@ -1868,23 +2218,31 @@ const Caisse = () => {
               </div>
             )}
 
-            <label className="mb-3 flex items-center gap-2 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-2.5 py-1.5 focus-within:border-solid focus-within:bg-white" style={{ borderColor: ticketComment ? themeColors.primary : undefined }}>
-              <MessageSquare size={14} className="shrink-0 text-gray-400" style={{ color: ticketComment ? themeColors.primary : undefined }} />
-              <input
-                type="text"
+            {/* Commentaire du ticket : vrai cadre d'écriture, sans texte à l'intérieur */}
+            <div
+              className="relative mb-3 rounded-xl border-2 bg-white transition-colors focus-within:shadow-sm"
+              style={{ borderColor: ticketComment ? themeColors.primary : '#D1D5DB' }}
+            >
+              <MessageSquare
+                size={16}
+                className="pointer-events-none absolute left-2.5 top-2.5 text-gray-300"
+                style={{ color: ticketComment ? themeColors.primary : undefined }}
+              />
+              <textarea
                 value={ticketComment}
                 onChange={e => setTicketComment(e.target.value)}
                 maxLength={200}
-                placeholder="Ajouter un commentaire…"
+                rows={3}
                 aria-label="Commentaire de la commande"
-                className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-gray-700 outline-none placeholder:font-normal placeholder:text-gray-400"
+                className="block w-full resize-none bg-transparent pl-9 pr-9 py-2 text-sm font-semibold leading-snug text-gray-800 outline-none"
+                style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
               />
               {ticketComment && (
-                <button type="button" onClick={() => setTicketComment('')} aria-label="Effacer le commentaire" className="shrink-0 text-gray-400 hover:text-gray-600 cursor-pointer">
-                  <X size={14} />
+                <button type="button" onClick={() => setTicketComment('')} aria-label="Effacer le commentaire" className="absolute right-1 top-1 w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer">
+                  <X size={16} />
                 </button>
               )}
-            </label>
+            </div>
 
             <div className="flex justify-between items-end mb-3">
               <span className="text-gray-400 font-bold text-xs uppercase tracking-wider">Total</span>
@@ -1900,7 +2258,7 @@ const Caisse = () => {
               >
                 <Hourglass size={24} />
               </button>
-              
+
               <button 
                 disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current} 
                 onClick={() => setIsPaymentModalOpen(true)} 
@@ -1924,18 +2282,6 @@ const Caisse = () => {
 
         <div className="w-[74px] flex flex-col items-center py-3 z-40 shadow-[-5px_0_15px_rgba(0,0,0,0.2)] flex-shrink-0 justify-between" style={{ backgroundColor: themeColors.secondary }}>
           <div className="flex flex-col gap-1.5 w-full px-2 items-center">
-            
-            {/* 🟢 Paiement Rapide normalisé directement en 'Carte bancaire' */}
-            <button 
-              disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current} 
-              onClick={() => finalizePayment('Carte bancaire', 0)} 
-              className={`w-[56px] h-[56px] mx-auto flex flex-col items-center justify-center rounded-xl transition-all shadow-sm ${cartItemCount > 0 && !isProcessing && !isSubmittingRef.current ? 'bg-[#04B855] text-white hover:bg-[#039d48] active:scale-95 cursor-pointer' : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'}`} 
-              title="Paiement Rapide Carte bancaire"
-            >
-              <CreditCard size={24} />
-              <span className="text-[8px] font-black uppercase mt-0.5 tracking-wider">Rapide</span>
-            </button>
-            <div className="w-full h-px bg-white/10 my-1"></div>
             
             <button onClick={() => setIsDashboardOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><LayoutDashboard size={24} /></button>
             <button
@@ -1978,7 +2324,17 @@ const Caisse = () => {
             <button onClick={() => setIsSettingsOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Settings size={24} /></button>
           </div>
           
-          <div className="w-full px-2 pb-1">
+          <div className="w-full px-2 pb-1 flex flex-col items-center gap-1.5">
+            {/* Paiement carte en un geste : tout le montant en « Carte bancaire » */}
+            <button
+              disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current}
+              onClick={() => finalizePayment('Carte bancaire', 0)}
+              className="w-[56px] h-[56px] mx-auto flex items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm hover:bg-blue-700 active:scale-95 disabled:bg-gray-700/50 disabled:text-gray-500 disabled:cursor-not-allowed transition-all cursor-pointer"
+              title="Paiement carte (montant total)"
+              aria-label="Paiement carte"
+            >
+              <TapToPayIcon className="h-6 text-current" />
+            </button>
             <button onClick={() => { if (hasActiveOrderData) { setShowLogoutConfirm(true); } else { setIsAuthenticated(false); } }} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Verrouiller la caisse"><Lock size={24} className="text-red-400" /></button>
           </div>
         </div>
@@ -1990,13 +2346,14 @@ const Caisse = () => {
           isOpen={isDeliveryModalOpen}
           onClose={handleDeliveryModalClose}
           onConfirm={handleClientConfirm}
+          onReorder={handleReorderPastOrder}
           initialData={clientInfo} 
         />
       )}
 
       <AnimatePresence>
         {isPaymentModalOpen && (
-          <PaymentModal subtotal={finalTotal} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={finalizePayment} isProcessing={isProcessing} />
+          <PaymentModal subtotal={finalTotal} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={finalizePayment} onOffer={(d: any) => finalizePayment('', 0, d)} isProcessing={isProcessing} />
         )}
       </AnimatePresence>
 

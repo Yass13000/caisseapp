@@ -40,6 +40,17 @@ const safeParseJSON = (data: unknown): Record<string, unknown> => {
   return {};
 };
 
+/**
+ * Commentaire prêt pour l'impression : l'imprimante (HTML) fusionne les retours à la ligne,
+ * on les remplace donc par un séparateur visible.
+ */
+export const flattenTicketComment = (value: unknown): string =>
+  String(value ?? '')
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean)
+    .join(' / ');
+
 const safeParseFloat = (val: unknown): number => {
   const num = parseFloat(String(val ?? 0));
   return isNaN(num) ? 0 : num;
@@ -646,7 +657,7 @@ export const buildClientReceiptPayload = (params: {
   const addressComplement = clientInfo?.customer_address_complement || clientInfo?.address_complement || clientInfo?.additionalInfo || '';
   const customerAddress = stripComplementFromAddress(clientInfo?.address || clientInfo?.customer_address || '', addressComplement);
   const customerPhone = clientInfo?.phone || clientInfo?.customer_phone || '';
-  const comment = clientInfo?.comment || clientInfo?.notes || clientInfo?.deliveryNotes || '';
+  const comment = flattenTicketComment(clientInfo?.comment || clientInfo?.notes || clientInfo?.deliveryNotes || '');
 
   return {
     restaurant_id: restaurantId,
@@ -752,7 +763,7 @@ export const buildKitchenReceiptPayload = (params: {
     customer_name,
     customer_address,
     customer_address_complement,
-    comment,
+    comment: flattenTicketComment(comment),
     total: 0
   };
 };

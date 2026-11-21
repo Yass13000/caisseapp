@@ -15,6 +15,12 @@ import { Capacitor } from '@capacitor/core';
 // --- IMPORTS DES PAGES ---
 const Caisse = lazy(() => import("./pages/Caisse"));
 const NotFound = lazy(() => import("./pages/NotFound"));
+const CustomerDisplay = lazy(() => import("./pages/CustomerDisplay"));
+
+// Écran client (second écran) : page autonome, sans panier ni configuration
+// (elle partage le localStorage de la caisse et ne doit rien y écrire)
+const isCustomerDisplayRoute = () =>
+  typeof window !== 'undefined' && window.location.hash.startsWith('#/ecran-client');
 
 const PageLoader = () => (
   <div className="flex-1 w-full flex items-center justify-center bg-background">
@@ -41,6 +47,16 @@ const App = () => {
       hideSystemBars();
     }
   }, []);
+
+  if (isCustomerDisplayRoute()) {
+    return (
+      <ErrorBoundary>
+        <Suspense fallback={<div className="fixed inset-0 bg-black" />}>
+          <CustomerDisplay />
+        </Suspense>
+      </ErrorBoundary>
+    );
+  }
 
   return (
     <ErrorBoundary>

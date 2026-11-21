@@ -21,7 +21,7 @@ import {
   Info
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload, stripComplementFromAddress } from '@/lib/orderFormatter';
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload, stripComplementFromAddress, flattenTicketComment } from '@/lib/orderFormatter';
 import { addLoyaltyPointsThreadSafe, getActiveRestoId } from '@/lib/loyaltyPoints';
 import { mapOrderItemsForTill, extractOrderItems, orderItemName } from '@/lib/loadedOrderPricing';
 import { PaymentModal } from '@/pages/Caisse';
@@ -305,7 +305,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       const printerName = getSecureSetting('imprimante_caisse', undefined) || undefined;
       const orderPayloadData = await buildReceiptPayloadFromOrder(order, optionGroupMapping);
 
-      orderPayloadData.comment = order.comment || order.notes || '';
+      orderPayloadData.comment = flattenTicketComment(order.comment || order.notes || '');
       orderPayloadData.customer_address_complement = order.customer_address_complement || order.address_complement || '';
       orderPayloadData.customer_address = order.customer_address || order.address || '';
       orderPayloadData.customer_name = order.customer_name || '';
@@ -347,7 +347,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         comment: order.comment || order.notes || ''
       });
 
-      kitchenPayload.comment = order.comment || order.notes || '';
+      kitchenPayload.comment = flattenTicketComment(order.comment || order.notes || '');
 
       await (window as any).electronAPI.printReceipt(kitchenPayload, printerName);
     } catch (err) {
@@ -528,17 +528,22 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const handleDeleteOrder = async (e: React.MouseEvent, order: any) => {
     e.stopPropagation();
-    const confirmDelete = window.confirm(`Voulez-vous vraiment supprimer la commande #${order.order_number || order.id.toString().slice(0, 4)} ?\nCette action est définitive.`);
+    const confirmDelete = window.confirm(`Annuler la commande #${order.order_number || order.id.toString().slice(0, 4)} ?\nElle restera consultable dans l'historique des commandes.`);
     if (!confirmDelete) return;
 
     try {
-      const { error } = await supabase.from('orders').delete().eq('id', order.id);
+      // Plus de suppression définitive : la commande est conservée avec le statut « Annulée »
+      // (exclue du ticket Z et des listes en cours, visible dans l'historique)
+      const { error } = await supabase
+        .from('orders')
+        .update({ status: 'Annulée' })
+        .eq('id', order.id);
       if (error) throw error;
-      toast.success("Commande supprimée avec succès");
+      toast.success("Commande annulée");
       setOrders(prevOrders => prevOrders.filter(o => o.id !== order.id));
-    } catch (err) {
-      console.error(err);
-      toast.error("Erreur lors de la suppression de la commande");
+    } catch (err: any) {
+      console.error("Annulation refusée :", err?.code, err?.message, err?.details);
+      toast.error(`Annulation impossible : ${err?.message || 'erreur inconnue'}`);
     }
   };
 

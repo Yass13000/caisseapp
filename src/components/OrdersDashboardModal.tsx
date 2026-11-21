@@ -6,7 +6,7 @@ import {
   Clock, 
   CheckCircle2, 
   Loader2, 
-  MoreVertical, 
+  CircleEllipsis, 
   Truck, 
   Phone, 
   MapPin, 
@@ -14,7 +14,6 @@ import {
   CreditCard, 
   Banknote, 
   MessageSquare, 
-  ArrowLeftRight,
   Smartphone,
   Store,
   Receipt,
@@ -22,10 +21,14 @@ import {
   Search,
   ShoppingBag,
   ChevronRight,
-  Info
+  ChevronDown,
+  ChevronUp,
+  Info,
+  Printer,
+  ChefHat
 } from 'lucide-react';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
-import { getFormattedOrderOptions, fetchOptionGroupMapping } from '@/lib/orderFormatter';
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload, flattenTicketComment } from '@/lib/orderFormatter';
 import { DeliveryDispatchModal } from '@/components/DeliveryDispatchModal';
 import { toast } from 'sonner';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
@@ -102,6 +105,8 @@ const parseOrderDetails = (details: any): any[] => {
   return [];
 };
 
+const PREPARED_STORAGE_KEY = 'dashboard_prepared_items';
+
 const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -110,9 +115,20 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const [searchQuery, setSearchQuery] = useState('');
   
   const [activeMenuOrderId, setActiveMenuOrderId] = useState<string | number | null>(null);
-  const [flippedOrders, setFlippedOrders] = useState<Record<string | number, boolean>>({});
-  const [preparedItems, setPreparedItems] = useState<Record<string, boolean>>({});
+  // Fiche client et commande en grand : fenêtres au centre de l'écran
+  const [customerOrderId, setCustomerOrderId] = useState<string | number | null>(null);
+  const [focusedOrderId, setFocusedOrderId] = useState<string | number | null>(null);
+  // Articles cochés « prêts » : conservés sur l'appareil (survivent à la fermeture du dashboard)
+  const [preparedItems, setPreparedItems] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem(PREPARED_STORAGE_KEY);
+      return raw ? JSON.parse(raw) || {} : {};
+    } catch {
+      return {};
+    }
+  });
   const [recalledOrderIds, setRecalledOrderIds] = useState<Record<string | number, boolean>>({});
+  const [expandedClosedIds, setExpandedClosedIds] = useState<Record<string | number, boolean>>({});
   
   const [optionGroupMapping, setOptionGroupMapping] = useState<Record<string, string>>({});
   const [kdsHiddenGroupIds, setKdsHiddenGroupIds] = useState<Set<string>>(new Set());
@@ -123,11 +139,13 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   useEffect(() => {
     const updateColCount = () => {
       const w = window.innerWidth;
-      if (w >= 1600) setColCount(6);
-      else if (w >= 1300) setColCount(5);
-      else if (w >= 980) setColCount(4);
-      else if (w >= 640) setColCount(3);
-      else setColCount(2);
+      // ~300 px minimum par carte pour que le bandeau (numéro, alerte, boutons) tienne sur une ligne
+      if (w >= 1900) setColCount(6);
+      else if (w >= 1580) setColCount(5);
+      else if (w >= 1260) setColCount(4);
+      else if (w >= 920) setColCount(3);
+      else if (w >= 600) setColCount(2);
+      else setColCount(1);
     };
 
     updateColCount();
@@ -140,27 +158,51 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
     return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    const handleCloseMenus = () => setActiveMenuOrderId(null);
-    window.addEventListener('click', handleCloseMenus);
-    window.addEventListener('touchstart', handleCloseMenus, { passive: true });
-    return () => {
-      window.removeEventListener('click', handleCloseMenus);
-      window.removeEventListener('touchstart', handleCloseMenus);
-    };
-  }, []);
-
-  const toggleCustomerView = (orderId: string | number, e?: React.MouseEvent) => {
+  // Le menu de statut est une fenêtre plein écran : il se ferme en touchant le fond
+  // (l'ancien écouteur touchstart global le fermait avant que le choix soit pris en compte)
+  const toggleClosedExpanded = (orderId: string | number, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    setFlippedOrders(prev => ({
-      ...prev,
-      [orderId]: !prev[orderId]
-    }));
+    setExpandedClosedIds(prev => ({ ...prev, [orderId]: !prev[orderId] }));
+  };
+
+  const openCustomerSheet = (orderId: string | number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setCustomerOrderId(orderId);
+  };
+
+  const toggleFocus = (orderId: string | number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setFocusedOrderId(prev => prev === orderId ? null : orderId);
   };
 
   const togglePrepared = (key: string) => {
-    setPreparedItems(prev => ({ ...prev, [key]: !prev[key] }));
+    setPreparedItems(prev => {
+      const next = { ...prev };
+      if (next[key]) delete next[key];
+      else next[key] = true;
+      return next;
+    });
   };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PREPARED_STORAGE_KEY, JSON.stringify(preparedItems));
+    } catch {
+      // Stockage indisponible : les coches restent valables jusqu'à la fermeture
+    }
+  }, [preparedItems]);
+
+  // Ménage : on oublie les coches des commandes qui ne sont plus affichées
+  useEffect(() => {
+    if (isLoading || orders.length === 0) return;
+    const ids = new Set(orders.map(o => String(o.id)));
+    setPreparedItems(prev => {
+      const kept = Object.fromEntries(
+        Object.entries(prev).filter(([key]) => ids.has(key.split('-item-')[0]))
+      );
+      return Object.keys(kept).length === Object.keys(prev).length ? prev : kept;
+    });
+  }, [orders, isLoading]);
 
   const getElapsedMinutes = (dateString: string) => {
     const orderDate = new Date(dateString);
@@ -171,23 +213,20 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
   const getTimeElapsed = (dateString: string) => {
     const diffMins = getElapsedMinutes(dateString);
-    if (diffMins < 1) return "0 min";
-    if (diffMins < 60) return `${diffMins} min`;
+    // Format court pour tenir dans le bandeau : 7m, 45m, 1h05
+    if (diffMins < 60) return `${diffMins}m`;
     const hours = Math.floor(diffMins / 60);
     const mins = diffMins % 60;
-    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+    return `${hours}h${String(mins).padStart(2, '0')}`;
   };
 
+  // Couleur du minuteur : vert < 10 min, orange < 20 min, rouge clignotant au-delà
   const getTimerBadgeClass = (dateString: string, isClosed: boolean) => {
-    if (isClosed) return 'bg-black/30 text-slate-300 border-black/40';
+    if (isClosed) return 'bg-black/20 text-white/70';
     const diffMins = getElapsedMinutes(dateString);
-    if (diffMins < 10) {
-      return 'bg-emerald-950/70 text-emerald-300 border-emerald-500/50';
-    }
-    if (diffMins < 20) {
-      return 'bg-amber-400 text-slate-950 font-black border-amber-300 shadow-sm';
-    }
-    return 'bg-rose-600 text-white font-black border-rose-400 animate-pulse shadow-md';
+    if (diffMins < 10) return 'bg-emerald-600 text-white';
+    if (diffMins < 20) return 'bg-amber-400 text-slate-950';
+    return 'bg-red-600 text-white animate-pulse';
   };
 
   const loadOrders = async () => {
@@ -287,10 +326,25 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
   useEffect(() => {
     loadOrders();
-    
+
+    // Uniquement les commandes de CE restaurant (avant : rechargement à chaque commande de tous les restaurants)
+    const restoId = (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null)
+      || localStorage.getItem('pos_restaurant_id')
+      || RESTAURANT_ID;
+    if (!restoId || restoId === 'undefined' || restoId === 'null') return;
+
     const channel = supabase
-      .channel('dashboard_orders_sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, loadOrders)
+      .channel(`dashboard_orders_sync_${restoId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `restaurant_id=eq.${restoId}` }, loadOrders)
+      // Supabase ne filtre pas les suppressions : on les écoute à part, et on ne recharge
+      // que si la commande supprimée était affichée ici
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'orders' }, (payload: any) => {
+        const deletedId = payload?.old?.id;
+        if (deletedId == null) return;
+        setOrders(prev => prev.some(o => String(o.id) === String(deletedId))
+          ? prev.filter(o => String(o.id) !== String(deletedId))
+          : prev);
+      })
       .subscribe();
 
     return () => { 
@@ -322,8 +376,76 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
       toast.success(`Statut : ${newStatus}`);
       setOrders(prevOrders => prevOrders.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
       setActiveMenuOrderId(null);
+      if (isOrderClosed(newStatus)) setFocusedOrderId(prev => prev === orderId ? null : prev);
     } catch {
       toast.error("Erreur lors de la mise à jour");
+    }
+  };
+
+  // ── Impression (même fonctionnement que l'historique des commandes) ──
+  const handlePrintClientDuplicate = async (order: Order) => {
+    if (!(window as any).electronAPI) {
+      toast.error("Impression non disponible sur la version Web.");
+      return;
+    }
+    try {
+      const items = parseOrderDetails(order.order_details);
+      if (items.length === 0) {
+        toast.error("Impossible d'imprimer : détails de commande vides.");
+        return;
+      }
+      const payload: any = await buildReceiptPayloadFromOrder(order, optionGroupMapping, 'DUPLICATA');
+      payload.comment = flattenTicketComment(order.comment || (order as any).notes || '');
+      payload.customer_address_complement = order.customer_address_complement || order.address_complement || '';
+      payload.customer_address = order.customer_address || (order as any).address || '';
+      payload.customer_name = order.customer_name || '';
+      payload.customer_phone = order.customer_phone || '';
+
+      const result = await (window as any).electronAPI.printReceipt(payload);
+      if (!result?.success) toast.error("Erreur avec l'imprimante !");
+      else toast.success("Ticket caisse imprimé");
+    } catch (err) {
+      console.error("Erreur impression ticket caisse :", err);
+      toast.error("Erreur lors de la génération du ticket");
+    }
+  };
+
+  const handlePrintKitchen = async (order: Order) => {
+    if (!(window as any).electronAPI) {
+      toast.error("Impression non disponible sur la version Web.");
+      return;
+    }
+    try {
+      const items = parseOrderDetails(order.order_details);
+      if (items.length === 0) {
+        toast.error("Impossible d'imprimer : détails de commande vides.");
+        return;
+      }
+      const orderDate = new Date(order.created_at).toLocaleString('fr-FR', {
+        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+      });
+      let orderType = 'SUR PLACE';
+      if (order.order_type_id === ORDER_TYPE_ID.EMPORTER) orderType = 'EMPORTER';
+      if (order.order_type_id === ORDER_TYPE_ID.LIVRAISON) orderType = 'LIVRAISON';
+
+      const api = (window as any).electronAPI;
+      const printerName = (api?.getSetting ? api.getSetting('imprimante_cuisine', undefined) : localStorage.getItem('imprimante_cuisine')) || undefined;
+      const payload: any = buildKitchenReceiptPayload({
+        orderNumber: order.order_number || String(order.id).slice(0, 4),
+        orderType,
+        items,
+        groupMapping: optionGroupMapping,
+        orderDate,
+        comment: order.comment || (order as any).notes || ''
+      });
+      payload.comment = flattenTicketComment(order.comment || (order as any).notes || '');
+
+      const result = await api.printReceipt(payload, printerName);
+      if (!result?.success) toast.error("Erreur avec l'imprimante cuisine !");
+      else toast.success("Bon cuisine imprimé");
+    } catch (err) {
+      console.error("Erreur impression bon cuisine :", err);
+      toast.error("Erreur lors de l'impression du bon cuisine");
     }
   };
 
@@ -366,8 +488,23 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const deliveryOrders = useMemo(() => orders.filter(o => isDeliveryOrder(o) && !isOrderClosed(o.status)), [orders]);
   const closedOrders = useMemo(() => orders.filter(o => isOrderClosed(o.status)), [orders]);
 
+  // Affichage des terminées : les 100 plus récentes, rangées par le chiffre du numéro en ordre
+  // décroissant, quelle que soit la lettre (C5, A4, B3, C2, B1…)
+  const closedOrdersByNumber = useMemo(() => {
+    const label = (o: Order) => String(o.order_number || '').trim();
+    const digits = (o: Order) => {
+      const m = label(o).match(/\d+/);
+      return m ? parseInt(m[0], 10) : -1; // sans numéro : à la fin
+    };
+    const ts = (o: Order) => new Date((o as any).updated_at || o.created_at).getTime() || 0;
+    return [...closedOrders]
+      .sort((a, b) => ts(b) - ts(a))
+      .slice(0, 100)
+      .sort((a, b) => (digits(b) - digits(a)) || label(a).localeCompare(label(b), 'fr', { sensitivity: 'base' }));
+  }, [closedOrders]);
+
   const displayedOrders = useMemo(() => {
-    let list = activeTab === 'en_cours' ? activeOrders : closedOrders.slice(0, 60);
+    let list = activeTab === 'en_cours' ? activeOrders : closedOrdersByNumber;
 
     if (!searchQuery.trim()) return list;
 
@@ -378,7 +515,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
       const phone = String(o.customer_phone || '').toLowerCase();
       return num.includes(q) || name.includes(q) || phone.includes(q);
     });
-  }, [activeTab, activeOrders, closedOrders, searchQuery]);
+  }, [activeTab, activeOrders, closedOrdersByNumber, searchQuery]);
 
   const columns = useMemo(() => {
     const cols: Order[][] = Array.from({ length: colCount }, () => []);
@@ -387,6 +524,242 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
     });
     return cols;
   }, [displayedOrders, colCount]);
+
+
+  const renderOrderCard = (order: Order, inFocus: boolean = false) => {
+                const customerName = order.customer_name || "Client Caisse";
+                const customerPhone = order.customer_phone || "";
+                const customerAddress = order.customer_address || "";
+                const addressComplement = order.customer_address_complement || order.address_complement || order.additionalInfo || "";
+                const orderComment = order.comment || order.notes || "";
+                const isPaid = order.is_paid || order.payment_status === 'paid';
+                const items = parseOrderDetails(order.order_details);
+                const isCustomerOpen = customerOrderId === order.id;
+                const isClosed = isOrderClosed(order.status);
+                const isRecalled = !!recalledOrderIds[order.id];
+                // Onglet Terminées : seul le bandeau coloré est affiché, un toucher déplie la commande
+                const isCollapsed = isClosed && !inFocus && !expandedClosedIds[order.id];
+
+                const typeInfo = getOrderTypeDetails(order);
+                const TypeIcon = typeInfo.Icon;
+                const nextStatusAction = getNextStatusAction(order.status);
+
+                const orderNum = (order.order_number && String(order.order_number).toLowerCase() !== 'nan' && String(order.order_number).trim() !== '')
+                  ? String(order.order_number).trim()
+                  : `#${String(order.id).slice(-3)}`;
+
+                return (
+                  <div 
+                    key={order.id} 
+                    className={`bg-slate-900 border-2 flex flex-col h-auto overflow-visible rounded-none shadow-md relative transition-all ${
+                      focusedOrderId === order.id && !inFocus ? 'border-amber-400' : 'border-slate-700'
+                    }`}
+                  >
+                    
+                    {/* EN-TÊTE DU TICKET */}
+                    <div 
+                      onClick={isClosed ? (e) => toggleClosedExpanded(order.id, e) : undefined}
+                      className={`${typeInfo.bgClass} px-2 py-1.5 border-b border-black/30 text-white flex justify-between items-center w-full min-w-0 flex-shrink-0 relative select-none gap-1 ${isClosed ? 'cursor-pointer min-h-[48px]' : ''}`}
+                    >
+                      {/* Côté gauche : numéro et alerte non payé, sur toute la hauteur du bandeau */}
+                      <div className="flex items-stretch gap-0.5 shrink-0 self-stretch -my-1.5 -ml-2 min-w-0">
+                        <h3 
+                          onClick={(e) => toggleFocus(order.id, e)}
+                          className="min-h-[44px] px-2 flex items-center gap-1.5 text-xl font-black text-white leading-none cursor-pointer tracking-tight shrink-0 active:bg-white/20"
+                          title={`${typeInfo.label} — toucher pour ${inFocus ? 'fermer' : 'voir la commande en grand'}`}
+                        >
+                          <TypeIcon size={16} className="opacity-80" aria-label={typeInfo.label} />
+                          {orderNum}
+                        </h3>
+                        {!isPaid && (
+                          <span
+                            className="min-w-[44px] flex items-center justify-center bg-red-600 text-white border-x-2 border-white/70 shrink-0 animate-pulse"
+                            title="Non payé"
+                            aria-label="Non payé"
+                            role="img"
+                          >
+                            <Banknote size={24} strokeWidth={2.5} />
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-stretch gap-0.5 shrink-0 self-stretch -my-1.5 -mr-2">
+                        <button
+                          type="button"
+                          onClick={(e) => openCustomerSheet(order.id, e)}
+                          className={`min-w-[40px] min-h-[44px] flex items-center justify-center transition-all active:scale-95 ${
+                            isCustomerOpen ? 'bg-amber-400 text-slate-950 shadow' : 'text-white hover:bg-white/20 active:bg-white/30'
+                          }`}
+                          title="Fiche client"
+                          aria-label="Fiche client"
+                        >
+                          <User size={22} />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => handleRecallOrder(order.id, e)}
+                          className={`min-w-[40px] min-h-[44px] flex items-center justify-center transition-all active:scale-95 ${
+                            isRecalled 
+                              ? 'bg-amber-400 text-slate-950 animate-pulse ring-2 ring-inset ring-amber-300' 
+                              : 'text-white hover:bg-amber-500 hover:text-slate-950 active:bg-white/30'
+                          }`}
+                          title="Faire sonner la commande"
+                          aria-label="Faire sonner la commande"
+                        >
+                          <Bell size={22} />
+                        </button>
+
+                        {/* Minuteur bord à bord, couleur selon l'attente */}
+                        <div
+                          className={`min-w-[48px] px-1 flex items-center justify-center text-lg font-black leading-none tabular-nums shrink-0 transition-colors ${getTimerBadgeClass(order.created_at, isClosed)}`}
+                          title="Temps écoulé depuis la commande"
+                        >
+                          {getTimeElapsed(order.created_at)}
+                        </div>
+
+                        <button 
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setActiveMenuOrderId(order.id); }} 
+                          className="min-w-[50px] min-h-[44px] text-white hover:bg-white/20 active:bg-white/30 active:scale-95 transition-all flex items-center justify-center"
+                          title="Statut et impression"
+                          aria-label="Changer le statut ou imprimer"
+                        >
+                          <CircleEllipsis size={28} strokeWidth={2.25} />
+                        </button>
+
+                        {isClosed && !inFocus && (
+                          <span className="text-white/80 flex items-center pr-1" aria-hidden>
+                            {isCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {!isCollapsed && (<>
+                    {/* CORPS DU TICKET */}
+                      <div className="p-2 bg-slate-100 text-slate-900 space-y-2">
+                        {items.map((item: any, itemIdx: number) => {
+                          const itemKey = `${order.id}-item-${itemIdx}`;
+                          const qty = item.quantity || 1;
+                          const prodName = item.product?.name || item.name || "Produit";
+                          const optionGroups = getFormattedOrderOptions(item, optionGroupMapping);
+
+                          return (
+                            <div key={itemIdx} className="border-b border-slate-200/80 pb-1.5 last:border-0">
+                              
+                              <div 
+                                onClick={() => togglePrepared(itemKey)}
+                                className={`cursor-pointer transition-all inline-flex items-center gap-1 text-[12px] font-black uppercase tracking-wide px-2 py-0.5 border shadow-sm ${
+                                  preparedItems[itemKey] 
+                                    ? '!bg-emerald-400 !text-slate-950 !border-emerald-500' 
+                                    : 'bg-black text-white border-slate-900 hover:bg-slate-800'
+                                }`}
+                              >
+                                <span>{qty}x</span> 
+                                <span className="truncate">{prodName}</span>
+                              </div>
+
+                              {optionGroups.length > 0 && (
+                                <div className="pl-1 mt-1 space-y-1">
+                                  {optionGroups.map((grp, gIdx) => (
+                                    <div key={gIdx} className="flex flex-wrap items-baseline gap-1.5 leading-tight">
+                                      {grp.items.map((opt, oIdx) => {
+                                        const optKey = `${itemKey}-grp-${gIdx}-opt-${oIdx}`;
+                                        const isHighlighted = preparedItems[optKey];
+                                        const isKdsHidden = checkIsKdsHidden(grp, opt);
+
+                                        if (isKdsHidden && !opt.isSans) {
+                                          return (
+                                            <span 
+                                              key={oIdx}
+                                              onClick={() => togglePrepared(optKey)}
+                                              className={`cursor-pointer transition-all inline-flex items-center gap-1 text-[12px] font-black uppercase tracking-wide bg-purple-700 text-white px-2.5 py-0.5 border border-purple-900 shadow-sm ${
+                                                isHighlighted ? '!bg-emerald-400 !text-slate-950 !border-emerald-500' : ''
+                                              }`}
+                                            >
+                                              {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
+                                              {opt.price > 0 && <span className="text-purple-200 font-bold ml-0.5 text-[10px]">(+{opt.price.toFixed(2)}€)</span>}
+                                            </span>
+                                          );
+                                        }
+
+                                        return (
+                                          <span 
+                                            key={oIdx} 
+                                            onClick={() => togglePrepared(optKey)}
+                                            className={`cursor-pointer transition-all ${
+                                              isHighlighted 
+                                                ? 'bg-emerald-400 text-slate-950 font-black px-1 text-[10px]' 
+                                                : opt.isSans 
+                                                  ? 'bg-red-50 text-red-700 border border-red-200 font-black uppercase px-1 text-[10px]' 
+                                                  : 'text-slate-900 font-extrabold uppercase text-[10px]'
+                                            }`}
+                                          >
+                                            {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
+                                            {opt.price > 0 && <span className="text-slate-500 font-normal"> (+{opt.price.toFixed(2)}€)</span>}
+                                            {oIdx < grp.items.length - 1 ? ', ' : ''}
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                            </div>
+                          );
+                        })}
+
+                        {/* 🟢 BANDEAU NOTE / COMMENTAIRE VISIBLE DIRECTEMENT SOUS LES ARTICLES */}
+                        {orderComment && (
+                          <div className="mt-2 p-2 bg-amber-300 border-2 border-amber-600 text-slate-950 font-black text-[11px] uppercase flex items-start gap-1.5 shadow-sm">
+                            <MessageSquare size={14} className="text-amber-900 shrink-0 mt-0.5" />
+                            <span className="leading-tight">NOTE : {orderComment}</span>
+                          </div>
+                        )}
+                      </div>
+
+                    {/* PIED DU TICKET */}
+                    <div className={`flex flex-col z-10 flex-shrink-0 ${getStatusFooterStyles(order.status)}`}>
+                      <div className="px-2 py-1.5 truncate text-[11px] font-black uppercase text-white min-w-0 leading-tight">
+                        {customerName} <span className="opacity-70">•</span> {order.total_price?.toFixed(2)} €
+                      </div>
+
+                      {/* Action principale : un seul gros bouton sur toute la largeur */}
+                      {nextStatusAction && (
+                        <button 
+                          type="button"
+                          onClick={(e) => { 
+                            e.stopPropagation(); 
+                            handleUpdateStatus(order.id, nextStatusAction.next); 
+                          }} 
+                          className={`w-full h-12 rounded-none text-base font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 border-t border-black/20 active:brightness-90 ${nextStatusAction.bgClass}`}
+                          title={`Passer à : ${nextStatusAction.next}`}
+                        >
+                          {nextStatusAction.next === 'Fermé' ? (
+                            <>
+                              <CheckCircle2 size={22} strokeWidth={3} />
+                              <span>CLÔTURER</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>{nextStatusAction.label}</span>
+                              <ChevronRight size={22} strokeWidth={3} />
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                    </>)}
+
+                  </div>
+                );
+  };
+
+  const statusMenuOrder = orders.find(o => o.id === activeMenuOrderId) || null;
+  const focusedOrder = orders.find(o => o.id === focusedOrderId) || null;
+  const customerOrder = orders.find(o => o.id === customerOrderId) || null;
 
   return createPortal(
     <div className="fixed inset-0 z-[99999] bg-[#0f172a] flex flex-col font-helvetica select-none rounded-none text-slate-100">
@@ -482,337 +855,15 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                   {searchQuery ? 'Aucune commande trouvée' : 'Aucune commande dans cet onglet'}
                 </p>
               </div>
+            ) : activeTab === 'fermees' ? (
+              <div className="grid gap-2 items-start pb-6" style={{ gridTemplateColumns: `repeat(${colCount}, minmax(0, 1fr))` }}>
+                {displayedOrders.map(o => renderOrderCard(o))}
+              </div>
             ) : (
               <div className="flex gap-2 items-start pb-6">
                 {columns.map((colOrders, colIdx) => (
                   <div key={colIdx} className="flex-1 flex flex-col gap-2 min-w-0">
-                    {colOrders.map((order) => {
-                      const customerName = order.customer_name || "Client Caisse";
-                      const customerPhone = order.customer_phone || "";
-                      const customerAddress = order.customer_address || "";
-                      const addressComplement = order.customer_address_complement || order.address_complement || order.additionalInfo || "";
-                      const orderComment = order.comment || order.notes || "";
-                      const isPaid = order.is_paid || order.payment_status === 'paid';
-                      const items = parseOrderDetails(order.order_details);
-                      const isFlipped = !!flippedOrders[order.id];
-                      const isClosed = isOrderClosed(order.status);
-                      const isRecalled = !!recalledOrderIds[order.id];
-
-                      const typeInfo = getOrderTypeDetails(order);
-                      const TypeIcon = typeInfo.Icon;
-                      const nextStatusAction = getNextStatusAction(order.status);
-
-                      const orderNum = (order.order_number && String(order.order_number).toLowerCase() !== 'nan' && String(order.order_number).trim() !== '')
-                        ? String(order.order_number).trim()
-                        : `#${String(order.id).slice(-3)}`;
-
-                      return (
-                        <div 
-                          key={order.id} 
-                          className={`bg-slate-900 border-2 border-slate-700 flex flex-col h-auto overflow-visible rounded-none shadow-md relative transition-all ${
-                            isFlipped ? 'ring-2 ring-amber-400' : ''
-                          }`}
-                        >
-                          
-                          {/* EN-TÊTE DU TICKET */}
-                          <div 
-                            className={`${typeInfo.bgClass} px-2 py-1.5 border-b border-black/30 text-white flex justify-between items-center w-full min-w-0 flex-shrink-0 relative select-none gap-1`}
-                          >
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <h3 
-                                onClick={(e) => toggleCustomerView(order.id, e)}
-                                className="text-sm sm:text-base font-black text-white shrink-0 leading-none cursor-pointer hover:underline tracking-tight"
-                                title="Toucher pour basculer les infos client"
-                              >
-                                {orderNum}
-                              </h3>
-                              <span className="px-1 py-0.5 text-[8px] font-black uppercase bg-white/20 text-white leading-none shrink-0 flex items-center gap-0.5">
-                                <TypeIcon size={9} />
-                                {typeInfo.abbr}
-                              </span>
-                              {isPaid ? (
-                                <span className="bg-white/25 text-white px-1 py-0.5 text-[7.5px] font-black uppercase tracking-wider leading-none shrink-0">
-                                  PAYÉ
-                                </span>
-                              ) : (
-                                <span className="bg-red-600 text-white px-1 py-0.5 text-[7.5px] font-black uppercase tracking-wider leading-none shrink-0 animate-pulse border border-white/20">
-                                  NON PAYÉ
-                                </span>
-                              )}
-                            </div>
-
-                            <div className="flex items-center gap-0.5 shrink-0">
-                              <button
-                                type="button"
-                                onClick={(e) => toggleCustomerView(order.id, e)}
-                                className={`p-1 flex items-center justify-center transition-all active:scale-95 ${
-                                  isFlipped ? 'bg-amber-400 text-slate-950 shadow' : 'bg-black/25 text-white hover:bg-white/20'
-                                }`}
-                                title="Fiche client"
-                              >
-                                <User size={13} />
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={(e) => handleRecallOrder(order.id, e)}
-                                className={`p-1 flex items-center justify-center transition-all active:scale-95 ${
-                                  isRecalled 
-                                    ? 'bg-amber-400 text-slate-950 animate-pulse ring-2 ring-amber-300' 
-                                    : 'bg-black/25 text-white hover:bg-amber-500 hover:text-slate-950'
-                                }`}
-                                title="Faire sonner la commande"
-                              >
-                                <Bell size={13} />
-                              </button>
-
-                              <div className={`px-1 py-0.5 border flex items-center gap-0.5 text-[8.5px] font-black leading-none shrink-0 ${getTimerBadgeClass(order.created_at, isClosed)}`}>
-                                <Clock size={9} />
-                                <span>{getTimeElapsed(order.created_at)}</span>
-                              </div>
-
-                              <div className="relative">
-                                <button 
-                                  type="button"
-                                  onClick={(e) => { 
-                                    e.stopPropagation(); 
-                                    setActiveMenuOrderId(activeMenuOrderId === order.id ? null : order.id); 
-                                  }} 
-                                  className="p-1 text-white hover:bg-white/20 active:scale-95 transition-all flex items-center justify-center"
-                                  title="Changer statut"
-                                >
-                                  <MoreVertical size={14} />
-                                </button>
-
-                                {activeMenuOrderId === order.id && (
-                                  <div 
-                                    onClick={(e) => e.stopPropagation()} 
-                                    className="absolute right-0 top-full mt-1 bg-white border-2 border-slate-700 shadow-2xl z-[200] flex flex-col text-[10px] font-black uppercase tracking-wider min-w-[120px] rounded-none overflow-hidden"
-                                  >
-                                    {['Nouvelle', 'En cours', 'Prêt', 'Fermé'].map(st => (
-                                      <button 
-                                        key={st} 
-                                        type="button"
-                                        onClick={(e) => { e.stopPropagation(); handleUpdateStatus(order.id, st); }} 
-                                        className="px-3 py-2 text-slate-900 text-left border-b border-gray-100 hover:bg-slate-100 last:border-0 transition-colors"
-                                      >
-                                        {st}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* CORPS DU TICKET */}
-                          {isFlipped ? (
-                            <div className="p-2.5 bg-slate-900 text-white space-y-2">
-                              <div className="flex items-center justify-between border-b border-slate-700 pb-1">
-                                <span className="text-[10px] font-black uppercase text-amber-400 flex items-center gap-1.5">
-                                  <User size={12} /> Fiche Client
-                                </span>
-                                <button 
-                                  type="button"
-                                  onClick={(e) => toggleCustomerView(order.id, e)} 
-                                  className="text-[9.5px] font-bold text-slate-400 hover:text-white flex items-center gap-1 uppercase underline"
-                                >
-                                  <ArrowLeftRight size={11} /> Voir articles
-                                </button>
-                              </div>
-
-                              <div>
-                                <div className="text-[8.5px] font-bold uppercase text-slate-400">Nom</div>
-                                <div className="text-xs font-black text-white truncate">{customerName}</div>
-                              </div>
-
-                              <div>
-                                <div className="text-[8.5px] font-bold uppercase text-slate-400">Téléphone</div>
-                                {customerPhone ? (
-                                  <a href={`tel:${customerPhone}`} className="text-xs font-black text-emerald-400 flex items-center gap-1 hover:underline">
-                                    <Phone size={11} /> {customerPhone}
-                                  </a>
-                                ) : (
-                                  <div className="text-xs text-slate-500 italic">Non renseigné</div>
-                                )}
-                              </div>
-
-                              {customerAddress && (
-                                <div className="space-y-1">
-                                  <div>
-                                    <div className="text-[8.5px] font-bold uppercase text-slate-400">Adresse de livraison</div>
-                                    <a 
-                                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(customerAddress)}`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-[10.5px] font-bold text-blue-300 flex items-start gap-1 hover:underline leading-tight"
-                                    >
-                                      <MapPin size={12} className="text-red-400 shrink-0 mt-0.5" />
-                                      <span>{customerAddress}</span>
-                                    </a>
-                                  </div>
-
-                                  {/* COMPLÉMENT D'ADRESSE */}
-                                  {addressComplement && (
-                                    <div className="pl-4 pt-0.5">
-                                      <div className="text-[8px] font-bold uppercase text-slate-400 flex items-center gap-1">
-                                        <Info size={9} className="text-amber-400" /> Complément
-                                      </div>
-                                      <div className="text-[10px] font-black text-amber-300 bg-slate-800/80 px-1.5 py-0.5 border border-slate-700 mt-0.5">
-                                        {addressComplement}
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-
-                              <div className="pt-1 border-t border-slate-800 grid grid-cols-2 gap-2 text-[9.5px]">
-                                <div>
-                                  <span className="text-slate-400 font-bold block uppercase text-[8px]">Paiement</span>
-                                  <span className="font-bold flex items-center gap-1 text-slate-200 uppercase truncate">
-                                    {order.payment_method?.toLowerCase().includes('carte') || order.payment_method?.toLowerCase().includes('cb') 
-                                      ? <CreditCard size={11} className="text-blue-400" /> 
-                                      : <Banknote size={11} className="text-emerald-400" />}
-                                    {order.payment_method || 'Caisse'}
-                                  </span>
-                                </div>
-
-                                <div>
-                                  <span className="text-slate-400 font-bold block uppercase text-[8px]">Origine</span>
-                                  <span className="font-bold flex items-center gap-1 text-slate-200 uppercase truncate">
-                                    {order.order_origin === 'app' ? <Smartphone size={11} className="text-purple-400" /> : <Store size={11} className="text-amber-400" />}
-                                    {order.order_origin || 'Caisse'}
-                                  </span>
-                                </div>
-                              </div>
-
-                              {orderComment && (
-                                <div className="p-1.5 bg-slate-800 border border-slate-700 text-[9.5px]">
-                                  <span className="text-amber-400 font-black block uppercase text-[8px] flex items-center gap-1 mb-0.5">
-                                    <MessageSquare size={9} /> Note :
-                                  </span>
-                                  <span className="text-slate-200 italic">{orderComment}</span>
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <div className="p-2 bg-slate-100 text-slate-900 space-y-2">
-                              {items.map((item: any, itemIdx: number) => {
-                                const itemKey = `${order.id}-item-${itemIdx}`;
-                                const qty = item.quantity || 1;
-                                const prodName = item.product?.name || item.name || "Produit";
-                                const optionGroups = getFormattedOrderOptions(item, optionGroupMapping);
-
-                                return (
-                                  <div key={itemIdx} className="border-b border-slate-200/80 pb-1.5 last:border-0">
-                                    
-                                    <div 
-                                      onClick={() => togglePrepared(itemKey)}
-                                      className={`cursor-pointer transition-all inline-flex items-center gap-1 text-[12px] font-black uppercase tracking-wide px-2 py-0.5 border shadow-sm ${
-                                        preparedItems[itemKey] 
-                                          ? '!bg-emerald-400 !text-slate-950 !border-emerald-500' 
-                                          : 'bg-black text-white border-slate-900 hover:bg-slate-800'
-                                      }`}
-                                    >
-                                      <span>{qty}x</span> 
-                                      <span className="truncate">{prodName}</span>
-                                    </div>
-
-                                    {optionGroups.length > 0 && (
-                                      <div className="pl-1 mt-1 space-y-1">
-                                        {optionGroups.map((grp, gIdx) => (
-                                          <div key={gIdx} className="flex flex-wrap items-baseline gap-1.5 leading-tight">
-                                            {grp.items.map((opt, oIdx) => {
-                                              const optKey = `${itemKey}-grp-${gIdx}-opt-${oIdx}`;
-                                              const isHighlighted = preparedItems[optKey];
-                                              const isKdsHidden = checkIsKdsHidden(grp, opt);
-
-                                              if (isKdsHidden && !opt.isSans) {
-                                                return (
-                                                  <span 
-                                                    key={oIdx}
-                                                    onClick={() => togglePrepared(optKey)}
-                                                    className={`cursor-pointer transition-all inline-flex items-center gap-1 text-[12px] font-black uppercase tracking-wide bg-purple-700 text-white px-2.5 py-0.5 border border-purple-900 shadow-sm ${
-                                                      isHighlighted ? '!bg-emerald-400 !text-slate-950 !border-emerald-500' : ''
-                                                    }`}
-                                                  >
-                                                    {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
-                                                    {opt.price > 0 && <span className="text-purple-200 font-bold ml-0.5 text-[10px]">(+{opt.price.toFixed(2)}€)</span>}
-                                                  </span>
-                                                );
-                                              }
-
-                                              return (
-                                                <span 
-                                                  key={oIdx} 
-                                                  onClick={() => togglePrepared(optKey)}
-                                                  className={`cursor-pointer transition-all ${
-                                                    isHighlighted 
-                                                      ? 'bg-emerald-400 text-slate-950 font-black px-1 text-[10px]' 
-                                                      : opt.isSans 
-                                                        ? 'bg-red-50 text-red-700 border border-red-200 font-black uppercase px-1 text-[10px]' 
-                                                        : 'text-slate-900 font-extrabold uppercase text-[10px]'
-                                                  }`}
-                                                >
-                                                  {opt.qty > 1 ? `${opt.qty}x ` : ''}{opt.name}
-                                                  {opt.price > 0 && <span className="text-slate-500 font-normal"> (+{opt.price.toFixed(2)}€)</span>}
-                                                  {oIdx < grp.items.length - 1 ? ', ' : ''}
-                                                </span>
-                                              );
-                                            })}
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
-
-                                  </div>
-                                );
-                              })}
-
-                              {/* 🟢 BANDEAU NOTE / COMMENTAIRE VISIBLE DIRECTEMENT SOUS LES ARTICLES */}
-                              {orderComment && (
-                                <div className="mt-2 p-2 bg-amber-300 border-2 border-amber-600 text-slate-950 font-black text-[11px] uppercase flex items-start gap-1.5 shadow-sm">
-                                  <MessageSquare size={14} className="text-amber-900 shrink-0 mt-0.5" />
-                                  <span className="leading-tight">NOTE : {orderComment}</span>
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {/* PIED DU TICKET */}
-                          <div className={`px-2 py-1.5 flex justify-between items-center z-10 flex-shrink-0 gap-2 ${getStatusFooterStyles(order.status)}`}>
-                            <div className="truncate text-[11px] font-black uppercase text-white flex-1 min-w-0 leading-tight">
-                              {customerName} <span className="opacity-70">•</span> {order.total_price?.toFixed(2)} €
-                            </div>
-
-                            {nextStatusAction && (
-                              <button 
-                                type="button"
-                                onClick={(e) => { 
-                                  e.stopPropagation(); 
-                                  handleUpdateStatus(order.id, nextStatusAction.next); 
-                                }} 
-                                className={`h-7 px-2.5 rounded-none text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 shadow active:scale-95 shrink-0 ${nextStatusAction.bgClass}`}
-                                title={`Passer à : ${nextStatusAction.next}`}
-                              >
-                                {nextStatusAction.next === 'Fermé' ? (
-                                  <>
-                                    <CheckCircle2 size={13} strokeWidth={3} />
-                                    <span>CLÔTURER</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <span>{nextStatusAction.label}</span>
-                                    <ChevronRight size={13} strokeWidth={3} />
-                                  </>
-                                )}
-                              </button>
-                            )}
-                          </div>
-
-                        </div>
-                      );
-                    })}
+                    {colOrders.map(o => renderOrderCard(o))}
                   </div>
                 ))}
               </div>
@@ -820,6 +871,185 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
           </div>
         )}
       </div>
+
+      {/* COMMANDE EN GRAND : la même carte, agrandie au centre de l'écran */}
+      {focusedOrder && (
+        <div
+          className="fixed inset-0 z-[100000] bg-black/75 flex items-center justify-center p-4"
+          onClick={() => setFocusedOrderId(null)}
+        >
+          <div
+            className="w-[380px] max-w-[60vw] max-h-[58vh] overflow-y-auto custom-scrollbar shadow-2xl"
+            style={{ zoom: 1.6 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {renderOrderCard(focusedOrder, true)}
+          </div>
+        </div>
+      )}
+
+      {/* FICHE CLIENT */}
+      {customerOrder && (() => {
+        const typeInfo = getOrderTypeDetails(customerOrder);
+        const phone = customerOrder.customer_phone || '';
+        const address = customerOrder.customer_address || '';
+        const complement = customerOrder.customer_address_complement || customerOrder.address_complement || customerOrder.additionalInfo || '';
+        const note = customerOrder.comment || (customerOrder as any).notes || '';
+        const method = customerOrder.payment_method || 'Caisse';
+        const isCard = /carte|cb/i.test(method);
+        const isPaid = customerOrder.is_paid || customerOrder.payment_status === 'paid';
+        const num = (customerOrder.order_number && String(customerOrder.order_number).trim()) || `#${String(customerOrder.id).slice(-3)}`;
+        return (
+          <div
+            className="fixed inset-0 z-[100001] bg-black/70 flex items-center justify-center p-4"
+            onClick={() => setCustomerOrderId(null)}
+          >
+            <div
+              className="bg-white text-slate-900 w-full max-w-xl max-h-[90vh] overflow-y-auto shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className={`${typeInfo.bgClass} text-white px-5 py-3 flex items-center justify-between`}>
+                <div className="flex items-center gap-2 text-2xl font-black">
+                  <typeInfo.Icon size={22} /> {num}
+                  <span className="text-sm font-bold opacity-80 ml-1">{typeInfo.label}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCustomerOrderId(null)}
+                  className="w-12 h-12 -mr-3 flex items-center justify-center active:bg-white/20"
+                  aria-label="Fermer"
+                >
+                  <X size={26} />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <div>
+                  <div className="text-xs font-bold uppercase text-slate-500 flex items-center gap-1.5"><User size={14} /> Client</div>
+                  <div className="text-2xl font-black">{customerOrder.customer_name || 'Client Caisse'}</div>
+                </div>
+
+                <div>
+                  <div className="text-xs font-bold uppercase text-slate-500 flex items-center gap-1.5"><Phone size={14} /> Téléphone</div>
+                  {phone
+                    ? <a href={`tel:${phone}`} className="text-2xl font-black text-emerald-700 tracking-wide">{phone}</a>
+                    : <div className="text-lg italic text-slate-400">Non renseigné</div>}
+                </div>
+
+                {address && (
+                  <div>
+                    <div className="text-xs font-bold uppercase text-slate-500 flex items-center gap-1.5"><MapPin size={14} /> Adresse de livraison</div>
+                    <a
+                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xl font-bold text-blue-700 leading-snug block"
+                    >
+                      {address}
+                    </a>
+                    {complement && (
+                      <div className="mt-2 px-3 py-2 bg-amber-100 border-l-4 border-amber-500 text-lg font-black text-amber-900">
+                        {complement}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {note && (
+                  <div className="px-3 py-2 bg-amber-300 border-2 border-amber-600 text-slate-950 font-black text-lg uppercase flex items-start gap-2">
+                    <MessageSquare size={20} className="shrink-0 mt-0.5" /> {note}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-3 pt-3 border-t border-slate-200">
+                  <div>
+                    <div className="text-xs font-bold uppercase text-slate-500">Paiement</div>
+                    <div className="font-black text-base flex items-center gap-1.5 uppercase">
+                      {isCard ? <CreditCard size={18} className="text-blue-600" /> : <Banknote size={18} className="text-emerald-600" />}
+                      <span className="truncate">{method}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold uppercase text-slate-500">Origine</div>
+                    <div className="font-black text-base flex items-center gap-1.5 uppercase">
+                      {customerOrder.order_origin === 'app' ? <Smartphone size={18} className="text-purple-600" /> : <Store size={18} className="text-amber-600" />}
+                      {customerOrder.order_origin || 'Caisse'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold uppercase text-slate-500">Total</div>
+                    <div className="font-black text-xl">{customerOrder.total_price?.toFixed(2)} €</div>
+                    {!isPaid && <div className="text-xs font-black uppercase text-red-600">Non payé</div>}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {statusMenuOrder && (
+        <div
+          className="fixed inset-0 z-[100002] bg-black/70 flex items-center justify-center p-4"
+          onClick={() => setActiveMenuOrderId(null)}
+        >
+          <div
+            className="bg-white w-full max-w-sm shadow-2xl flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className={`${getOrderTypeDetails(statusMenuOrder).bgClass} text-white px-4 py-3 font-black text-lg uppercase flex items-center justify-between`}>
+              <span>
+                {(statusMenuOrder.order_number && String(statusMenuOrder.order_number).trim()) || `#${String(statusMenuOrder.id).slice(-3)}`}
+              </span>
+              <button
+                type="button"
+                onClick={() => setActiveMenuOrderId(null)}
+                className="w-11 h-11 -mr-2 flex items-center justify-center bg-black/25 active:scale-95"
+                aria-label="Fermer"
+              >
+                <X size={22} />
+              </button>
+            </div>
+            {/* Impression : mêmes icônes que l'historique des commandes */}
+            <div className="grid grid-cols-2 border-b-4 border-slate-200">
+              <button
+                type="button"
+                onClick={() => handlePrintClientDuplicate(statusMenuOrder)}
+                className="h-20 flex items-center justify-center text-blue-600 border-r border-slate-200 active:bg-blue-50"
+                title="Imprimer le ticket caisse"
+                aria-label="Imprimer le ticket caisse"
+              >
+                <Printer size={34} />
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePrintKitchen(statusMenuOrder)}
+                className="h-20 flex items-center justify-center text-orange-600 active:bg-orange-50"
+                title="Imprimer le bon cuisine"
+                aria-label="Imprimer le bon cuisine"
+              >
+                <ChefHat size={34} />
+              </button>
+            </div>
+            {['Nouvelle', 'En cours', 'Prêt', 'Fermé'].map(st => {
+              const isCurrent = String(statusMenuOrder.status || '').toLowerCase() === st.toLowerCase();
+              return (
+                <button
+                  key={st}
+                  type="button"
+                  onClick={() => handleUpdateStatus(statusMenuOrder.id, st)}
+                  className={`h-16 px-5 text-left text-lg font-black uppercase tracking-wide border-b border-gray-200 last:border-0 flex items-center justify-between active:bg-slate-200 ${
+                    isCurrent ? 'bg-slate-900 text-white' : 'text-slate-900 hover:bg-slate-100'
+                  }`}
+                >
+                  {st}
+                  {isCurrent && <CheckCircle2 size={22} />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
     </div>,
     document.body
