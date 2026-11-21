@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { supabase } from '@/lib/supabaseClient';
 import { ORDER_TYPE_ID } from './orderTypes';
+import { resolveBaseUnitPrice } from './loadedOrderPricing';
 
 export interface FormattedOptionItem {
   id?: string | number;
@@ -644,7 +645,9 @@ export const buildClientReceiptPayload = (params: {
       id: item.id || item.product?.id,
       qty: item.quantity || item.qty || 1,
       name: finalItemName,
-      unitPrice: item.price !== undefined ? item.price : (item.product?.price || 0),
+      // Prix HORS options : l'imprimante ajoute elle-même le prix de chaque option (notes).
+      // Borne / app enregistrent item.price options comprises : sans ça, les suppléments sont comptés deux fois.
+      unitPrice: resolveBaseUnitPrice(item, groupMapping),
       notes,
       // Catégorie du produit (la caisse la range dans product.category) : sert au routage par catégorie
       categoryName: item.product?.category_name || item.product?.category || item.category_name || item.category || ''
