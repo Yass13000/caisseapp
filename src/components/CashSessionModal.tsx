@@ -47,8 +47,8 @@ const CashSessionModal = ({
   const [isClosingConfirm, setIsClosingConfirm] = useState(false);
 
   // 1. Récupération robuste des données de la session
-  const fetchSessionReportData = async (sessionId: string) => {
-    setIsLoading(true);
+  const fetchSessionReportData = async (sessionId: string, opts: { keepCounted?: boolean; silent?: boolean } = {}): Promise<any | null> => {
+    if (!opts.silent) setIsLoading(true);
     try {
       const activeRestoId = getActiveRestaurantId() || RESTAURANT_ID;
 
@@ -73,12 +73,14 @@ const CashSessionModal = ({
       }
 
       // C. Commandes payées rattachées à la session (exclusion des annulées)
-      const { data: orders } = await supabase
+      const { data: orders, error: ordersErr } = await supabase
         .from('orders')
         .select('total_price, payment_method, cash_amount, order_origin')
         .eq('session_id', sessionId)
         .eq('is_paid', true)
         .neq('status', 'Annulée');
+      // Jamais de Z à 0 € parce que la lecture des ventes a échoué
+      if (ordersErr) throw ordersErr;
 
       let totalSales = 0;
       let totalCash = 0;
@@ -160,12 +162,14 @@ const CashSessionModal = ({
       };
 
       setSessionReport(reportObj);
-      setCountedCashStr(expectedCashVal.toFixed(2));
+      if (!opts.keepCounted) setCountedCashStr(expectedCashVal.toFixed(2));
+      return reportObj;
     } catch (err) {
       console.error("Erreur rapport caisse :", err);
       toast.error("Erreur lors de l'analyse de la session");
+      return null;
     } finally {
-      setIsLoading(false);
+      if (!opts.silent) setIsLoading(false);
     }
   };
 
@@ -249,21 +253,33 @@ const CashSessionModal = ({
 
     setIsProcessing(true);
     try {
+      // Chiffres relus au moment de clôturer : une vente encaissée pendant que l'écran Z était
+      // ouvert (autre caisse, livreur, synchro hors-ligne) ne doit pas sortir de tous les Z.
+      const fresh = await fetchSessionReportData(currentSessionId, { keepCounted: true, silent: true });
+      if (!fresh) {
+        toast.error("Impossible de relire les ventes : clôture annulée, réessayez");
+        return;
+      }
+      if (Math.abs(fresh.totalSales - sessionReport.totalSales) > 0.004 || Math.abs(fresh.expectedCash - sessionReport.expectedCash) > 0.004) {
+        toast.info(`Ventes mises à jour : ${fresh.totalSales.toFixed(2)} € — vérifiez le comptage puis clôturez`);
+        return;
+      }
+      const report = fresh;
       const closedAt = new Date().toISOString();
-      const discrepancy = round2(actualCashCounted - sessionReport.expectedCash);
+      const discrepancy = round2(actualCashCounted - report.expectedCash);
 
       // Snapshot JSON identique au format natif des clôtures
       const snapshot = {
-        opened_at: sessionReport.openedAt,
+        opened_at: report.openedAt,
         closed_at: closedAt,
-        opening_balance: sessionReport.openingFloat,
-        totalSales: sessionReport.totalSales,
-        cashSales: sessionReport.totalCash,
-        cardSalesTotal: sessionReport.totalCard,
-        cardSalesCaisse: sessionReport.cardSalesCaisse,
-        cardSalesBorne: sessionReport.cardSalesBorne,
-        cardSalesApp: sessionReport.cardSalesApp,
-        expectedCash: sessionReport.expectedCash,
+        opening_balance: report.openingFloat,
+        totalSales: report.totalSales,
+        cashSales: report.totalCash,
+        cardSalesTotal: report.totalCard,
+        cardSalesCaisse: report.cardSalesCaisse,
+        cardSalesBorne: report.cardSalesBorne,
+        cardSalesApp: report.cardSalesApp,
+        expectedCash: report.expectedCash,
         closing_cash_counted: actualCashCounted,
         difference: discrepancy
       };
@@ -276,11 +292,11 @@ const CashSessionModal = ({
           closed_at: closedAt,
           closing_float_actual: actualCashCounted,
           closing_cash_counted: actualCashCounted,
-          closing_cash_expected: sessionReport.expectedCash,
-          total_sales: sessionReport.totalSales,
-          total_cash: sessionReport.totalCash,
-          total_card: sessionReport.totalCard,
-          total_ticket_resto: sessionReport.totalTicketResto,
+          closing_cash_expected: report.expectedCash,
+          total_sales: report.totalSales,
+          total_cash: report.totalCash,
+          total_card: report.totalCard,
+          total_ticket_resto: report.totalTicketResto,
           z_ticket_snapshot: JSON.stringify(snapshot)
         })
         .eq('id', currentSessionId);
@@ -288,7 +304,7 @@ const CashSessionModal = ({
       if (error) throw error;
 
       const finalZPayload = {
-        ...sessionReport,
+        ...report,
         type: 'Z',
         closedAt,
         closingFloatActual: actualCashCounted,

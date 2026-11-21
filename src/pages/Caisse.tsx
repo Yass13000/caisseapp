@@ -826,6 +826,8 @@ const Caisse = () => {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
   const [loadedOrderId, setLoadedOrderId] = useState<string | number | null>(null);
+  // Frais de livraison saisis avant de passer en sur place / emporter (remis en revenant en livraison)
+  const lastDeliveryFeeRef = useRef<number | null>(null);
   // true = la commande rechargée a été créée sur la caisse (son bon cuisine est déjà sorti à la mise en attente)
   const loadedOrderFromCaisseRef = useRef<boolean>(true);
 
@@ -1069,16 +1071,36 @@ const Caisse = () => {
         let error = null;
 
         if (is_update && target_id) {
+          // Commande rouverte (borne, app, caisse) : on ne touche ni à son canal d'origine
+          // ni aux coordonnées client que la caisse n'a pas renseignées
+          const updatePayload: any = { ...supabasePayload };
+          delete updatePayload.order_origin;
+          delete updatePayload.checkout_reference;
+          if (!updatePayload.customer_name || updatePayload.customer_name === 'Client Caisse') delete updatePayload.customer_name;
+          ['customer_phone', 'customer_address', 'customer_address_complement'].forEach(k => {
+            if (updatePayload[k] === null || updatePayload[k] === undefined || updatePayload[k] === '') delete updatePayload[k];
+          });
           const { error: err } = await supabase
             .from('orders')
-            .update(supabasePayload)
+            .update(updatePayload)
             .eq('id', target_id);
           error = err;
         } else {
-          const { error: err } = await supabase
-            .from('orders')
-            .insert([supabasePayload]);
-          error = err;
+          // Déjà arrivée en base (réponse perdue avant la coupure) : ne pas la créer une 2e fois
+          const ref = supabasePayload.checkout_reference;
+          const { data: existing, error: lookupErr } = ref
+            ? await supabase.from('orders').select('id').eq('checkout_reference', ref).limit(1)
+            : { data: [], error: null } as any;
+          if (lookupErr) {
+            error = lookupErr;
+          } else if (existing && existing.length > 0) {
+            error = null;
+          } else {
+            const { error: err } = await supabase
+              .from('orders')
+              .insert([supabasePayload]);
+            error = err;
+          }
         }
 
         if (!error) {
@@ -1278,8 +1300,14 @@ const Caisse = () => {
       setOrderType('LIVRAISON');
       if (!hasValidClientInfo) {
         setIsDeliveryModalOpen(true);
+      } else if (orderType !== 'LIVRAISON') {
+        // Retour en livraison avec le même client : on remet ses frais (sinon livraison facturée 0 €)
+        const infoFee = parseFloat(currentInfo?.fee ?? currentInfo?.delivery_fee ?? currentInfo?.deliveryFee ?? 0);
+        const restored = lastDeliveryFeeRef.current ?? (isNaN(infoFee) ? 0 : infoFee);
+        setDeliveryFee(Math.max(0, restored));
       }
     } else {
+      if (orderType === 'LIVRAISON') lastDeliveryFeeRef.current = deliveryFee;
       setOrderType(type);
       setDeliveryFee(0);
     }
@@ -1298,7 +1326,8 @@ const Caisse = () => {
     clientInfoRef.current = data;
     setClientInfo(data);
     const fee = parseFloat(data?.fee ?? data?.delivery_fee ?? data?.deliveryFee ?? data?.frais_livraison ?? 0);
-    setDeliveryFee(isNaN(fee) ? 0 : fee);
+    setDeliveryFee(isNaN(fee) ? 0 : Math.max(0, fee));
+    lastDeliveryFeeRef.current = null;
     setOrderType('LIVRAISON');
     setIsDeliveryModalOpen(false);
     toast.success(`Client ${data.name} enregistré !`);
@@ -1313,9 +1342,25 @@ const Caisse = () => {
     setIsDeliveryModalOpen(false);
   };
 
+  // Poubelle d'une ligne. Dernière ligne d'une commande rouverte supprimée : le ticket n'est plus
+  // relié à cette commande (sinon la vente suivante écraserait la commande rouverte).
+  const removeTicketLine = (itemKey: string) => {
+    const isLastLine = cartState.items.filter(Boolean).length <= 1;
+    removeFromCart(itemKey);
+    if (isLastLine && loadedOrderId) {
+      setLoadedOrderId(null);
+      loadedOrderFromCaisseRef.current = false;
+      setDeliveryFee(0);
+      setClientInfo(null);
+      clientInfoRef.current = null;
+      setTicketComment('');
+    }
+  };
+
   const handleLoadOrderIntoCart = (items: any[], orderId: string | number, loadedOrderType?: string, loadedClientInfo?: any, isFromCaisse: boolean = true) => {
     setLoadedOrderId(orderId);
     loadedOrderFromCaisseRef.current = isFromCaisse;
+    lastDeliveryFeeRef.current = null;
     clearCart();
     setDeliveryFee(0);
     setClientInfo(null);
@@ -1546,9 +1591,12 @@ const Caisse = () => {
     }
     const discountFields = discount ? { discount_amount: discountAmount, coupon_title: discount.label.slice(0, 120) } : {};
     // Ticket client : ligne « REMISE » négative pour que le total imprimé soit juste
+    // Lignes aux montants à jour (base_price = prix réellement vendu, même après modification
+    // d'une ligne rouverte) : le ticket imprime exactement ce qui est enregistré.
+    const receiptLines = normalizeLinesForSave(cartState.items, optionGroupMapping);
     const receiptItems = discount && !isOffered
-      ? [...cartState.items, { name: `REMISE ${discount.label}`, quantity: 1, price: -discountAmount, isSolo: false }]
-      : cartState.items;
+      ? [...receiptLines, { name: `REMISE ${discount.label}`, quantity: 1, price: -discountAmount, isSolo: false }]
+      : receiptLines;
     if (cartState.items.length === 0) return;
     
     // 🛑 Verrou synchrone immédiat : bloque tout double-clic ou rebond tactile
@@ -1585,6 +1633,8 @@ const Caisse = () => {
         offline_id: offlineId,
         is_update: !!loadedOrderId,
         target_id: loadedOrderId || null,
+        // Référence unique de la vente : la synchro hors-ligne ne l'insère jamais deux fois
+        ...(loadedOrderId ? {} : { checkout_reference: offlineId }),
         restaurant_id: activeRestoId,
         total_price: recordedTotal,
         ...discountFields,
@@ -1645,13 +1695,28 @@ const Caisse = () => {
         return;
       }
 
+      let savedOnline = false;
       try {
         if (loadedOrderId) {
-          const updateData: any = { 
-            is_paid: true, 
-            payment_status: 'paid', 
-            status: 'En cours', 
-            payment_method: cleanPaymentMethod, 
+          // Commande rouverte : elle doit être encore à encaisser (pas payée ailleurs, pas annulée)
+          const { data: current, error: currentErr } = await supabase
+            .from('orders').select('is_paid, payment_status, status').eq('id', loadedOrderId).maybeSingle();
+          if (currentErr) throw currentErr;
+          if (!current || current.is_paid || current.payment_status === 'paid' || current.status === 'Annulée') {
+            customToast(
+              !current ? "Commande introuvable : elle a été supprimée"
+                : current.status === 'Annulée' ? "Commande annulée entre-temps : encaissement bloqué"
+                : "Commande déjà encaissée ailleurs : encaissement bloqué",
+              "error"
+            );
+            setIsPaymentModalOpen(false);
+            return;
+          }
+          const updateData: any = {
+            is_paid: true,
+            payment_status: 'paid',
+            status: 'En cours',
+            payment_method: cleanPaymentMethod,
             cash_amount: cashAmount, 
             order_type_id: currentOrderTypeId || undefined, 
             order_details: cleanOrderDetails, 
@@ -1674,6 +1739,7 @@ const Caisse = () => {
             .update(updateData)
             .eq('id', loadedOrderId);
           if (error) throw error;
+          savedOnline = true;
 
           const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
           if (orderData?.order_number) targetOrderNumber = orderData.order_number;
@@ -1687,6 +1753,7 @@ const Caisse = () => {
             .single();
 
           if (error) throw error;
+          savedOnline = true;
           if (insertedOrder?.order_number) {
             targetOrderNumber = insertedOrder.order_number;
           }
@@ -1724,6 +1791,19 @@ const Caisse = () => {
         setIsPaymentModalOpen(false);
 
       } catch (e) {
+        // Commande DÉJÀ enregistrée (l'erreur vient de l'impression, du tiroir…) : surtout pas de
+        // copie locale, elle serait renvoyée à la synchro et la vente compterait deux fois.
+        if (savedOnline) {
+          console.error("Erreur après l'enregistrement de la commande :", e);
+          clearCart();
+          setLoadedOrderId(null);
+          setDeliveryFee(0);
+          setClientInfo(null);
+          clientInfoRef.current = null;
+          setOrderType(getDefaultOrderType());
+          setIsPaymentModalOpen(false);
+          return;
+        }
         // Refus explicite de Supabase (contrainte, trigger, droits…) : inutile de stocker en local,
         // la synchro échouerait à l'identique. On affiche la vraie raison et on garde le panier.
         if (isDbRejection(e)) {
@@ -1799,6 +1879,8 @@ const Caisse = () => {
         offline_id: offlineId,
         is_update: !!loadedOrderId,
         target_id: loadedOrderId || null,
+        // Référence unique de la vente : la synchro hors-ligne ne l'insère jamais deux fois
+        ...(loadedOrderId ? {} : { checkout_reference: offlineId }),
         restaurant_id: activeRestoId,
         total_price: parseFloat(finalTotal.toFixed(2)),
         delivery_fee: activeDeliveryFee, 
@@ -1843,8 +1925,22 @@ const Caisse = () => {
         return;
       }
 
+      let savedOnline = false;
       try {
         if (loadedOrderId) {
+          // Commande rouverte : jamais repasser « non payée » une commande encaissée ou annulée ailleurs
+          const { data: current, error: currentErr } = await supabase
+            .from('orders').select('is_paid, payment_status, status').eq('id', loadedOrderId).maybeSingle();
+          if (currentErr) throw currentErr;
+          if (!current || current.is_paid || current.payment_status === 'paid' || current.status === 'Annulée') {
+            customToast(
+              !current ? "Commande introuvable : elle a été supprimée"
+                : current.status === 'Annulée' ? "Commande annulée entre-temps : rien n'a été modifié"
+                : "Commande déjà encaissée ailleurs : rien n'a été modifié",
+              "error"
+            );
+            return;
+          }
           const updateData: any = { 
             is_paid: false, 
             payment_status: 'pending', 
@@ -1871,6 +1967,7 @@ const Caisse = () => {
             .update(updateData)
             .eq('id', loadedOrderId);
           if (error) throw error;
+          savedOnline = true;
 
           const { data: orderData } = await supabase.from('orders').select('order_number').eq('id', loadedOrderId).single();
           if (orderData?.order_number) targetOrderNumber = orderData.order_number;
@@ -1884,6 +1981,7 @@ const Caisse = () => {
             .single();
 
           if (error) throw error;
+          savedOnline = true;
           if (insertedOrder?.order_number) {
             targetOrderNumber = insertedOrder.order_number;
           }
@@ -1906,6 +2004,17 @@ const Caisse = () => {
         setOrderType(getDefaultOrderType());
 
       } catch (e) {
+        // Déjà enregistrée : pas de copie locale (elle serait renvoyée une 2e fois à la synchro)
+        if (savedOnline) {
+          console.error("Erreur après l'enregistrement de la commande :", e);
+          clearCart();
+          setLoadedOrderId(null);
+          setDeliveryFee(0);
+          setClientInfo(null);
+          clientInfoRef.current = null;
+          setOrderType(getDefaultOrderType());
+          return;
+        }
         // Refus explicite de Supabase (contrainte, trigger, droits…) : inutile de stocker en local,
         // la synchro échouerait à l'identique. On affiche la vraie raison et on garde le panier.
         if (isDbRejection(e)) {
@@ -2188,12 +2297,17 @@ const Caisse = () => {
                   </div>
                   
                   <div className="mt-1.5 flex items-center justify-between">
-                    <button onClick={(e) => { e.stopPropagation(); removeFromCart(itemKey); }} className="p-1 text-red-500 hover:bg-red-50 rounded-md transition-colors cursor-pointer"><Trash2 size={14} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); removeTicketLine(itemKey); }} className="p-1 text-red-500 hover:bg-red-50 rounded-md transition-colors cursor-pointer"><Trash2 size={14} /></button>
+                    {/* Récompense fidélité : quantité figée (un « + » offrirait un produit sans points) */}
+                    {(item.isReward === true || item.is_reward === true || item.product?.isReward === true) ? (
+                      <span className="px-2 text-xs font-bold text-gray-500 tabular-nums">×{item.quantity || 1}</span>
+                    ) : (
                     <div className="flex items-center gap-1.5 bg-gray-100 rounded-full px-1 py-0.5" onClick={(e) => e.stopPropagation()}>
                       <button className="w-5 h-5 flex items-center justify-center bg-white rounded-full shadow-sm font-bold text-xs cursor-pointer" onClick={() => updateQuantity(itemKey, (item.quantity || 1) - 1)}>-</button>
                       <span className="w-4 text-center font-bold text-xs">{item.quantity || 1}</span>
                       <button className="w-5 h-5 flex items-center justify-center bg-white rounded-full shadow-sm font-bold text-xs cursor-pointer" style={{ color: themeColors.primary }} onClick={() => updateQuantity(itemKey, (item.quantity || 1) + 1)}>+</button>
                     </div>
+                    )}
                   </div>
                 </div>
               );
@@ -2210,7 +2324,7 @@ const Caisse = () => {
                     min="0"
                     step="0.5"
                     value={deliveryFee || ''}
-                    onChange={e => setDeliveryFee(parseFloat(e.target.value) || 0)}
+                    onChange={e => setDeliveryFee(Math.max(0, parseFloat(e.target.value) || 0))}
                     className="w-16 text-right font-black text-secondary bg-gray-100 border border-gray-200 rounded px-2 py-1 focus:bg-white focus:border-primary outline-none transition-colors"
                   />
                   <span className="text-gray-400 font-bold text-xs">€</span>

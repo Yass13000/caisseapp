@@ -53,13 +53,22 @@ const generateCartKey = (payload: any) => {
     const productId = payload.product ? payload.product.id : payload.id;
     const optIds: string[] = [];
 
+    // Chaque option compte avec son nom, sa quantité, son prix et ses sous-choix : deux lignes ne
+    // fusionnent que si elles sont strictement identiques (sinon la 2e est facturée au prix de la 1re).
     const extractIds = (data: any) => {
         if (!data) return;
         if (Array.isArray(data)) {
             data.forEach(item => {
-                if (item && item.id) optIds.push(String(item.id));
-                if (item && item.sub_options) extractIds(item.sub_options);
-                if (item && item.selectedSubOptions) extractIds(item.selectedSubOptions);
+                if (!item) return;
+                if (typeof item === 'string') { optIds.push(item); return; }
+                if (item.id !== undefined || item.name) {
+                    const qty = Number(item.qty ?? item.quantity ?? 1) || 1;
+                    const price = Number(item.price ?? item.effective_price ?? 0) || 0;
+                    optIds.push(`${item.id ?? ''}~${item.name ?? item.option_name ?? ''}~${qty}~${price}`);
+                }
+                if (item.sub_options) extractIds(item.sub_options);
+                if (item.selectedSubOptions) extractIds(item.selectedSubOptions);
+                if (item.sub_choices) extractIds(item.sub_choices);
             });
         } else if (typeof data === 'object') {
             Object.values(data).forEach(val => {
@@ -74,7 +83,14 @@ const generateCartKey = (payload: any) => {
 
     optIds.sort();
 
-    return `${productId}_opts_${optIds.join('-')}`;
+    const product = payload.product || payload;
+    const removed = (Array.isArray(payload.removedIngredients) ? payload.removedIngredients : [])
+        .map((i: any) => String(i?.id ?? i?.name ?? i)).sort().join('.');
+    const isSolo = (payload.isSolo ?? product?.isSolo) === true ? 'solo' : 'std';
+    const price = Number(product?.price ?? payload.price ?? 0) || 0;
+    const reward = (payload.isReward === true || product?.isReward === true) ? 'reward' : '';
+
+    return `${productId}_opts_${optIds.join('-')}_${isSolo}_${price}_rm${removed}${reward ? `_${reward}` : ''}`;
 };
 
 const cartReducer = (state: any, action: any) => {

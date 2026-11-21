@@ -25,7 +25,8 @@ import {
   ChevronUp,
   Info,
   Printer,
-  ChefHat
+  ChefHat,
+  AlertTriangle
 } from 'lucide-react';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
 import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload, flattenTicketComment } from '@/lib/orderFormatter';
@@ -116,6 +117,13 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const [searchQuery, setSearchQuery] = useState('');
   
   const [activeMenuOrderId, setActiveMenuOrderId] = useState<string | number | null>(null);
+  // Clôture d'une commande NON PAYÉE : 1er toucher = avertissement, 2e toucher = clôture
+  const [unpaidCloseArmedId, setUnpaidCloseArmedId] = useState<string | number | null>(null);
+  useEffect(() => {
+    if (unpaidCloseArmedId === null) return;
+    const t = setTimeout(() => setUnpaidCloseArmedId(null), 4000);
+    return () => clearTimeout(t);
+  }, [unpaidCloseArmedId]);
   // Fiche client et commande en grand : fenêtres au centre de l'écran
   const [customerOrderId, setCustomerOrderId] = useState<string | number | null>(null);
   const [focusedOrderId, setFocusedOrderId] = useState<string | number | null>(null);
@@ -374,6 +382,15 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
     try {
       // Temps de préparation : de l'arrivée jusqu'à « Prêt » (jamais jusqu'à la clôture)
       const current = orders.find(o => o.id === orderId) as any;
+      // Clôturer une commande pas encaissée la fait sortir de l'écran sans paiement (absente du Z) :
+      // on demande une confirmation par un 2e toucher.
+      const unpaid = current && !(current.is_paid || current.payment_status === 'paid');
+      if (newStatus === 'Fermé' && unpaid && unpaidCloseArmedId !== orderId) {
+        setUnpaidCloseArmedId(orderId);
+        toast.error(`Commande ${current.order_number || ''} NON PAYÉE : touchez encore pour clôturer quand même`);
+        return;
+      }
+      setUnpaidCloseArmedId(null);
       const patch = { status: newStatus, ...prepTimingPatch(newStatus, current) };
       const { error } = await supabase.from('orders').update(patch).eq('id', orderId);
       if (error) throw error;
@@ -738,10 +755,15 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                             e.stopPropagation(); 
                             handleUpdateStatus(order.id, nextStatusAction.next); 
                           }} 
-                          className={`w-full h-12 rounded-none text-base font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 border-t border-black/20 active:brightness-90 ${nextStatusAction.bgClass}`}
+                          className={`w-full h-12 rounded-none text-base font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 border-t border-black/20 active:brightness-90 ${nextStatusAction.next === 'Fermé' && unpaidCloseArmedId === order.id ? 'bg-red-600 text-white' : nextStatusAction.bgClass}`}
                           title={`Passer à : ${nextStatusAction.next}`}
                         >
-                          {nextStatusAction.next === 'Fermé' ? (
+                          {nextStatusAction.next === 'Fermé' && unpaidCloseArmedId === order.id ? (
+                            <>
+                              <AlertTriangle size={22} strokeWidth={3} />
+                              <span>NON PAYÉE · CONFIRMER</span>
+                            </>
+                          ) : nextStatusAction.next === 'Fermé' ? (
                             <>
                               <CheckCircle2 size={22} strokeWidth={3} />
                               <span>CLÔTURER</span>

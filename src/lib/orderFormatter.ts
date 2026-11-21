@@ -567,6 +567,24 @@ export const stripComplementFromAddress = (address?: string | null, complement?:
   return addr.endsWith(suffix) ? addr.slice(0, -suffix.length).trim() : addr;
 };
 
+/**
+ * Paiement fractionné imprimé sur le ticket : « MIXTE C.B. 10,00 / ESP. 5,00 ».
+ * L'imprimante (exe) reconnaît « espèce », « cb », « ticket »… dans le libellé et n'en garde qu'un :
+ * « Fractionné (CB + Espèces) » sortait « ESPÈCES ». Ce libellé ne contient aucun de ces mots,
+ * il est donc imprimé tel quel.
+ */
+export const splitPaymentReceiptLabel = (raw: string): string => {
+  const parts = [...String(raw).matchAll(/([A-Za-zÀ-ÿ. ]+?)\s*:\s*([\d]+(?:[.,]\d+)?)/g)].map(([, name, amount]) => {
+    const n = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const label = n.includes('esp') || n.includes('cash') ? 'ESP.'
+      : n.includes('cb') || n.includes('carte') || n.includes('card') ? 'C.B.'
+      : n.includes('tr') || n.includes('ticket') || n.includes('resto') ? 'T.R.'
+      : name.trim().toUpperCase().replace(/ESPECES?|CARTE|TICKET|RESTO|CASH/gi, '').trim() || 'AUTRE';
+    return `${label} ${Number(String(amount).replace(',', '.')).toFixed(2).replace('.', ',')}`;
+  });
+  return parts.length ? `MIXTE ${parts.join(' / ')}` : 'MIXTE';
+};
+
 export const buildClientReceiptPayload = (params: {
   restaurantId?: string | null;
   restaurantInfo: { name?: string; restaurant_name?: string; address?: string | null; phone?: string | null; tva?: number; logoUrl?: string | null };
@@ -602,7 +620,7 @@ export const buildClientReceiptPayload = (params: {
 
   // 🟢 Normalisation cohérente avec CartContext et Caisse
   if (pLower.includes('fractionn') || pLower.includes('mixte')) {
-    rawPayment = String(paymentMethod).trim();
+    rawPayment = splitPaymentReceiptLabel(String(paymentMethod).trim());
   } else if (
     pLower.includes('carte') || 
     pLower.includes('cb') || 
