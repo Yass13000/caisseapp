@@ -21,7 +21,7 @@ import {
   Info
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload, stripComplementFromAddress, flattenTicketComment } from '@/lib/orderFormatter';
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload, kitchenCustomerName, stripComplementFromAddress, flattenTicketComment } from '@/lib/orderFormatter';
 import { addLoyaltyPointsThreadSafe, getActiveRestoId } from '@/lib/loyaltyPoints';
 import { mapOrderItemsForTill, extractOrderItems, orderItemName } from '@/lib/loadedOrderPricing';
 import { PaymentModal } from '@/pages/Caisse';
@@ -344,7 +344,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         items,
         groupMapping: optionGroupMapping,
         orderDate: date,
-        comment: order.comment || order.notes || ''
+        comment: order.comment || order.notes || '',
+        customer_name: kitchenCustomerName(order.customer_name)
       });
 
       kitchenPayload.comment = flattenTicketComment(order.comment || order.notes || '');

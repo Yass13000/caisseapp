@@ -24,7 +24,7 @@ import {
   Info
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload, flattenTicketComment } from '@/lib/orderFormatter';
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload, kitchenCustomerName, flattenTicketComment } from '@/lib/orderFormatter';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 import { MaskIcon } from '@/components/MaskIcon';
 
@@ -424,7 +424,8 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
         items,
         groupMapping: optionGroupMapping,
         orderDate: date,
-        comment: order.comment || order.notes || ''
+        comment: order.comment || order.notes || '',
+        customer_name: kitchenCustomerName(order.customer_name)
       });
 
       kitchenPayload.comment = flattenTicketComment(order.comment || order.notes || '');

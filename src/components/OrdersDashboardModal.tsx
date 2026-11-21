@@ -29,7 +29,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
-import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload, flattenTicketComment } from '@/lib/orderFormatter';
+import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildKitchenReceiptPayload, kitchenCustomerName, flattenTicketComment } from '@/lib/orderFormatter';
 import { DeliveryDispatchModal } from '@/components/DeliveryDispatchModal';
 import { toast } from 'sonner';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
@@ -457,7 +457,8 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
         items,
         groupMapping: optionGroupMapping,
         orderDate,
-        comment: order.comment || (order as any).notes || ''
+        comment: order.comment || (order as any).notes || '',
+        customer_name: kitchenCustomerName(order.customer_name)
       });
       payload.comment = flattenTicketComment(order.comment || (order as any).notes || '');
 

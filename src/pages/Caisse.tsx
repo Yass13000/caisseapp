@@ -10,7 +10,8 @@ import {
   getFormattedOrderOptions, 
   fetchOptionGroupMapping, 
   buildClientReceiptPayload, 
-  buildKitchenReceiptPayload 
+  buildKitchenReceiptPayload,
+  kitchenCustomerName
 } from '@/lib/orderFormatter';
 
 import { 
@@ -256,7 +257,8 @@ const generateAndPrintKitchenTicket = async (
   orderType: string, 
   items: any[], 
   groupMapping: Record<string, string> = {},
-  comment: string = ''
+  comment: string = '',
+  customerName: string = ''
 ) => {
   if (!(window as any).electronAPI) return;
   const printerName = getSecureSetting('imprimante_cuisine', undefined) || undefined;
@@ -266,7 +268,8 @@ const generateAndPrintKitchenTicket = async (
     orderType,
     items,
     groupMapping,
-    comment
+    comment,
+    customer_name: kitchenCustomerName(customerName)
   });
 
   try {
@@ -1697,7 +1700,7 @@ const Caisse = () => {
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
           if (isKitchenTicketEnabled && (!loadedOrderId || !loadedOrderFromCaisseRef.current)) {
             setTimeout(async () => {
-              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '');
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '', orderPayload.customer_name || '');
             }, 500);
           }
 
@@ -1797,7 +1800,7 @@ const Caisse = () => {
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
         if (isKitchenTicketEnabled && (!loadedOrderId || !loadedOrderFromCaisseRef.current)) {
           setTimeout(async () => {
-            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '');
+            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '', orderPayload.customer_name || '');
           }, 500);
         }
 
@@ -1845,7 +1848,7 @@ const Caisse = () => {
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
           if (isKitchenTicketEnabled && (!loadedOrderId || !loadedOrderFromCaisseRef.current)) {
             setTimeout(async () => {
-              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '');
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '', orderPayload.customer_name || '');
             }, 500);
           }
           
@@ -1930,7 +1933,7 @@ const Caisse = () => {
           const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
           if (isKitchenTicketEnabled && !loadedOrderId) {
             setTimeout(async () => {
-              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '');
+              await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '', orderPayload.customer_name || '');
             }, 500);
           }
 
@@ -2013,7 +2016,7 @@ const Caisse = () => {
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
         if (isKitchenTicketEnabled && !loadedOrderId) {
           setTimeout(async () => {
-            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '');
+            await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '', orderPayload.customer_name || '');
           }, 500);
         }
 

@@ -585,6 +585,12 @@ export const splitPaymentReceiptLabel = (raw: string): string => {
   return parts.length ? `MIXTE ${parts.join(' / ')}` : 'MIXTE';
 };
 
+/** Nom du client à imprimer sur le ticket cuisine (rien pour le nom par défaut de la caisse). */
+export const kitchenCustomerName = (name: unknown): string => {
+  const n = String(name ?? '').trim();
+  return /^client( caisse)?$/i.test(n) ? '' : n.slice(0, 40);
+};
+
 export const buildClientReceiptPayload = (params: {
   restaurantId?: string | null;
   restaurantInfo: { name?: string; restaurant_name?: string; address?: string | null; phone?: string | null; tva?: number; logoUrl?: string | null };
