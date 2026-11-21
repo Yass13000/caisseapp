@@ -295,8 +295,11 @@ const parseInputCents = (s: string) => {
 // ── Remise : motif (employé avec prénom, promo), % ou €, puis confirmation ──
 type AppliedDiscount = { cents: number; label: string; reason: 'Employé' | 'Promo' };
 
-const DiscountSheet = ({ totalCents, onCancel, onApply, busy }: {
+const DiscountSheet = ({ totalCents, feeCents = 0, onCancel, onApply, busy }: {
+  /** Montant remisable : les produits seuls (les frais de livraison ne sont jamais remisés) */
   totalCents: number;
+  /** Frais de livraison, ajoutés au net affiché */
+  feeCents?: number;
   onCancel: () => void;
   onApply: (d: AppliedDiscount) => void;
   busy: boolean;
@@ -311,7 +314,7 @@ const DiscountSheet = ({ totalCents, onCancel, onApply, busy }: {
   const eurCents = Math.min(parseInputCents(eur.replace(',', '.')), totalCents);
   const discountCents = pct !== null ? Math.round(totalCents * pct / 100) : eurCents;
   const usingEuros = pct === null && eur.trim() !== '';
-  const netCents = Math.max(0, totalCents - discountCents);
+  const netCents = Math.max(0, totalCents - discountCents) + feeCents;
   const cleanName = firstName.trim().replace(/\s+/g, ' ');
   const nameOk = reason !== 'Employé' || cleanName.length >= 2;
   const canValidate = !!reason && nameOk && discountCents > 0;
@@ -441,10 +444,12 @@ const DiscountSheet = ({ totalCents, onCancel, onApply, busy }: {
   );
 };
 
-export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, onOffer, isProcessing }: any) => {
+export const PaymentModal = ({ subtotal, deliveryFee = 0, themeColors, onClose, onConfirm, onOffer, isProcessing }: any) => {
   const [discountOpen, setDiscountOpen] = useState(false);
   const [discount, setDiscount] = useState<AppliedDiscount | null>(null);
   const grossCents = toCents(subtotal);
+  // Frais de livraison : jamais remisés (une remise en % ne porte que sur les produits)
+  const feeCents = Math.min(Math.max(0, toCents(deliveryFee)), grossCents);
   const totalCents = Math.max(0, grossCents - (discount?.cents || 0));
   const [lines, setLines] = useState<PayLine[]>([]);
   const [input, setInput] = useState('');
@@ -568,7 +573,8 @@ export const PaymentModal = ({ subtotal, themeColors, onClose, onConfirm, onOffe
       >
         {discountOpen && (
           <DiscountSheet
-            totalCents={grossCents}
+            totalCents={grossCents - feeCents}
+            feeCents={feeCents}
             busy={busy}
             onCancel={() => setDiscountOpen(false)}
             onApply={(d) => {
@@ -834,6 +840,8 @@ const Caisse = () => {
   // Contenu d'une commande rouverte au moment du chargement : si rien n'a changé, l'encaisser ne la
   // renvoie pas « En cours » en cuisine (elle peut déjà être prête ou remise au client)
   const loadedSignatureRef = useRef<string | null>(null);
+  // Lignes de la commande rouverte telles qu'au chargement (pour imprimer en cuisine les seuls ajouts)
+  const loadedLinesRef = useRef<any[]>([]);
   // true = la commande rechargée a été créée sur la caisse (son bon cuisine est déjà sorti à la mise en attente)
   const loadedOrderFromCaisseRef = useRef<boolean>(true);
 
@@ -1363,6 +1371,55 @@ const Caisse = () => {
   const kitchenStatusForLoaded = (currentStatus?: string | null) =>
     isLoadedUnchanged() && currentStatus ? currentStatus : 'En cours';
 
+  // ── Commande rouverte modifiée : ticket cuisine des seules différences ──
+  // Une ligne = même produit, mêmes options, même prix unitaire, mêmes ingrédients retirés.
+  const kitchenLineKey = (l: any) => {
+    const qty = Number(l?.quantity) || 1;
+    return [
+      orderItemName(l),
+      (tillLineTotal(l, optionGroupMapping) / qty).toFixed(2),
+      getFormattedOrderOptions(l, optionGroupMapping).flatMap(g => g.items.map(o => `${o.qty || 1}x${o.name}${o.isSans ? '-sans' : ''}`)).join(','),
+      (Array.isArray(l?.removedIngredients) ? l.removedIngredients : []).map((i: any) => i?.name ?? i).join(','),
+    ].join('|');
+  };
+
+  /** Ajouts (lignes à préparer) et retraits d'une commande rouverte ; null si rien n'a changé. */
+  const computeKitchenDelta = (): { added: any[]; removed: string[] } | null => {
+    if (!loadedOrderId || loadedSignatureRef.current === null) return null;
+    const before = new Map<string, { qty: number; line: any }>();
+    loadedLinesRef.current.filter(Boolean).forEach(l => {
+      const k = kitchenLineKey(l); const cur = before.get(k);
+      before.set(k, { qty: (cur?.qty || 0) + (Number(l.quantity) || 1), line: cur?.line || l });
+    });
+    const now = new Map<string, { qty: number; line: any }>();
+    cartState.items.filter(Boolean).forEach((l: any) => {
+      const k = kitchenLineKey(l); const cur = now.get(k);
+      now.set(k, { qty: (cur?.qty || 0) + (Number(l.quantity) || 1), line: cur?.line || l });
+    });
+    const added: any[] = [];
+    now.forEach((v, k) => {
+      const diff = v.qty - (before.get(k)?.qty || 0);
+      if (diff > 0) added.push({ ...v.line, quantity: diff });
+    });
+    const removed: string[] = [];
+    before.forEach((v, k) => {
+      const diff = v.qty - (now.get(k)?.qty || 0);
+      if (diff > 0) removed.push(`${diff}x ${orderItemName(v.line)}`);
+    });
+    return added.length || removed.length ? { added, removed } : null;
+  };
+
+  const printKitchenDelta = async (orderNumber: string, comment: string, customerName: string, delta: { added: any[]; removed: string[] }) => {
+    const header = `MODIFICATION DE LA COMMANDE ${orderNumber}`;
+    const fullComment = [header, comment].filter(Boolean).join(' • ');
+    // Retraits imprimés comme des lignes (un ticket cuisine sans ligne n'est pas imprimé par l'exe)
+    const lines = [
+      ...delta.added,
+      ...delta.removed.map(r => ({ name: `RETIRÉ : ${r}`, quantity: 1, isSolo: false })),
+    ];
+    await generateAndPrintKitchenTicket(orderNumber, orderType, lines, optionGroupMapping, fullComment, customerName);
+  };
+
   // Poubelle d'une ligne. Dernière ligne d'une commande rouverte supprimée : le ticket n'est plus
   // relié à cette commande (sinon la vente suivante écraserait la commande rouverte).
   const removeTicketLine = (itemKey: string) => {
@@ -1402,11 +1459,13 @@ const Caisse = () => {
     }
 
     loadedSignatureRef.current = null;
+    loadedLinesRef.current = [];
     setTimeout(() => {
       // Ligne rouverte : calcul commun (aussi vérifié par « npm run verif:encaissement »)
       const built = items.map((item, idx) => buildLoadedCartItem(item, idx, orderId, menuData));
       built.forEach(line => addToCart(line));
       loadedSignatureRef.current = ticketSignature(built);
+      loadedLinesRef.current = built;
       customToast(`Commande #${orderId} chargée (${loadedOrderType || 'SUR PLACE'})`, "success");
     }, 150);
   };
@@ -1625,6 +1684,8 @@ const Caisse = () => {
     if (isSubmittingRef.current || isProcessing) return;
     isSubmittingRef.current = true;
     setIsProcessing(true);
+    // Commande rouverte : différences à envoyer en cuisine (calculées avant de vider le ticket)
+    const kitchenDelta = computeKitchenDelta();
 
     try {
       const sessionId = await ensureOpenSession();
@@ -1702,6 +1763,8 @@ const Caisse = () => {
             setTimeout(async () => {
               await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '', orderPayload.customer_name || '');
             }, 500);
+          } else if (isKitchenTicketEnabled && kitchenDelta) {
+            setTimeout(() => { printKitchenDelta(targetOrderNumber, orderPayload.comment || '', orderPayload.customer_name || '', kitchenDelta); }, 500);
           }
 
           showCustomerThanks(recordedTotal);
@@ -1802,6 +1865,8 @@ const Caisse = () => {
           setTimeout(async () => {
             await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '', orderPayload.customer_name || '');
           }, 500);
+        } else if (isKitchenTicketEnabled && kitchenDelta) {
+          setTimeout(() => { printKitchenDelta(targetOrderNumber, orderPayload.comment || '', orderPayload.customer_name || '', kitchenDelta); }, 500);
         }
 
         showCustomerThanks(recordedTotal);
@@ -1850,6 +1915,8 @@ const Caisse = () => {
             setTimeout(async () => {
               await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '', orderPayload.customer_name || '');
             }, 500);
+          } else if (isKitchenTicketEnabled && kitchenDelta) {
+            setTimeout(() => { printKitchenDelta(targetOrderNumber, orderPayload.comment || '', orderPayload.customer_name || '', kitchenDelta); }, 500);
           }
           
           showCustomerThanks(recordedTotal);
@@ -1876,6 +1943,8 @@ const Caisse = () => {
     if (isSubmittingRef.current || isProcessing) return;
     isSubmittingRef.current = true;
     setIsProcessing(true);
+    // Commande rouverte : différences à envoyer en cuisine (calculées avant de vider le ticket)
+    const kitchenDelta = computeKitchenDelta();
 
     try {
       const sessionId = await ensureOpenSession();
@@ -1935,6 +2004,8 @@ const Caisse = () => {
             setTimeout(async () => {
               await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '', orderPayload.customer_name || '');
             }, 500);
+          } else if (isKitchenTicketEnabled && kitchenDelta) {
+            setTimeout(() => { printKitchenDelta(targetOrderNumber, orderPayload.comment || '', orderPayload.customer_name || '', kitchenDelta); }, 500);
           }
 
           clearCart();
@@ -2018,6 +2089,8 @@ const Caisse = () => {
           setTimeout(async () => {
             await generateAndPrintKitchenTicket(targetOrderNumber, orderType, cartState.items, optionGroupMapping, orderPayload.comment || '', orderPayload.customer_name || '');
           }, 500);
+        } else if (isKitchenTicketEnabled && kitchenDelta) {
+          setTimeout(() => { printKitchenDelta(targetOrderNumber, orderPayload.comment || '', orderPayload.customer_name || '', kitchenDelta); }, 500);
         }
 
         clearCart();
@@ -2491,7 +2564,7 @@ const Caisse = () => {
 
       <AnimatePresence>
         {isPaymentModalOpen && (
-          <PaymentModal subtotal={finalTotal} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={finalizePayment} onOffer={(d: any) => finalizePayment('', 0, d)} isProcessing={isProcessing} />
+          <PaymentModal subtotal={finalTotal} deliveryFee={activeDeliveryFee} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={finalizePayment} onOffer={(d: any) => finalizePayment('', 0, d)} isProcessing={isProcessing} />
         )}
       </AnimatePresence>
 
