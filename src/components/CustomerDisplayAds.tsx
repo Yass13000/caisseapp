@@ -15,7 +15,9 @@ import {
   getCustomerDisplayAPI,
   mediaTypeFromUrl,
   readAdImageDuration,
+  readHiddenAdIds,
   rowsToAds,
+  setAdHidden,
   type RestaurantImageRow,
 } from '@/lib/customerDisplay';
 
@@ -82,6 +84,14 @@ const CustomerDisplayAds = () => {
   const api = getCustomerDisplayAPI();
   const [screen, setScreen] = useState<{ displays: number; open: boolean } | null>(null);
   const [onScreenIds, setOnScreenIds] = useState<Set<string>>(new Set());
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(readHiddenAdIds);
+
+  // Pub borne / app : masquée ou réaffichée sur l'écran client de cette caisse uniquement
+  const toggleShared = (id: string | number) => {
+    const next = setAdHidden(id, !hiddenIds.has(String(id)));
+    setHiddenIds(new Set(next));
+    notifyScreen();
+  };
   const [checkedAt, setCheckedAt] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -193,10 +203,10 @@ const CustomerDisplayAds = () => {
 
   const adState = (row: RestaurantImageRow | undefined): AdState => {
     if (!row || !api) return 'unknown';
-    if (row.is_active === false) return 'hidden';
+    if (row.is_active === false || hiddenIds.has(String(row.id))) return 'hidden';
     return onScreenIds.has(String(row.id)) ? 'onscreen' : 'loading';
   };
-  const activeRows = rowsToAds(rows);
+  const activeRows = rowsToAds(rows).filter(r => !hiddenIds.has(String(r.id)));
   const onScreenCount = activeRows.filter(r => onScreenIds.has(String(r.id))).length;
   const loadingCount = activeRows.length - onScreenCount;
 
@@ -303,11 +313,22 @@ const CustomerDisplayAds = () => {
             <div className="pt-5 border-t border-gray-100">
               <div className="grid grid-cols-5 gap-3">
                 {shared.map(row => {
-                  const off = rows.find(r => r.id === row.id)?.is_active === false;
+                  const masked = hiddenIds.has(String(row.id));
+                  const off = rows.find(r => r.id === row.id)?.is_active === false || masked;
                   return (
                     <div key={row.id} className={`relative aspect-video rounded-xl overflow-hidden bg-black ${off ? 'opacity-40' : ''}`}>
                       <Media url={row.image_url!} />
                       <StateBadge state={adState(rows.find(r => r.id === row.id))} />
+                      {/* Masquer sur l'écran client (la pub reste sur la borne / l'app) */}
+                      <button
+                        type="button"
+                        onClick={() => toggleShared(row.id)}
+                        aria-label={masked ? 'Afficher sur l’écran client' : 'Masquer sur l’écran client'}
+                        title={masked ? 'Afficher sur l’écran client' : 'Masquer sur l’écran client'}
+                        className="absolute bottom-1.5 right-1.5 w-10 h-10 rounded-lg bg-white/90 text-secondary flex items-center justify-center active:scale-95 cursor-pointer opacity-100"
+                      >
+                        {masked ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
                       <span className="absolute bottom-1.5 left-1.5 px-2 py-0.5 rounded-md bg-black/60 text-white font-black text-[11px] uppercase tracking-wider">
                         {adSource(row.nom) === 'borne' ? 'Borne' : 'App'}
                       </span>

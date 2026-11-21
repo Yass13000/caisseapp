@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabaseClient';
 import {
   AD_NAMES,
   ADS_TABLE,
+  readHiddenAdIds,
   brandBackground,
   mediaTypeFromUrl,
   readAdImageDuration,
@@ -215,7 +216,8 @@ const useAds = (restaurantId: string | null) => {
           .in('nom', AD_NAMES);
         if (error || !data) return; // hors ligne : on garde le cache
         const duration = readAdImageDuration();
-        const wanted = rowsToAds(data as any);
+        const hiddenIds = readHiddenAdIds();
+        const wanted = rowsToAds(data as any).filter(row => !hiddenIds.has(String(row.id)));
         // Pub supprimée ou masquée : retirée tout de suite, sans attendre les téléchargements en cours
         const wantedIds = new Set(wanted.map(row => String(row.id)));
         if (alive) setAds(prev => prev.filter(ad => wantedIds.has(String(ad.id))));

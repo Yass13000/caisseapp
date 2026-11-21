@@ -107,6 +107,27 @@ export const rowsToAds = (rows: RestaurantImageRow[]) =>
 
 export const AD_NAMES = [...CAISSE_AD_SLOTS, 'Borne1', 'Borne2', 'Borne3', 'Pub1', 'Pub2'];
 
+/**
+ * Pubs borne / app masquées sur l'écran client de CETTE caisse (elles restent sur la borne et l'app).
+ * Stockage local partagé par la fenêtre caisse et la fenêtre écran client (même session) :
+ * aucun nouvel exe nécessaire.
+ */
+const HIDDEN_ADS_KEY = 'customer_display_hidden_ads';
+export const readHiddenAdIds = (): Set<string> => {
+  try {
+    const list = JSON.parse(localStorage.getItem(HIDDEN_ADS_KEY) || '[]');
+    return new Set(Array.isArray(list) ? list.map(String) : []);
+  } catch {
+    return new Set();
+  }
+};
+export const setAdHidden = (id: string | number, hidden: boolean): Set<string> => {
+  const set = readHiddenAdIds();
+  if (hidden) set.add(String(id)); else set.delete(String(id));
+  try { localStorage.setItem(HIDDEN_ADS_KEY, JSON.stringify([...set])); } catch { /* stockage indisponible */ }
+  return set;
+};
+
 /** Durée d'affichage d'une image (réglage de la caisse) */
 export const readAdImageDuration = () => {
   try {
