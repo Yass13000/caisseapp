@@ -32,6 +32,7 @@ import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadF
 import { DeliveryDispatchModal } from '@/components/DeliveryDispatchModal';
 import { toast } from 'sonner';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
+import { prepTimingPatch } from '@/lib/prepTiming';
 
 interface Order {
   id: string | number;
@@ -371,10 +372,13 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
   const handleUpdateStatus = async (orderId: string | number, newStatus: string) => {
     try {
-      const { error } = await supabase.from('orders').update({ status: newStatus }).eq('id', orderId);
+      // Temps de préparation : de l'arrivée jusqu'à « Prêt » (jamais jusqu'à la clôture)
+      const current = orders.find(o => o.id === orderId) as any;
+      const patch = { status: newStatus, ...prepTimingPatch(newStatus, current) };
+      const { error } = await supabase.from('orders').update(patch).eq('id', orderId);
       if (error) throw error;
       toast.success(`Statut : ${newStatus}`);
-      setOrders(prevOrders => prevOrders.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+      setOrders(prevOrders => prevOrders.map(o => o.id === orderId ? { ...o, ...patch } : o));
       setActiveMenuOrderId(null);
       if (isOrderClosed(newStatus)) setFocusedOrderId(prev => prev === orderId ? null : prev);
     } catch {
