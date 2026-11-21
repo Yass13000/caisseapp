@@ -828,6 +828,9 @@ const Caisse = () => {
   const [loadedOrderId, setLoadedOrderId] = useState<string | number | null>(null);
   // Frais de livraison saisis avant de passer en sur place / emporter (remis en revenant en livraison)
   const lastDeliveryFeeRef = useRef<number | null>(null);
+  // Contenu d'une commande rouverte au moment du chargement : si rien n'a changé, l'encaisser ne la
+  // renvoie pas « En cours » en cuisine (elle peut déjà être prête ou remise au client)
+  const loadedSignatureRef = useRef<string | null>(null);
   // true = la commande rechargée a été créée sur la caisse (son bon cuisine est déjà sorti à la mise en attente)
   const loadedOrderFromCaisseRef = useRef<boolean>(true);
 
@@ -1342,6 +1345,21 @@ const Caisse = () => {
     setIsDeliveryModalOpen(false);
   };
 
+  const ticketSignature = (lines: any[]) =>
+    (lines || []).filter(Boolean).map((l: any) => [
+      orderItemName(l),
+      Number(l.quantity) || 1,
+      tillLineTotal(l, optionGroupMapping).toFixed(2),
+      getFormattedOrderOptions(l, optionGroupMapping).flatMap(g => g.items.map(o => `${o.qty || 1}x${o.name}${o.isSans ? '-sans' : ''}`)).join(','),
+      (Array.isArray(l.removedIngredients) ? l.removedIngredients : []).map((i: any) => i?.name ?? i).join(','),
+    ].join('|')).sort().join('\n');
+
+  /** Statut cuisine à enregistrer pour une commande rouverte : inchangée → statut actuel conservé. */
+  const isLoadedUnchanged = () =>
+    loadedSignatureRef.current !== null && ticketSignature(cartState.items) === loadedSignatureRef.current;
+  const kitchenStatusForLoaded = (currentStatus?: string | null) =>
+    isLoadedUnchanged() && currentStatus ? currentStatus : 'En cours';
+
   // Poubelle d'une ligne. Dernière ligne d'une commande rouverte supprimée : le ticket n'est plus
   // relié à cette commande (sinon la vente suivante écraserait la commande rouverte).
   const removeTicketLine = (itemKey: string) => {
@@ -1380,11 +1398,12 @@ const Caisse = () => {
       }
     }
 
+    loadedSignatureRef.current = null;
     setTimeout(() => {
-      items.forEach((item, idx) => {
-        // Ligne rouverte : calcul commun (aussi vérifié par « npm run verif:encaissement »)
-        addToCart(buildLoadedCartItem(item, idx, orderId, menuData));
-      });
+      // Ligne rouverte : calcul commun (aussi vérifié par « npm run verif:encaissement »)
+      const built = items.map((item, idx) => buildLoadedCartItem(item, idx, orderId, menuData));
+      built.forEach(line => addToCart(line));
+      loadedSignatureRef.current = ticketSignature(built);
       customToast(`Commande #${orderId} chargée (${loadedOrderType || 'SUR PLACE'})`, "success");
     }, 150);
   };
@@ -1641,7 +1660,8 @@ const Caisse = () => {
         delivery_fee: activeDeliveryFee, 
         is_paid: true,
         payment_status: 'paid',
-        status: 'En cours',
+        // Commande rouverte sans modification : statut cuisine laissé tel quel (clé absente)
+        status: (loadedOrderId && isLoadedUnchanged()) ? undefined : 'En cours',
         payment_method: cleanPaymentMethod,
         cash_amount: cashAmount,
         order_origin: 'caisse',
@@ -1715,7 +1735,7 @@ const Caisse = () => {
           const updateData: any = {
             is_paid: true,
             payment_status: 'paid',
-            status: 'En cours',
+            status: kitchenStatusForLoaded(current.status),
             payment_method: cleanPaymentMethod,
             cash_amount: cashAmount, 
             order_type_id: currentOrderTypeId || undefined, 
@@ -1886,7 +1906,8 @@ const Caisse = () => {
         delivery_fee: activeDeliveryFee, 
         is_paid: false,
         payment_status: 'pending',
-        status: 'En cours',
+        // Commande rouverte sans modification : statut cuisine laissé tel quel (clé absente)
+        status: (loadedOrderId && isLoadedUnchanged()) ? undefined : 'En cours',
         payment_method: 'en attente',
         cash_amount: 0,
         order_origin: 'caisse',
@@ -1944,7 +1965,7 @@ const Caisse = () => {
           const updateData: any = { 
             is_paid: false, 
             payment_status: 'pending', 
-            status: 'En cours', 
+            status: kitchenStatusForLoaded(current.status), 
             payment_method: 'en attente', 
             cash_amount: 0, 
             order_type_id: currentOrderTypeId || undefined, 
