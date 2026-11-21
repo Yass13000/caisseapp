@@ -94,8 +94,10 @@ const getTargetMs = (o: DeliveryOrder, defaultPrepTime: number) => o.scheduled_t
   ? new Date(o.scheduled_time).getTime()
   : new Date(o.created_at).getTime() + (Number(o.global_prep_time ?? defaultPrepTime ?? 40) + Number(o.additional_prep_time ?? 0)) * 60000;
 
-const isCancelled = (o: DeliveryOrder) => norm(o.status).startsWith('annul');
-const isDelivered = (o: DeliveryOrder) => o.delivery_status === 'delivered' || o.status === 'Fermé';
+// Livraison : uniquement delivery_status (le statut de la commande ne sert pas ici)
+const isCancelled = (o: DeliveryOrder) => o.delivery_status === 'cancelled';
+// « Fermé » veut dire encaissée (souvent avant le départ) : seule la livraison confirmée compte comme livrée
+const isDelivered = (o: DeliveryOrder) => o.delivery_status === 'delivered';
 const isEnRoute = (o: DeliveryOrder) => !!o.driver_id && (o.delivery_status === 'in_transit' || o.delivery_status === 'assigned') && !isDelivered(o);
 
 const getPayKind = (o: DeliveryOrder): PayKind => {
