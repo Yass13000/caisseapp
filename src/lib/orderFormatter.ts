@@ -99,6 +99,11 @@ export const formatProductName = (name: string, isSolo: boolean): string => {
 /**
  * 🟢 1. MAPPING DYNAMIQUE DEPUIS SUPABASE (GROUPE + VRAI NAME_KDS DIRECT DE LA BDD)
  */
+// Cache du mapping (mêmes options → même résultat, même objet) : évite de relancer jusqu'à
+// 6 requêtes à chaque ajout au ticket, et de redessiner la caisse pour un résultat identique.
+const MAPPING_TTL_MS = 5 * 60 * 1000;
+const mappingCache = new Map<string, { at: number; value?: Record<string, any>; pending?: Promise<Record<string, any>> }>();
+
 export const fetchOptionGroupMapping = async (
   items: any[], 
   activeRestoId?: string
@@ -147,7 +152,36 @@ export const fetchOptionGroupMapping = async (
     }
   });
 
+  const cacheKey = [
+    activeRestoId || '',
+    [...optionIds].sort().join(','),
+    [...explicitGroupIds].sort().join(','),
+    [...dynamicProductIds].sort().join(','),
+  ].join('|');
+  const cached = mappingCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < MAPPING_TTL_MS) {
+    if (cached.value) return cached.value;
+    if (cached.pending) return cached.pending;
+  }
+  const pending = buildOptionGroupMapping(optionIds, explicitGroupIds, dynamicProductIds, activeRestoId)
+    .then(({ mapping, failed }) => {
+      if (failed) mappingCache.delete(cacheKey);
+      else mappingCache.set(cacheKey, { at: Date.now(), value: mapping });
+      if (mappingCache.size > 200) mappingCache.delete(mappingCache.keys().next().value as string);
+      return mapping;
+    });
+  mappingCache.set(cacheKey, { at: Date.now(), pending });
+  return pending;
+};
+
+const buildOptionGroupMapping = async (
+  optionIds: Set<string>,
+  explicitGroupIds: Set<string>,
+  dynamicProductIds: Set<string>,
+  activeRestoId?: string
+): Promise<{ mapping: Record<string, any>; failed: boolean }> => {
   const mapping: Record<string, any> = {};
+  let failed = false;
 
   try {
     const cleanOptionIds = Array.from(optionIds).filter(id => id && !isNaN(Number(id)));
@@ -317,10 +351,11 @@ export const fetchOptionGroupMapping = async (
       }
     }
   } catch (e) {
+    failed = true;
     console.error("Erreur chargement mapping option groups :", e);
   }
 
-  return mapping;
+  return { mapping, failed };
 };
 
 /**

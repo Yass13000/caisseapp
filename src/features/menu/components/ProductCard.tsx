@@ -58,6 +58,7 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, onSelectProduct, onS
             alt={product.name}
             onError={() => setImgError(true)}
             loading="lazy"
+            decoding="async"
             className="w-full h-full object-contain pointer-events-none transition-transform duration-150 group-hover:scale-105"
           />
         ) : (
@@ -93,4 +94,5 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, onSelectProduct, onS
   );
 };
 
-export default ProductCard;
+// Mémorisé : la grille n'est redessinée que si le produit change (pas à chaque ajout au ticket)
+export default React.memo(ProductCard);

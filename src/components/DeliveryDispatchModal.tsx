@@ -353,7 +353,8 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
     loadInitialData();
   }, [loadInitialData]);
 
-  // Rafraîchissement GPS toutes les 4 s
+  // Positions GPS : le temps réel (plus bas) les met à jour en direct ; ce relevé n'est qu'un
+  // filet de sécurité si le temps réel décroche (avant : 15 requêtes/min en continu)
   useEffect(() => {
     if (!activeRestoId) return;
     const poll = setInterval(async () => {
@@ -365,7 +366,7 @@ export const DeliveryDispatchModal: React.FC<{ searchQuery?: string }> = ({ sear
       if (data && data.length > 0) {
         setDrivers(prev => mergeDriversAndLocations(prev, data));
       }
-    }, 4000);
+    }, 30000);
 
     return () => clearInterval(poll);
   }, [activeRestoId, mergeDriversAndLocations]);

@@ -342,9 +342,16 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
       || RESTAURANT_ID;
     if (!restoId || restoId === 'undefined' || restoId === 'null') return;
 
+    // Rafale d'événements (cuisine, borne, caisse) → un seul rechargement
+    let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleReload = () => {
+      if (reloadTimer) clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => { reloadTimer = null; loadOrders(); }, 600);
+    };
+
     const channel = supabase
       .channel(`dashboard_orders_sync_${restoId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `restaurant_id=eq.${restoId}` }, loadOrders)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `restaurant_id=eq.${restoId}` }, scheduleReload)
       // Supabase ne filtre pas les suppressions : on les écoute à part, et on ne recharge
       // que si la commande supprimée était affichée ici
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'orders' }, (payload: any) => {
@@ -357,6 +364,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
       .subscribe();
 
     return () => { 
+      if (reloadTimer) clearTimeout(reloadTimer);
       supabase.removeChannel(channel); 
     };
   }, []);

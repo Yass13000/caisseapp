@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -27,11 +27,12 @@ import {
 import ProductCard from '@/features/menu/components/ProductCard';
 import OptionsModal from '@/features/menu/components/OptionsModal';
 import ProductVariantsModal from '@/components/ProductVariantsModal';
-import OrderTrackerModal from '@/components/OrderTrackerModal';
-import OrderHistoryModal from '@/components/OrderHistoryModal';
-import SettingsModal from '@/components/SettingsModal';
-import StockModal from '@/components/StockModal';
-import OrdersDashboardModal from '@/components/OrdersDashboardModal';
+// Grandes fenêtres chargées à leur première ouverture : l'écran de caisse démarre plus léger
+const OrderTrackerModal = React.lazy(() => import('@/components/OrderTrackerModal'));
+const OrderHistoryModal = React.lazy(() => import('@/components/OrderHistoryModal'));
+const SettingsModal = React.lazy(() => import('@/components/SettingsModal'));
+const StockModal = React.lazy(() => import('@/components/StockModal'));
+const OrdersDashboardModal = React.lazy(() => import('@/components/OrdersDashboardModal'));
 import NewtonsCradleLoader from '@/components/NewtonsCradleLoader';
 import CashSessionModal from '@/components/CashSessionModal';
 import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
@@ -279,6 +280,26 @@ const generateAndPrintKitchenTicket = async (
     console.error("Erreur API impression cuisine :", error); 
   }
 };
+
+/**
+ * Heure / date de l'en-tête. Composant à part, mis à jour à chaque changement de minute :
+ * avant, une horloge à la seconde redessinait toute la caisse (grille produits, ticket) 1×/s.
+ */
+const LiveClock = React.memo(({ kind }: { kind: 'time' | 'date' }) => {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      const d = new Date();
+      timer = setTimeout(() => { setNow(new Date()); schedule(); }, (60 - d.getSeconds()) * 1000 - d.getMilliseconds() + 50);
+    };
+    schedule();
+    return () => clearTimeout(timer);
+  }, []);
+  return <>{kind === 'time'
+    ? now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+    : now.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}</>;
+});
 
 // TR = titre-restaurant (Swile, Edenred, Up, Pluxee…)
 type PayMethod = 'CB' | 'Espèces' | 'TR';
@@ -811,7 +832,6 @@ const Caisse = () => {
     logoUrl: null
   });
   const [themeColors, setThemeColors] = useState({ primary: '#04B855', secondary: '#1f2937', accent: '#FBBF24' });
-  const [currentTime, setCurrentTime] = useState(new Date());
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   const [menuData, setMenuData] = useState<Product[]>([]);
@@ -856,8 +876,9 @@ const Caisse = () => {
   
   const [initialSelections, setInitialSelections] = useState<any>(null);
 
-  const [orderType, setOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>(getDefaultOrderType());
-  const [previousOrderType, setPreviousOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>(getDefaultOrderType());
+  // Forme « paresseuse » : le réglage n'est lu qu'une fois (sinon lecture disque via l'exe à chaque affichage)
+  const [orderType, setOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>(getDefaultOrderType);
+  const [previousOrderType, setPreviousOrderType] = useState<'SUR PLACE' | 'EMPORTER' | 'LIVRAISON'>(getDefaultOrderType);
   const [activeOrderTypes, setActiveOrderTypes] = useState<string[]>(['SUR PLACE', 'EMPORTER', 'LIVRAISON']);
   
   const [isDeliveryModalOpen, setIsDeliveryModalOpen] = useState(false);
@@ -1009,12 +1030,11 @@ const Caisse = () => {
   const hasActiveOrderData = cartItemCount > 0 || !!clientInfo || !!loadedOrderId || deliveryFee > 0;
 
   useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    return () => { clearInterval(timer); window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
+    return () => { window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
   }, []);
 
   // Session réellement ouverte en base pour ce restaurant.
@@ -1551,6 +1571,14 @@ const Caisse = () => {
     );
   };
 
+  // Callback stable pour les cartes produit mémorisées (appelle toujours la dernière version)
+  const handleSelectProductRef = useRef<(p: Product) => any>(() => {});
+  const onSelectProductStable = useCallback((p: Product) => handleSelectProductRef.current(p), []);
+  const visibleProducts = useMemo(
+    () => menuData.filter(p => p.category === selectedCategory),
+    [menuData, selectedCategory]
+  );
+
   const handleSelectProduct = async (product: Product) => {
     if (!product.is_available) { customToast("Produit indisponible", "error"); return; }
     try {
@@ -1575,6 +1603,7 @@ const Caisse = () => {
       addToCart({ id: uniqueId, product, quantity: 1, cartKey: uniqueId, customKey: uniqueId } as any);
     }
   };
+  handleSelectProductRef.current = handleSelectProduct;
 
   const handleAddToCartFromModal = (p: Product, incomingData: any) => {
     let finalFlatOptions: any[] = [];
@@ -2160,7 +2189,7 @@ const Caisse = () => {
       <div className="flex flex-col h-screen w-full bg-background items-center justify-center font-helvetica select-none relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full p-4 flex justify-between items-center text-secondary/50 font-bold z-20">
           <span className={isOnline ? 'text-secondary/50' : 'text-red-500 animate-pulse'}>{isOnline ? <Wifi size={24} /> : <WifiOff size={24} />}</span>
-          <span className="text-xl tracking-wider">{currentTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+          <span className="text-xl tracking-wider"><LiveClock kind="time" /></span>
         </div>
         
         <div className="absolute top-[-20%] left-[-10%] w-[50vw] h-[50vw] bg-primary/10 blur-[100px] rounded-full pointer-events-none"></div>
@@ -2213,9 +2242,9 @@ const Caisse = () => {
             <span>{restaurantInfo?.name || "Caisse Principale"}</span>
           </div>
         </div>
-        <div className="absolute left-1/2 -translate-x-1/2 text-white font-black text-[13px] tracking-[0.2em]">{currentTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</div>
+        <div className="absolute left-1/2 -translate-x-1/2 text-white font-black text-[13px] tracking-[0.2em]"><LiveClock kind="time" /></div>
         <div className="flex items-center gap-4">
-          <CalendarDays size={14} /> <span>{currentTime.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })}</span>
+          <CalendarDays size={14} /> <span><LiveClock kind="date" /></span>
           <div className="w-px h-3 bg-white/20"></div>
           <button 
             onClick={handleRefreshData} 
@@ -2290,8 +2319,8 @@ const Caisse = () => {
 
           <div className="flex-1 p-3.5 sm:p-4 xl:p-5 overflow-y-auto custom-scrollbar">
             <div className="grid grid-cols-[repeat(auto-fill,minmax(265px,1fr))] gap-3 sm:gap-3.5 xl:gap-4 content-start">
-              {menuData.filter(p => p.category === selectedCategory).map(product => (
-                <ProductCard key={product.id} product={product as any} onSelectProduct={handleSelectProduct as any} />
+              {visibleProducts.map(product => (
+                <ProductCard key={product.id} product={product as any} onSelectProduct={onSelectProductStable as any} />
               ))}
             </div>
           </div>
@@ -2512,7 +2541,8 @@ const Caisse = () => {
                     transition={{ type: 'spring', stiffness: 500, damping: 18 }}
                     className="pointer-events-none absolute -right-1.5 -top-1.5 flex h-6 min-w-6 items-center justify-center"
                   >
-                    <span className="absolute inset-0 animate-ping rounded-full bg-red-500 opacity-60" />
+                    {/* Quelques pulsations à chaque nouveau montant, puis l'animation s'arrête (pas d'animation 24h/24) */}
+                    <span key={`ping-${pendingPaymentCount}`} className="absolute inset-0 animate-ping rounded-full bg-red-500 opacity-60" style={{ animationIterationCount: 4 }} />
                     <motion.span
                       key={pendingPaymentCount}
                       initial={{ scale: 1.5 }}
@@ -2685,6 +2715,7 @@ const Caisse = () => {
         />
       )}
 
+      <React.Suspense fallback={null}>
       {isDashboardOpen && <OrdersDashboardModal onClose={() => setIsDashboardOpen(false)} />}
       {isOrderTrackerOpen && <OrderTrackerModal onClose={() => setIsOrderTrackerOpen(false)} onLoadOrder={handleLoadOrderIntoCart} />}
       {isHistoryOpen && <OrderHistoryModal onClose={() => setIsHistoryOpen(false)} />}
@@ -2703,6 +2734,7 @@ const Caisse = () => {
           currentCategories={categories.map(c => c.name)}
         />
       )}
+      </React.Suspense>
 
     </div>
   );

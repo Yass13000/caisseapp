@@ -216,6 +216,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       || localStorage.getItem('pos_restaurant_id') 
       || RESTAURANT_ID;
 
+    // Rafale d'événements → un seul rechargement
+    let reloadTimer: ReturnType<typeof setTimeout> | null = null;
     const channel = supabase
       .channel('tracker_orders_realtime_channel')
       .on(
@@ -227,12 +229,14 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
           ...(activeRestoId ? { filter: `restaurant_id=eq.${activeRestoId}` } : {})
         },
         () => {
-          fetchPendingOrders();
+          if (reloadTimer) clearTimeout(reloadTimer);
+          reloadTimer = setTimeout(() => { reloadTimer = null; fetchPendingOrders(); }, 600);
         }
       )
       .subscribe();
 
     return () => {
+      if (reloadTimer) clearTimeout(reloadTimer);
       supabase.removeChannel(channel);
     };
   }, []);
