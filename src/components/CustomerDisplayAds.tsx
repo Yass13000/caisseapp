@@ -3,7 +3,7 @@
 //   Caisse1..5 gérées ici ; Borne1..3 (borne) et Pub1..2 (app) affichées aussi, en lecture seule.
 // Les écrans clients téléchargent les fichiers et les gardent en cache (voir electron/main.js).
 import { useEffect, useRef, useState } from 'react';
-import { Eye, EyeOff, ImagePlus, Loader2, Minus, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Check, Eye, EyeOff, ImagePlus, Loader2, Minus, Monitor, MonitorOff, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { supabase } from '@/lib/supabaseClient';
 import {
@@ -49,6 +49,26 @@ const Media = ({ url }: { url: string }) =>
 
 const iconBtn = 'w-11 h-11 rounded-xl flex items-center justify-center active:scale-95 cursor-pointer disabled:opacity-40';
 
+type AdState = 'onscreen' | 'loading' | 'hidden' | 'unknown';
+const STATE_BADGE: Record<AdState, { cls: string; label: string }> = {
+  onscreen: { cls: 'bg-green-600 text-white', label: 'À l’écran' },
+  loading: { cls: 'bg-amber-400 text-slate-900', label: 'Téléchargement…' },
+  hidden: { cls: 'bg-gray-700 text-white', label: 'Masquée' },
+  unknown: { cls: 'bg-black/60 text-white', label: '' },
+};
+const StateBadge = ({ state }: { state: AdState }) => {
+  const b = STATE_BADGE[state];
+  if (!b.label) return null;
+  return (
+    <span className={`absolute top-2 right-2 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-black ${b.cls}`}>
+      {state === 'onscreen' && <Check size={12} strokeWidth={3} />}
+      {state === 'loading' && <Loader2 size={12} className="animate-spin" />}
+      {state === 'hidden' && <EyeOff size={12} />}
+      {b.label}
+    </span>
+  );
+};
+
 const CustomerDisplayAds = () => {
   const [restaurantId] = useState(getRestaurantId);
   const [rows, setRows] = useState<RestaurantImageRow[]>([]);
@@ -57,6 +77,39 @@ const CustomerDisplayAds = () => {
   const [duration, setDuration] = useState(readAdImageDuration);
   const inputRef = useRef<HTMLInputElement>(null);
   const pendingSlot = useRef<string | null>(null);
+
+  // État de l'écran client : 2e écran branché, fenêtre ouverte, pubs déjà prêtes en local
+  const api = getCustomerDisplayAPI();
+  const [screen, setScreen] = useState<{ displays: number; open: boolean } | null>(null);
+  const [onScreenIds, setOnScreenIds] = useState<Set<string>>(new Set());
+  const [checkedAt, setCheckedAt] = useState<Date | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const readScreen = async () => {
+    if (!api) return;
+    try {
+      const [st, cached] = await Promise.all([api.getStatus?.(), api.getCachedAds?.()]);
+      if (st) setScreen(st);
+      setOnScreenIds(new Set((cached || []).map(a => String(a.id))));
+      setCheckedAt(new Date());
+    } catch {
+      /* exe ancien ou écran indisponible */
+    }
+  };
+
+  useEffect(() => {
+    readScreen();
+    const t = setInterval(readScreen, 3000);
+    return () => clearInterval(t);
+  }, []);
+
+  const refreshScreen = async () => {
+    setRefreshing(true);
+    notifyScreen();
+    await load();
+    // Laisse le temps à l'écran client de relire la liste et de télécharger
+    setTimeout(async () => { await readScreen(); setRefreshing(false); }, 2500);
+  };
 
   const load = async () => {
     if (!restaurantId) return;
@@ -138,6 +191,15 @@ const CustomerDisplayAds = () => {
 
   if (!restaurantId) return null;
 
+  const adState = (row: RestaurantImageRow | undefined): AdState => {
+    if (!row || !api) return 'unknown';
+    if (row.is_active === false) return 'hidden';
+    return onScreenIds.has(String(row.id)) ? 'onscreen' : 'loading';
+  };
+  const activeRows = rowsToAds(rows);
+  const onScreenCount = activeRows.filter(r => onScreenIds.has(String(r.id))).length;
+  const loadingCount = activeRows.length - onScreenCount;
+
   // Pubs borne et app, affichées aussi sur l'écran client (gérées ailleurs)
   const shared = rowsToAds(rows.map(r => ({ ...r, is_active: true }))).filter(r => adSource(r.nom) !== 'caisse');
 
@@ -150,6 +212,43 @@ const CustomerDisplayAds = () => {
           <span className="w-14 text-center font-black text-secondary tabular-nums text-lg">{duration}s</span>
           <button type="button" aria-label="Plus longtemps" onClick={() => changeDuration(1)} className={`${iconBtn} bg-gray-100 text-secondary`}><Plus size={18} /></button>
         </div>
+      </div>
+
+      {/* Où on en est : écran branché, pubs à l'écran / en téléchargement, actualisation */}
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-gray-50 border border-gray-200 p-2">
+        {!api ? (
+          <span className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-gray-200 text-gray-600 font-black text-sm">
+            <MonitorOff size={18} /> Écran client : uniquement sur la caisse (exe)
+          </span>
+        ) : (
+          <>
+            <span className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl font-black text-sm ${
+              screen?.open ? 'bg-green-600 text-white' : screen && screen.displays < 2 ? 'bg-gray-200 text-gray-600' : 'bg-amber-400 text-slate-900'
+            }`}>
+              {screen?.open ? <Monitor size={18} /> : <MonitorOff size={18} />}
+              {screen?.open ? 'Écran client allumé' : screen && screen.displays < 2 ? 'Aucun 2e écran branché' : 'Écran client fermé'}
+            </span>
+            <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-gray-200 font-black text-sm text-green-700 tabular-nums">
+              <Check size={16} strokeWidth={3} /> {onScreenCount} à l’écran
+            </span>
+            {loadingCount > 0 && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-100 font-black text-sm text-amber-800 tabular-nums">
+                <Loader2 size={16} className="animate-spin" /> {loadingCount} en téléchargement
+              </span>
+            )}
+            <span className="ml-auto text-xs font-bold text-gray-400 tabular-nums">
+              {checkedAt ? `Vérifié à ${checkedAt.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}
+            </span>
+            <button
+              type="button"
+              onClick={refreshScreen}
+              disabled={refreshing}
+              className="inline-flex items-center gap-2 h-11 px-4 rounded-xl bg-secondary text-white font-black text-sm active:scale-95 cursor-pointer disabled:opacity-60"
+            >
+              <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} /> Actualiser l’écran
+            </button>
+          </>
+        )}
       </div>
 
       {loading ? (
@@ -182,6 +281,7 @@ const CustomerDisplayAds = () => {
                   <div className={`relative aspect-video bg-black ${off ? 'opacity-40' : ''}`}>
                     <Media url={row.image_url!} />
                     <span className="absolute top-2 left-2 w-8 h-8 rounded-lg bg-black/60 text-white font-black text-sm flex items-center justify-center">{i + 1}</span>
+                    <StateBadge state={adState(row)} />
                     {busy && <span className="absolute inset-0 bg-black/40 flex items-center justify-center text-white"><Loader2 size={30} className="animate-spin" /></span>}
                   </div>
                   <div className="p-2 flex items-center justify-between gap-1">
@@ -207,6 +307,7 @@ const CustomerDisplayAds = () => {
                   return (
                     <div key={row.id} className={`relative aspect-video rounded-xl overflow-hidden bg-black ${off ? 'opacity-40' : ''}`}>
                       <Media url={row.image_url!} />
+                      <StateBadge state={adState(rows.find(r => r.id === row.id))} />
                       <span className="absolute bottom-1.5 left-1.5 px-2 py-0.5 rounded-md bg-black/60 text-white font-black text-[11px] uppercase tracking-wider">
                         {adSource(row.nom) === 'borne' ? 'Borne' : 'App'}
                       </span>

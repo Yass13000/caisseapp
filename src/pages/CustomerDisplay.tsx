@@ -215,7 +215,11 @@ const useAds = (restaurantId: string | null) => {
           .in('nom', AD_NAMES);
         if (error || !data) return; // hors ligne : on garde le cache
         const duration = readAdImageDuration();
-        const list = await api.syncAds!(rowsToAds(data as any).map(row => ({
+        const wanted = rowsToAds(data as any);
+        // Pub supprimée ou masquée : retirée tout de suite, sans attendre les téléchargements en cours
+        const wantedIds = new Set(wanted.map(row => String(row.id)));
+        if (alive) setAds(prev => prev.filter(ad => wantedIds.has(String(ad.id))));
+        const list = await api.syncAds!(wanted.map(row => ({
           id: String(row.id), url: row.image_url!, type: mediaTypeFromUrl(row.image_url!), duration,
         })));
         if (alive && Array.isArray(list)) setAds(list);

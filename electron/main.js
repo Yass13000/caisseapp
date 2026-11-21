@@ -680,15 +680,22 @@ function registerCustomerMediaProtocol() {
   session.fromPartition('persist:caisse_session').protocol.handle('caisse-media', handler);
 }
 
+// Au-delà, le téléchargement est abandonné (réessayé à la synchro suivante) : sans limite,
+// une vidéo bloquée gelait toutes les synchros, et une pub supprimée restait affichée.
+const AD_DOWNLOAD_TIMEOUT_MS = 3 * 60 * 1000;
+
 async function downloadAd(url, file) {
   const target = path.join(adsDir, file);
   if (fs.existsSync(target)) return true;
   const tmp = target + '.part';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AD_DOWNLOAD_TIMEOUT_MS);
   try {
-    const res = await net.fetch(url);
+    const res = await net.fetch(url, { signal: controller.signal });
     if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
     await new Promise((resolve, reject) => {
       const out = fs.createWriteStream(tmp);
+      controller.signal.addEventListener('abort', () => { out.destroy(); reject(new Error('délai dépassé')); });
       Readable.fromWeb(res.body).on('error', reject).pipe(out).on('finish', resolve).on('error', reject);
     });
     fs.renameSync(tmp, target);
@@ -697,6 +704,8 @@ async function downloadAd(url, file) {
     console.warn(`Pub non téléchargée (${url}):`, e.message);
     try { fs.unlinkSync(tmp); } catch (err) { /* rien à nettoyer */ }
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
