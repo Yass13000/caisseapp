@@ -18,7 +18,8 @@ import {
   Banknote,
   MessageSquare,
   MapPin,
-  Info
+  Info,
+  Bike
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadFromOrder, buildClientReceiptPayload, buildKitchenReceiptPayload, kitchenCustomerName, stripComplementFromAddress, flattenTicketComment } from '@/lib/orderFormatter';
@@ -106,6 +107,19 @@ const ORDER_TYPE_LABELS = {
 
 const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTAURANT" }: OrderTrackerModalProps) => {
   const [orders, setOrders] = useState<any[]>([]);
+  // Onglets : commandes à encaisser au comptoir / livraisons payées au livreur
+  const [view, setView] = useState<'encaisser' | 'livraisons'>('encaisser');
+  const isDeliveryOrder = (o: any) => String(o?.order_type_id || '') === ORDER_TYPE_ID.LIVRAISON;
+  const deliveryOrders = orders.filter(isDeliveryOrder);
+  const counterOrders = orders.filter((o) => !isDeliveryOrder(o));
+  const visibleOrders = view === 'livraisons' ? deliveryOrders : counterOrders;
+  // Ouverture : directement sur « Livraisons » s'il n'y a que des livraisons à régler
+  const autoTabDoneRef = useRef(false);
+  useEffect(() => {
+    if (autoTabDoneRef.current || orders.length === 0) return;
+    autoTabDoneRef.current = true;
+    if (counterOrders.length === 0 && deliveryOrders.length > 0) setView('livraisons');
+  }, [orders, counterOrders.length, deliveryOrders.length]);
   const [isLoading, setIsLoading] = useState(true);
   const [expandedOrderId, setExpandedOrderId] = useState<string | number | null>(null);
   const [paymentOrder, setPaymentOrder] = useState<any | null>(null);
@@ -357,6 +371,67 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       await (window as any).electronAPI.printReceipt(kitchenPayload, printerName);
     } catch (err) {
       console.error("Erreur API impression cuisine :", err);
+    }
+  };
+
+  /** Mode prévu pour une livraison (« CB à la livraison » / « Espèces à la livraison ») */
+  const plannedDeliveryPay = (order: any): 'CB' | 'Espèces' | null => {
+    const pm = String(order?.payment_method || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    if (pm.includes('espece') || pm.includes('cash')) return 'Espèces';
+    if (pm.includes('cb') || pm.includes('carte')) return 'CB';
+    return null;
+  };
+
+  /** Livraison réglée au retour du livreur : rien ne part sur le TPE (la carte a été passée sur celui du livreur) */
+  const handleSettleDelivery = async (e: React.MouseEvent, order: any, method: 'CB' | 'Espèces') => {
+    e.stopPropagation();
+    const lockKey = String(order.id);
+    if (payingOrderIdsRef.current.has(lockKey)) return;
+    payingOrderIdsRef.current.add(lockKey);
+    try {
+      const activeRestoId = getActiveRestoId(order.restaurant_id)
+        || (typeof getActiveRestaurantId === 'function' ? getActiveRestaurantId() : null)
+        || localStorage.getItem('pos_restaurant_id')
+        || RESTAURANT_ID;
+      const activeSessionId = await resolveActiveSessionId(activeRestoId);
+      if (!activeSessionId) {
+        toast.error("Veuillez ouvrir la caisse d'abord !");
+        return;
+      }
+      const total = Number(order.total_price) || 0;
+      const updatePayload: any = {
+        is_paid: true,
+        payment_status: 'paid',
+        payment_method: method === 'CB' ? 'Carte bancaire' : 'Espèces',
+        cash_amount: method === 'Espèces' ? total : 0,
+        session_id: activeSessionId,
+      };
+      // Jamais deux fois : seulement si elle est encore non payée
+      const { data: updated, error } = await supabase
+        .from('orders')
+        .update(updatePayload)
+        .eq('id', order.id)
+        .eq('is_paid', false)
+        .select('id');
+      if (error) throw error;
+      if (!updated || updated.length === 0) {
+        toast.info('Livraison déjà réglée');
+      } else {
+        const pointsToEarn = Number(order.points_earned) || 0;
+        if (order.user_id && order.user_id !== "00000000-0000-0000-0000-000000000000" && pointsToEarn > 0) {
+          try {
+            await addLoyaltyPointsThreadSafe(order.user_id, pointsToEarn, order.id, `Points gagnés commande #${order.order_number || order.id}`, activeRestoId);
+          } catch (loyaltyErr) {
+            console.warn("Erreur attribution points fidélité :", loyaltyErr);
+          }
+        }
+        toast.success(`Livraison #${order.order_number || String(order.id).slice(0, 4)} réglée en ${method === 'CB' ? 'CB' : 'espèces'}`);
+      }
+      setOrders((prev) => prev.filter((o) => o.id !== order.id));
+    } catch (err) {
+      toast.error("Erreur lors du règlement de la livraison");
+    } finally {
+      payingOrderIdsRef.current.delete(lockKey);
     }
   };
 
@@ -653,6 +728,22 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         <div className="bg-white border-b border-gray-200 p-6 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-6">
             <h2 className="text-2xl font-black text-secondary uppercase tracking-tight">Suivi Commandes</h2>
+
+            <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl border border-gray-200">
+              {([
+                { key: 'encaisser', label: 'À encaisser', count: counterOrders.length, Icon: CreditCard },
+                { key: 'livraisons', label: 'Livraisons', count: deliveryOrders.length, Icon: Bike },
+              ] as const).map(({ key, label, count, Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => { setView(key); setExpandedOrderId(null); }}
+                  className={`h-10 px-4 rounded-lg font-black text-sm uppercase tracking-wide flex items-center gap-2 transition active:scale-95 ${view === key ? 'bg-white text-secondary shadow-sm' : 'text-gray-500 hover:text-secondary'}`}
+                >
+                  <Icon size={16} /> {label}
+                  <span className={`min-w-6 h-6 px-1.5 rounded-full text-xs flex items-center justify-center ${count > 0 ? (key === 'livraisons' ? 'bg-purple-600 text-white' : 'bg-red-600 text-white') : 'bg-gray-200 text-gray-500'}`}>{count}</span>
+                </button>
+              ))}
+            </div>
             
             <div className="flex items-center gap-3 bg-gray-50 p-1.5 rounded-xl border border-gray-200 shadow-inner">
               
@@ -692,10 +783,12 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
               <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-primary"></div>
               <p className="text-gray-400 font-bold text-base">Recherche des commandes...</p>
             </div>
-          ) : orders.length === 0 ? (
+          ) : visibleOrders.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-gray-400">
               <Search size={60} className="mb-4 opacity-20" />
-              <p className="text-xl font-bold italic">Aucune commande en attente pour {getFormattedDateLabel().toLowerCase()}</p>
+              <p className="text-xl font-bold italic">
+                {view === 'livraisons' ? 'Aucune livraison à régler' : 'Aucune commande en attente'} pour {getFormattedDateLabel().toLowerCase()}
+              </p>
             </div>
           ) : (
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
@@ -710,7 +803,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {orders.map((order) => {
+                  {visibleOrders.map((order) => {
                     const isApp = order.order_origin?.toLowerCase() === 'app';
                     
                     const hasValidMachineId = order.machine_id && 
@@ -718,9 +811,10 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                       String(order.machine_id).trim().toUpperCase() !== 'BORNE-NON-CONFIGURÉE' && 
                       String(order.machine_id).trim().toUpperCase() !== 'BORNE-NON-CONFIGUREE';
 
+                    const isCaisse = String(order.order_origin || '').toLowerCase() === 'caisse';
                     const originLabel = hasValidMachineId 
                       ? String(order.machine_id).trim() 
-                      : (isApp ? 'App' : 'Borne');
+                      : (isApp ? 'App' : isCaisse ? 'Caisse' : 'Borne');
 
                     const clientLabel = order.customer_name || `Client ${originLabel}`;
                     const typeLabel = ORDER_TYPE_LABELS[order.order_type_id] || 'SUR PLACE';
@@ -746,6 +840,30 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                                 {typeLabel}
                                 </span>
                             </div>
+                            {view === 'livraisons' && (() => {
+                              const planned = plannedDeliveryPay(order);
+                              const total = Number(order.total_price) || 0;
+                              const given = Number(order.cash_amount) || 0;
+                              const deliveredLabel = order.delivery_status === 'delivered' ? 'Livrée'
+                                : order.delivery_status === 'in_transit' ? 'En route'
+                                : order.delivery_status === 'assigned' ? 'Assignée'
+                                : order.delivery_status === 'failed' ? 'Échec' : null;
+                              return (
+                                <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                                  <span className={`px-2 py-1 rounded-md text-xs font-black uppercase tracking-wide ${planned === 'CB' ? 'bg-emerald-100 text-emerald-700' : planned === 'Espèces' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
+                                    {planned ? `${planned} à la livraison` : 'Paiement non précisé'}
+                                  </span>
+                                  {planned === 'Espèces' && given > total + 0.001 && (
+                                    <span className="px-2 py-1 rounded-md text-xs font-black bg-amber-50 text-amber-800 border border-amber-200">
+                                      Paie avec {given.toFixed(2)} € · rendre {(given - total).toFixed(2)} €
+                                    </span>
+                                  )}
+                                  {deliveredLabel && (
+                                    <span className="px-2 py-1 rounded-md text-xs font-black bg-blue-50 text-blue-700 border border-blue-100">{deliveredLabel}</span>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="p-4 text-right font-black text-lg text-secondary">
                             {order.total_price.toFixed(2)} €
@@ -760,12 +878,35 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                             <button onClick={(e) => { e.stopPropagation(); handleSelectOrder(order); }} className="h-10 px-4 bg-secondary text-white rounded-lg font-black uppercase text-xs hover:bg-secondary/90 active:scale-95 transition-all shadow-sm flex items-center justify-center flex-shrink-0" title="Ouvrir en caisse">
                               Ouvrir
                             </button>
-                            <button onClick={(e) => handleOpenCashPaymentModal(e, order)} className="h-10 px-3 bg-amber-500 text-white rounded-lg font-black uppercase text-xs hover:bg-amber-600 active:scale-95 transition-all shadow-sm flex items-center gap-1 flex-shrink-0" title="Payer en espèces (avec rendu)">
-                               <Banknote size={16} /> Espèces
-                             </button>
-                             <button onClick={(e) => handleQuickPay(e, order)} className="h-10 px-3 bg-[#04B855] text-white rounded-lg font-black uppercase text-xs hover:bg-[#039d48] active:scale-95 transition-all shadow-sm flex items-center gap-1 flex-shrink-0" title="Payer directement par CB">
-                               <CreditCard size={16} /> CB
-                             </button>
+                            {view === 'livraisons' ? (() => {
+                              const planned = plannedDeliveryPay(order);
+                              const mk = (m: 'CB' | 'Espèces') => {
+                                const main = planned ? planned === m : true;
+                                return (
+                                  <button
+                                    key={m}
+                                    onClick={(e) => handleSettleDelivery(e, order, m)}
+                                    title={`Livraison payée en ${m === 'CB' ? 'CB (TPE du livreur)' : 'espèces'}`}
+                                    className={`h-10 rounded-lg font-black uppercase text-xs active:scale-95 transition-all shadow-sm flex items-center gap-1 flex-shrink-0 ${main
+                                      ? `px-3 text-white ${m === 'CB' ? 'bg-[#04B855] hover:bg-[#039d48]' : 'bg-amber-500 hover:bg-amber-600'}`
+                                      : 'px-2.5 bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+                                  >
+                                    {m === 'CB' ? <CreditCard size={16} /> : <Banknote size={16} />}
+                                    {main ? `Payée ${m === 'CB' ? 'CB' : 'espèces'}` : (m === 'CB' ? 'CB' : 'Esp.')}
+                                  </button>
+                                );
+                              };
+                              return planned === 'Espèces' ? [mk('Espèces'), mk('CB')] : [mk('CB'), mk('Espèces')];
+                            })() : (
+                              <>
+                                <button onClick={(e) => handleOpenCashPaymentModal(e, order)} className="h-10 px-3 bg-amber-500 text-white rounded-lg font-black uppercase text-xs hover:bg-amber-600 active:scale-95 transition-all shadow-sm flex items-center gap-1 flex-shrink-0" title="Payer en espèces (avec rendu)">
+                                  <Banknote size={16} /> Espèces
+                                </button>
+                                <button onClick={(e) => handleQuickPay(e, order)} className="h-10 px-3 bg-[#04B855] text-white rounded-lg font-black uppercase text-xs hover:bg-[#039d48] active:scale-95 transition-all shadow-sm flex items-center gap-1 flex-shrink-0" title="Payer directement par CB">
+                                  <CreditCard size={16} /> CB
+                                </button>
+                              </>
+                            )}
                           </td>
                         </tr>
                         {expandedOrderId === order.id && (

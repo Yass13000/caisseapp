@@ -33,6 +33,7 @@ const OrderHistoryModal = React.lazy(() => import('@/components/OrderHistoryModa
 const SettingsModal = React.lazy(() => import('@/components/SettingsModal'));
 const StockModal = React.lazy(() => import('@/components/StockModal'));
 const OrdersDashboardModal = React.lazy(() => import('@/components/OrdersDashboardModal'));
+import DeliveryPaymentModal, { type DeliveryPayChoice } from '@/components/DeliveryPaymentModal';
 import NewtonsCradleLoader from '@/components/NewtonsCradleLoader';
 import SumUpSoloPayment, { type SoloPaymentOutcome } from '@/components/SumUpSoloPayment';
 import { getSelectedReader, isSoloEnabled } from '@/services/sumupSolo';
@@ -892,6 +893,8 @@ const Caisse = () => {
   const [activeOrderTypes, setActiveOrderTypes] = useState<string[]>(['SUR PLACE', 'EMPORTER', 'LIVRAISON']);
   
   const [isDeliveryModalOpen, setIsDeliveryModalOpen] = useState(false);
+  // Livraison : choix du paiement au livreur (CB / espèces + billet), sans passer par le TPE de la caisse
+  const [isDeliveryPayOpen, setIsDeliveryPayOpen] = useState(false);
   const [clientInfo, setClientInfo] = useState<{name: string, phone: string, address: string, additionalInfo: string, fee: number} | null>(null);
   const clientInfoRef = useRef<any>(null);
   const [deliveryFee, setDeliveryFee] = useState<number>(0);
@@ -2031,7 +2034,21 @@ const Caisse = () => {
     }
   };
 
-  const processPendingOrder = async () => {
+  /** Libellé enregistré pour une livraison payée au livreur (reconnu par l'appli livreur et le suivi) */
+  const deliveryPayLabel = (choice?: DeliveryPayChoice | null) =>
+    choice ? `${choice.method} à la livraison` : 'en attente';
+
+  /** Consigne imprimée en gros sur le ticket de livraison (cadre NOTE) */
+  const deliveryPayNote = (choice: DeliveryPayChoice, total: number) => {
+    const eur = (v: number) => `${v.toFixed(2).replace('.', ',')} €`;
+    if (choice.method === 'CB') return `A ENCAISSER : CB ${eur(total)} - PRENDRE LE TPE`;
+    if (choice.cashGiven > total + 0.001) {
+      return `A ENCAISSER : ESPECES ${eur(total)} - CLIENT PAIE AVEC ${eur(choice.cashGiven)} - RENDRE ${eur(choice.cashGiven - total)}`;
+    }
+    return `A ENCAISSER : ESPECES ${eur(total)} - MONTANT EXACT`;
+  };
+
+  const processPendingOrder = async (deliveryPay?: DeliveryPayChoice | null) => {
     if (cartState.items.length === 0) return;
     
     if (isSubmittingRef.current || isProcessing) return;
@@ -2074,8 +2091,9 @@ const Caisse = () => {
         payment_status: 'pending',
         // Commande rouverte sans modification : statut cuisine laissé tel quel (clé absente)
         status: (loadedOrderId && isLoadedUnchanged()) ? undefined : 'En cours',
-        payment_method: 'en attente',
-        cash_amount: 0,
+        payment_method: deliveryPayLabel(deliveryPay),
+        // Espèces à la livraison : billet du client (pour préparer la monnaie). Non compté tant que non payée.
+        cash_amount: deliveryPay?.method === 'Espèces' ? deliveryPay.cashGiven : 0,
         order_origin: 'caisse',
         order_type_id: currentOrderTypeId,
         order_details: cleanOrderDetails,
@@ -2134,8 +2152,8 @@ const Caisse = () => {
             is_paid: false, 
             payment_status: 'pending', 
             status: kitchenStatusForLoaded(current.status), 
-            payment_method: 'en attente', 
-            cash_amount: 0, 
+            payment_method: deliveryPayLabel(deliveryPay), 
+            cash_amount: deliveryPay?.method === 'Espèces' ? deliveryPay.cashGiven : 0, 
             order_type_id: currentOrderTypeId || undefined, 
             order_details: cleanOrderDetails, 
             total_price: parseFloat(finalTotal.toFixed(2)), 
@@ -2176,7 +2194,23 @@ const Caisse = () => {
           }
         }
 
-        customToast(`Commande en attente de ${finalTotal.toFixed(2)}€`, "success");
+        customToast(
+          deliveryPay
+            ? `Livraison envoyée : ${deliveryPay.method} à encaisser par le livreur (${finalTotal.toFixed(2)}€)`
+            : `Commande en attente de ${finalTotal.toFixed(2)}€`,
+          "success"
+        );
+
+        // Ticket de livraison avec la consigne de paiement (CB / espèces, billet, monnaie à rendre)
+        if (deliveryPay && getSecureSetting('auto_print_receipt', 'true') !== 'false') {
+          const note = deliveryPayNote(deliveryPay, finalTotal);
+          const baseComment = orderPayload.comment ? `${orderPayload.comment} | ` : '';
+          await generateAndPrintReceipt(
+            restaurantInfo, targetOrderNumber, orderType, 'A REGLER AU LIVREUR',
+            cartState.items, subtotal, activeDeliveryFee, finalTotal, 0,
+            { ...(effectiveClient || {}), comment: `${baseComment}${note}` }, optionGroupMapping
+          );
+        }
         
         const isKitchenTicketEnabled = getSecureSetting('print_kitchen_ticket', 'true') !== 'false';
         if (isKitchenTicketEnabled && !loadedOrderId) {
@@ -2557,7 +2591,7 @@ const Caisse = () => {
             <div className="flex gap-2">
               <button 
                 disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current} 
-                onClick={processPendingOrder} 
+                onClick={() => processPendingOrder()} 
                 className="w-16 bg-orange-50 text-orange-500 flex items-center justify-center rounded-xl hover:bg-orange-100 active:scale-95 disabled:opacity-50 transition-all border border-orange-100 cursor-pointer" 
                 title="Mettre en attente de paiement (Impression Cuisine uniquement)"
               >
@@ -2566,7 +2600,7 @@ const Caisse = () => {
 
               <button 
                 disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current} 
-                onClick={() => setIsPaymentModalOpen(true)} 
+                onClick={() => (orderType === 'LIVRAISON' ? setIsDeliveryPayOpen(true) : setIsPaymentModalOpen(true))} 
                 className="flex-1 text-white font-black text-xl py-3 rounded-xl shadow-md active:scale-95 disabled:opacity-50 transition-transform uppercase tracking-wider cursor-pointer" 
                 style={{ backgroundColor: themeColors.primary }}
               >
@@ -2634,7 +2668,7 @@ const Caisse = () => {
             {/* Paiement carte en un geste : tout le montant en « Carte bancaire » */}
             <button
               disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current}
-              onClick={() => payWithTerminal('Carte bancaire', 0)}
+              onClick={() => (orderType === 'LIVRAISON' ? setIsDeliveryPayOpen(true) : payWithTerminal('Carte bancaire', 0))}
               className="w-[56px] h-[56px] mx-auto flex items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm hover:bg-blue-700 active:scale-95 disabled:bg-gray-700/50 disabled:text-gray-500 disabled:cursor-not-allowed transition-all cursor-pointer"
               title="Paiement carte (montant total)"
               aria-label="Paiement carte"
@@ -2663,6 +2697,17 @@ const Caisse = () => {
           amountCents={soloPayment.amountCents}
           description="Caisse"
           onDone={soloPayment.resolve}
+        />
+      )}
+
+      {isDeliveryPayOpen && (
+        <DeliveryPaymentModal
+          total={finalTotal}
+          themeColors={themeColors}
+          isProcessing={isProcessing}
+          onClose={() => setIsDeliveryPayOpen(false)}
+          onPayNow={() => { setIsDeliveryPayOpen(false); setIsPaymentModalOpen(true); }}
+          onConfirm={(choice) => { setIsDeliveryPayOpen(false); processPendingOrder(choice); }}
         />
       )}
 

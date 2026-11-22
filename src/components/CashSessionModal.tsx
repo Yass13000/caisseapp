@@ -8,6 +8,7 @@ import {
   Banknote, CreditCard, Receipt, Plus, RotateCcw, ArrowRight, Ticket
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 
 interface CashSessionModalProps {
   onClose: (isSuccess?: boolean) => void;
@@ -81,6 +82,15 @@ const CashSessionModal = ({
         .neq('status', 'Annulée');
       // Jamais de Z à 0 € parce que la lecture des ventes a échoué
       if (ordersErr) throw ordersErr;
+
+      // Livraisons encore à régler (payées au livreur, pas encore validées) : rappel avant le Z
+      const { data: unpaidDeliveries } = await supabase
+        .from('orders')
+        .select('order_number, total_price, payment_method')
+        .eq('session_id', sessionId)
+        .eq('is_paid', false)
+        .eq('order_type_id', ORDER_TYPE_ID.LIVRAISON)
+        .neq('status', 'Annulée');
 
       let totalSales = 0;
       let totalCash = 0;
@@ -157,6 +167,7 @@ const CashSessionModal = ({
         cardSalesApp,
         totalTicketResto,
         totalOrders: orders?.length || 0,
+        unpaidDeliveries: unpaidDeliveries || [],
         openingFloat: openingFloatVal,
         expectedCash: expectedCashVal
       };
@@ -537,6 +548,20 @@ const CashSessionModal = ({
                     </span>
                   </div>
                 </div>
+
+                {(sessionReport?.unpaidDeliveries?.length || 0) > 0 && (
+                  <div className="bg-purple-50 p-3 rounded-xl border border-purple-200 flex items-start gap-2.5">
+                    <AlertTriangle size={18} className="text-purple-600 shrink-0 mt-0.5" />
+                    <div className="text-xs text-purple-900">
+                      <span className="font-bold block">
+                        {sessionReport.unpaidDeliveries.length} livraison{sessionReport.unpaidDeliveries.length > 1 ? 's' : ''} pas encore réglée{sessionReport.unpaidDeliveries.length > 1 ? 's' : ''} ({sessionReport.unpaidDeliveries.reduce((t: number, o: any) => t + (Number(o.total_price) || 0), 0).toFixed(2)} €)
+                      </span>
+                      <span className="text-purple-700">
+                        Non comptées dans ce Z. À valider dans Suivi Commandes → Livraisons : {sessionReport.unpaidDeliveries.map((o: any) => `#${o.order_number}`).join(', ')}
+                      </span>
+                    </div>
+                  </div>
+                )}
 
                 {!isClosingConfirm ? (
                   <button
