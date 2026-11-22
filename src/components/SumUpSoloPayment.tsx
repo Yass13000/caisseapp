@@ -39,6 +39,9 @@ const POLL_MS = 2000;
 const MAX_WAIT_MS = 4 * 60 * 1000;       // au-delà : résultat inconnu
 const NEVER_STARTED_MS = 75 * 1000;      // aucune transaction créée sur le TPE : rien n'a pu être débité
 const CANCEL_GRACE_MS = 30 * 1000;       // après annulation, délai pour que SumUp donne le statut final
+// Annulé sur le TPE (croix rouge) : SumUp ne crée aucune transaction, le TPE revient juste au repos.
+// Une carte lue crée toujours une transaction : TPE au repos + aucune transaction = rien n'a été débité.
+const IDLE_WITHOUT_TX_MS = 6 * 1000;
 const LOST_CONNECTION_MS = 45 * 1000;
 
 const euros = (cents: number) => `${(cents / 100).toFixed(2).replace('.', ',')} €`;
@@ -95,6 +98,8 @@ const SumUpSoloPayment = ({ reader, amountCents, description, onDone }: Props) =
     setMessage('Présentez la carte sur le TPE');
     const startedAt = Date.now();
     let failingSince = 0;
+    let sawWaiting = false;   // le TPE a affiché le paiement (attente carte, code…)
+    let idleSince = 0;        // depuis quand le TPE est revenu au repos sans transaction
 
     while (alive()) {
       await new Promise((r) => setTimeout(r, POLL_MS));
@@ -135,7 +140,21 @@ const SumUpSoloPayment = ({ reader, amountCents, description, onDone }: Props) =
       }
 
       // Toujours en cours : seul le statut final de SumUp fait foi
-      const started = Boolean(status.transaction);
+      const hasTx = Boolean(status.transaction);
+      const waiting = Boolean(status.reader.state && status.reader.state !== 'IDLE');
+      if (waiting) { sawWaiting = true; idleSince = 0; }
+      else if (sawWaiting && !hasTx && status.reader.online) { if (!idleSince) idleSince = Date.now(); }
+      // Paiement pris par le TPE : transaction créée, ou TPE en attente de carte / code
+      const started = hasTx || waiting || sawWaiting;
+
+      // Annulé sur le TPE (ou délai du TPE) : revenu au repos sans aucune transaction
+      if (idleSince && Date.now() - idleSince > IDLE_WITHOUT_TX_MS) {
+        if (cancelAtRef.current) { finish({ ok: false }); return; }
+        setPhase('declined');
+        setMessage('Paiement annulé sur le TPE');
+        setDetail('Aucun montant n\'a été encaissé.');
+        return;
+      }
       if (cancelAtRef.current) {
         // Sans transaction sur le TPE, rien n'a été débité : annulation acquise
         if (!started && Date.now() - cancelAtRef.current > 8000) { finish({ ok: false }); return; }

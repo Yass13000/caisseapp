@@ -877,6 +877,7 @@ const Caisse = () => {
     resolve: (outcome: SoloPaymentOutcome) => void;
   }>(null);
   const soloBusyRef = useRef(false);
+  const soloTxCodeRef = useRef<string | null>(null); // code SumUp du paiement en cours d'enregistrement
 
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [isOptionsModalOpen, setIsOptionsModalOpen] = useState(false);
@@ -1734,7 +1735,12 @@ const Caisse = () => {
       });
       setSoloPayment(null);
       if (!outcome.ok) return;
-      await finalizePayment(method, cashAmount, discount);
+      soloTxCodeRef.current = outcome.code || null;
+      try {
+        await finalizePayment(method, cashAmount, discount);
+      } finally {
+        soloTxCodeRef.current = null;
+      }
     } finally {
       soloBusyRef.current = false;
     }
@@ -1813,6 +1819,8 @@ const Caisse = () => {
         status: (loadedOrderId && isLoadedUnchanged()) ? undefined : 'En cours',
         payment_method: cleanPaymentMethod,
         cash_amount: cashAmount,
+        // Code de la transaction SumUp (TPE Solo) : retrouver ou rembourser le paiement
+        ...(soloTxCodeRef.current ? { sumup_transaction_id: soloTxCodeRef.current } : {}),
         order_origin: 'caisse',
         order_type_id: currentOrderTypeId,
         order_details: cleanOrderDetails,
@@ -1889,6 +1897,7 @@ const Caisse = () => {
             status: kitchenStatusForLoaded(current.status),
             payment_method: cleanPaymentMethod,
             cash_amount: cashAmount, 
+            ...(soloTxCodeRef.current ? { sumup_transaction_id: soloTxCodeRef.current } : {}),
             order_type_id: currentOrderTypeId || undefined, 
             order_details: cleanOrderDetails, 
             total_price: recordedTotal, 
