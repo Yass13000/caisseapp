@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connexion</title>
+<style>
+  html,body{margin:0;height:100%;background:#0f172a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .box{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;text-align:center;padding:24px}
+  .dot{width:64px;height:64px;border-radius:50%;border:6px solid rgba(255,255,255,.15);border-top-color:#f97316;animation:spin 1s linear infinite}
+  h1{margin:0;font-size:28px;font-weight:800}
+  p{margin:0;color:#94a3b8;font-size:18px}
+  button{margin-top:8px;padding:14px 28px;border:0;border-radius:14px;background:#f97316;color:#fff;font-size:18px;font-weight:800}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="dot"></div>
+  <h1>Connexion à internet perdue</h1>
+  <p>Nouvelle tentative automatique dans <span id="s">10</span> s…</p>
+  <button onclick="retry()">Réessayer maintenant</button>
+</div>
+<script>
+  var url = 'https://caisseapp.vercel.app';
+  function retry(){ window.location.replace(url); }
+  var n = 10, el = document.getElementById('s');
+  setInterval(function(){ n--; if (n <= 0) { retry(); n = 10; } el.textContent = n; }, 1000);
+</script>
+</body>
+</html>
