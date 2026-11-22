@@ -41,7 +41,7 @@ import CashSessionModal from '@/components/CashSessionModal';
 import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
 import PosSetup from '@/components/PosSetup';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
-import { announceDevicePresence } from '@/lib/devicePresence';
+import { announceDevicePresence, newDeviceId } from '@/lib/devicePresence';
 import { buildLoadedCartItem, normalizeLinesForSave, tillLineTotal, extractRealProductId, mapOrderItemsForTill, orderItemName } from '@/lib/loadedOrderPricing';
 import { publishCustomerCart, publishCustomerPayment, showCustomerThanks } from '@/lib/customerDisplay';
 import { TapToPayIcon, publicAsset } from '@/components/MaskIcon';
@@ -927,11 +927,11 @@ const Caisse = () => {
     try {
       deviceId = localStorage.getItem('pos_device_id');
       if (!deviceId) {
-        deviceId = crypto.randomUUID();
+        deviceId = newDeviceId();
         localStorage.setItem('pos_device_id', deviceId);
       }
     } catch {
-      deviceId = deviceId || crypto.randomUUID();
+      deviceId = deviceId || newDeviceId();
     }
     return announceDevicePresence(supabase, {
       restaurantId: posRestoId,

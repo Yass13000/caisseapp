@@ -33,3 +33,18 @@ export const announceDevicePresence = (
     void supabase.removeChannel(channel);
   };
 };
+
+/**
+ * Identifiant d'appareil compatible avec TOUS les navigateurs.
+ * ⚠️ crypto.randomUUID() n'existe pas sur les vieilles TV / tablettes Android (navigateur < 2021) :
+ * l'appeler directement faisait planter l'écran (écran blanc juste après l'appairage).
+ */
+export const newDeviceId = (): string => {
+  try {
+    const c: any = typeof crypto !== 'undefined' ? crypto : null;
+    if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  } catch {
+    /* navigateur ancien : identifiant maison ci-dessous */
+  }
+  return `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+};
