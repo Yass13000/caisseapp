@@ -148,13 +148,12 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   useEffect(() => {
     const updateColCount = () => {
       const w = window.innerWidth;
-      // ~300 px minimum par carte pour que le bandeau (numéro, alerte, boutons) tienne sur une ligne
-      if (w >= 1900) setColCount(6);
-      else if (w >= 1580) setColCount(5);
-      else if (w >= 1260) setColCount(4);
-      else if (w >= 920) setColCount(3);
-      else if (w >= 600) setColCount(2);
-      else setColCount(1);
+      // Largeur des cartes d'origine (nombre de colonnes selon l'écran)
+      if (w >= 1600) setColCount(6);
+      else if (w >= 1300) setColCount(5);
+      else if (w >= 980) setColCount(4);
+      else if (w >= 640) setColCount(3);
+      else setColCount(2);
     };
 
     updateColCount();
