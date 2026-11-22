@@ -2,11 +2,12 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { 
-  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft, Eye, Monitor
+  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft, Eye, Monitor, CreditCard
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PosSetup from '@/components/PosSetup';
 import CustomerDisplaySettings from '@/components/CustomerDisplaySettings';
+import SumUpSoloSettings from '@/components/SumUpSoloSettings';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -225,6 +226,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
   const menuItems = [
     { id: 'printing', icon: Printer, label: 'Impression', description: 'Tickets et matériels' },
     { id: 'customer-display', icon: Monitor, label: 'Écran client', description: 'Second écran' },
+    { id: 'tpe', icon: CreditCard, label: 'TPE', description: 'SumUp Solo' },
     { id: 'security', icon: ShieldCheck, label: 'Sécurité', description: 'Code PIN d\'accès' },
   ];
 
@@ -789,6 +791,16 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                 <h2 className="text-3xl font-black text-secondary uppercase">Écran client</h2>
               </div>
               <CustomerDisplaySettings />
+            </div>
+          )}
+
+          {/* ONGLET TPE */}
+          {activeTab === 'tpe' && (
+            <div className="max-w-3xl animate-in fade-in duration-300">
+              <div className="mb-8">
+                <h2 className="text-3xl font-black text-secondary uppercase">TPE SumUp Solo</h2>
+              </div>
+              <SumUpSoloSettings />
             </div>
           )}
 

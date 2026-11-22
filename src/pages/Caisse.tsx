@@ -34,6 +34,8 @@ const SettingsModal = React.lazy(() => import('@/components/SettingsModal'));
 const StockModal = React.lazy(() => import('@/components/StockModal'));
 const OrdersDashboardModal = React.lazy(() => import('@/components/OrdersDashboardModal'));
 import NewtonsCradleLoader from '@/components/NewtonsCradleLoader';
+import SumUpSoloPayment, { type SoloPaymentOutcome } from '@/components/SumUpSoloPayment';
+import { getSelectedReader, isSoloEnabled } from '@/services/sumupSolo';
 import CashSessionModal from '@/components/CashSessionModal';
 import { DeliveryModalCaisse } from '@/components/DeliveryModalCaisse';
 import PosSetup from '@/components/PosSetup';
@@ -868,6 +870,13 @@ const Caisse = () => {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  // Paiement en cours sur un TPE SumUp Solo (null = aucun)
+  const [soloPayment, setSoloPayment] = useState<null | {
+    reader: { id: string; name: string };
+    amountCents: number;
+    resolve: (outcome: SoloPaymentOutcome) => void;
+  }>(null);
+  const soloBusyRef = useRef(false);
 
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [isOptionsModalOpen, setIsOptionsModalOpen] = useState(false);
@@ -1682,6 +1691,53 @@ const Caisse = () => {
     setIsOptionsModalOpen(false);
     setSelectedProduct(null);
     setInitialSelections(null);
+  };
+
+  // Encaissement avec TPE : si un SumUp Solo est choisi pour cette caisse, la part « carte »
+  // part d'abord sur le TPE. La commande n'est enregistrée payée qu'une fois le paiement accepté ;
+  // refus ou annulation = rien n'est enregistré, la caissière choisit un autre moyen.
+  const payWithTerminal = async (
+    method: string,
+    cashAmount: number = 0,
+    discount: { amount: number; label: string; reason: string } | null = null
+  ) => {
+    const reader = isSoloEnabled() ? getSelectedReader() : null;
+    let cardCents = 0;
+    if (reader) {
+      if (method === 'Carte bancaire') {
+        cardCents = Math.max(0, Math.round((finalTotal - (discount?.amount || 0)) * 100));
+      } else {
+        // Paiement fractionné : « Fractionné (CB: 12.50€ + Espèces: 5.00€) »
+        const part = method.match(/CB: (\d+(?:\.\d+)?)/);
+        if (part) cardCents = Math.round(parseFloat(part[1]) * 100);
+      }
+    }
+    if (!reader || cardCents <= 0) return finalizePayment(method, cashAmount, discount);
+
+    // Mêmes garde-fous que l'enregistrement, AVANT de débiter la carte
+    if (cartState.items.length === 0 || isSubmittingRef.current || isProcessing || soloBusyRef.current) return;
+    soloBusyRef.current = true;
+    try {
+      const sessionId = await ensureOpenSession();
+      if (!sessionId) {
+        customToast("Caisse fermée : ouvrez une session pour encaisser", "error");
+        setIsCashSessionModalOpen(true);
+        setIsPaymentModalOpen(false);
+        return;
+      }
+      if (!getActiveRestaurantId()) {
+        customToast("Caisse non reliée à un restaurant : reconnectez-la dans les réglages", "error");
+        return;
+      }
+      const outcome = await new Promise<SoloPaymentOutcome>((resolve) => {
+        setSoloPayment({ reader, amountCents: cardCents, resolve });
+      });
+      setSoloPayment(null);
+      if (!outcome.ok) return;
+      await finalizePayment(method, cashAmount, discount);
+    } finally {
+      soloBusyRef.current = false;
+    }
   };
 
   const finalizePayment = async (
@@ -2569,7 +2625,7 @@ const Caisse = () => {
             {/* Paiement carte en un geste : tout le montant en « Carte bancaire » */}
             <button
               disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current}
-              onClick={() => finalizePayment('Carte bancaire', 0)}
+              onClick={() => payWithTerminal('Carte bancaire', 0)}
               className="w-[56px] h-[56px] mx-auto flex items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm hover:bg-blue-700 active:scale-95 disabled:bg-gray-700/50 disabled:text-gray-500 disabled:cursor-not-allowed transition-all cursor-pointer"
               title="Paiement carte (montant total)"
               aria-label="Paiement carte"
@@ -2592,9 +2648,18 @@ const Caisse = () => {
         />
       )}
 
+      {soloPayment && (
+        <SumUpSoloPayment
+          reader={soloPayment.reader}
+          amountCents={soloPayment.amountCents}
+          description="Caisse"
+          onDone={soloPayment.resolve}
+        />
+      )}
+
       <AnimatePresence>
         {isPaymentModalOpen && (
-          <PaymentModal subtotal={finalTotal} deliveryFee={activeDeliveryFee} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={finalizePayment} onOffer={(d: any) => finalizePayment('', 0, d)} isProcessing={isProcessing} />
+          <PaymentModal subtotal={finalTotal} deliveryFee={activeDeliveryFee} themeColors={themeColors} onClose={() => setIsPaymentModalOpen(false)} onConfirm={payWithTerminal} onOffer={(d: any) => finalizePayment('', 0, d)} isProcessing={isProcessing} />
         )}
       </AnimatePresence>
 
