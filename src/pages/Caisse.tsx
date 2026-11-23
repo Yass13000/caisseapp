@@ -44,6 +44,7 @@ import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 import { announceDevicePresence, newDeviceId } from '@/lib/devicePresence';
 import { buildLoadedCartItem, normalizeLinesForSave, tillLineTotal, extractRealProductId, mapOrderItemsForTill, orderItemName } from '@/lib/loadedOrderPricing';
 import { publishCustomerCart, publishCustomerPayment, showCustomerThanks } from '@/lib/customerDisplay';
+import { isCategoryOpen, categoryScheduleLabel, hasCategorySchedule } from '@/lib/categorySchedule';
 import { TapToPayIcon, publicAsset } from '@/components/MaskIcon';
 
 export interface Product {
@@ -64,6 +65,10 @@ export interface Product {
 
 interface Category {
   name: string;
+  /** Plage de vente (ex. Menu Etudiant) : hors plage, bouton grisé mais toujours utilisable */
+  active_days?: string[] | null;
+  start_time?: string | null;
+  end_time?: string | null;
 }
 
 const ORDER_TYPE_IDS = {
@@ -839,6 +844,14 @@ const Caisse = () => {
 
   const [menuData, setMenuData] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  // Catégories à horaires : réévaluées chaque minute, seulement s'il y en a
+  const [scheduleTick, setScheduleTick] = useState(() => Date.now());
+  const hasScheduledCategory = useMemo(() => categories.some(hasCategorySchedule), [categories]);
+  useEffect(() => {
+    if (!hasScheduledCategory) return;
+    const t = window.setInterval(() => setScheduleTick(Date.now()), 60_000);
+    return () => window.clearInterval(t);
+  }, [hasScheduledCategory]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
@@ -1248,7 +1261,7 @@ const Caisse = () => {
             const lowerName = cat.name?.trim().toLowerCase();
             return lowerName !== 'ingredients' && activeCategoryNames.has(lowerName);
           })
-          .map((cat: any) => ({ name: cat.name }));
+          .map((cat: any) => ({ name: cat.name, active_days: cat.active_days ?? null, start_time: cat.start_time ?? null, end_time: cat.end_time ?? null }));
       } else {
         const uniqueCatNames = Array.from(activeCategoryNames);
         finalCategories = uniqueCatNames.map(name => ({ name }));
@@ -2398,18 +2411,22 @@ const Caisse = () => {
             <div className="p-2.5 sm:p-3 grid grid-cols-5 gap-2 sm:gap-2.5">
               {categories.map(cat => {
                 const isSelected = selectedCategory === cat.name;
+                const isClosed = !isCategoryOpen(cat, new Date(scheduleTick));
+                const scheduleLabel = isClosed ? categoryScheduleLabel(cat) : '';
                 return (
                   <button 
                     key={cat.name} 
                     onClick={() => setSelectedCategory(cat.name)} 
-                    className="h-[46px] sm:h-[48px] px-2 rounded-xl font-black text-[12px] xl:text-[13.5px] uppercase tracking-wide transition-all border-2 flex items-center justify-center text-center truncate cursor-pointer shadow-sm active:scale-95" 
+                    title={isClosed ? `Hors plage horaire (${scheduleLabel})` : undefined}
+                    className={`h-[46px] sm:h-[48px] px-2 rounded-xl font-black text-[12px] xl:text-[13.5px] uppercase tracking-wide transition-all border-2 flex flex-col items-center justify-center text-center truncate cursor-pointer shadow-sm active:scale-95 ${isClosed && !isSelected ? 'opacity-45 border-dashed' : ''}`}
                     style={{ 
                       backgroundColor: isSelected ? themeColors.secondary : '#ffffff', 
                       borderColor: isSelected ? themeColors.secondary : '#e5e7eb', 
                       color: isSelected ? '#ffffff' : themeColors.secondary 
                     }}
                   >
-                    <span className="truncate">{cat.name}</span>
+                    <span className="truncate max-w-full leading-tight">{cat.name}</span>
+                    {isClosed && <span className="truncate max-w-full text-[9px] font-bold normal-case tracking-normal opacity-80 leading-tight">{scheduleLabel}</span>}
                   </button>
                 );
               })}
