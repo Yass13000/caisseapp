@@ -70,7 +70,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Imprimantes ticket de la caisse Android, comme sur Windows :
+ * Imprimantes ticket (caisse et borne Android), comme sur Windows :
  *  - recherche : USB (classe imprimante ou marque connue) + réseau (annonces mDNS et balayage du port 9100),
  *    nom du modèle lu sur l'annonce ou la page web de l'imprimante ;
  *  - impression : le ticket HTML (le même que sur Windows) est dessiné dans une WebView à la résolution
@@ -81,7 +81,6 @@ import java.util.regex.Pattern;
 @CapacitorPlugin(name = "CaissePrinter")
 public class CaissePrinterPlugin extends Plugin {
 
-    private static final String ACTION_USB_PERMISSION = "com.project1.caisse.USB_PERMISSION";
     private static final int DPI = 203;
     private static final int RAW_PORT = 9100;
 
@@ -570,20 +569,21 @@ public class CaissePrinterPlugin extends Plugin {
 
     @SuppressLint({"UnspecifiedRegisterReceiverFlag", "WrongConstant"})
     private boolean askPermission(UsbManager um, UsbDevice d) throws InterruptedException {
+        final Context ctx = getContext();
+        final String action = ctx.getPackageName() + ".USB_PERMISSION";
         final CountDownLatch latch = new CountDownLatch(1);
         final boolean[] granted = {false};
         BroadcastReceiver r = new BroadcastReceiver() {
             @Override
             public void onReceive(Context c, Intent i) {
-                if (!ACTION_USB_PERMISSION.equals(i.getAction())) return;
+                if (!action.equals(i.getAction())) return;
                 granted[0] = i.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
                 latch.countDown();
             }
         };
-        Context ctx = getContext();
-        ContextCompat.registerReceiver(ctx, r, new IntentFilter(ACTION_USB_PERMISSION), ContextCompat.RECEIVER_NOT_EXPORTED);
+        ContextCompat.registerReceiver(ctx, r, new IntentFilter(action), ContextCompat.RECEIVER_NOT_EXPORTED);
         try {
-            Intent intent = new Intent(ACTION_USB_PERMISSION).setPackage(ctx.getPackageName());
+            Intent intent = new Intent(action).setPackage(ctx.getPackageName());
             int flags = Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0;
             um.requestPermission(d, PendingIntent.getBroadcast(ctx, 0, intent, flags));
             latch.await(60, TimeUnit.SECONDS);
