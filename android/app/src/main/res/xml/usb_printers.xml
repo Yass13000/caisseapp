@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Imprimantes ticket : classe USB « imprimante » + marques courantes -->
+<resources>
+    <usb-device class="7" />
+    <usb-device vendor-id="1208" />
+    <usb-device vendor-id="1305" />
+    <usb-device vendor-id="5380" />
+    <usb-device vendor-id="3540" />
+    <usb-device vendor-id="5455" />
+    <usb-device vendor-id="8401" />
+    <usb-device vendor-id="1046" />
+    <usb-device vendor-id="1155" />
+    <usb-device vendor-id="8137" />
+    <usb-device vendor-id="4070" />
+    <usb-device vendor-id="10473" />
+    <usb-device vendor-id="26728" />
+    <usb-device vendor-id="5721" />
+    <usb-device vendor-id="1317" />
+    <usb-device vendor-id="1171" />
+    <usb-device vendor-id="7568" />
+    <usb-device vendor-id="10032" />
+    <usb-device vendor-id="2816" />
+    <usb-device vendor-id="1137" />
+    <usb-device vendor-id="19267" />
+</resources>

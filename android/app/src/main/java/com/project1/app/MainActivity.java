@@ -11,6 +11,8 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         // --- LA LIGNE MAGIQUE QUI RÉPARE L'ERREUR "UNIMPLEMENTED" ---
         registerPlugin(EpsonPrinterPlugin.class);
+        // Imprimantes ticket USB / réseau (recherche + impression du ticket en image, comme sur Windows)
+        registerPlugin(CaissePrinterPlugin.class);
 
         super.onCreate(savedInstanceState);
 

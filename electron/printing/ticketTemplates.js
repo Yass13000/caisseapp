@@ -1,0 +1,907 @@
+// @ts-nocheck
+// Mise en page des tickets (client, cuisine, Z / X, clôture livreur) en HTML.
+// Aucun accès disque ni réseau ici : partagé entre la caisse Windows (Electron)
+// et l'APK Android (rendu dans la WebView puis envoyé en image à l'imprimante).
+import QRCode from 'qrcode';
+
+const env = {
+  readSettings: () => ({}),
+  getLogo: async (url) => '',
+};
+
+/** Branche la lecture des réglages et du logo propres à la plateforme */
+export function configureTicketTemplates({ readSettings, getLogo } = {}) {
+  if (readSettings) env.readSettings = readSettings;
+  if (getLogo) env.getLogo = getLogo;
+}
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+
+function getSafePrintableWidth(rawWidthMm) {
+  const num = Number(rawWidthMm) || 72;
+  if (num <= 60) {
+    return '46mm';
+  }
+  return '62mm';
+}
+
+function parseOrderItems(rawDetails) {
+  if (!rawDetails) return [];
+  if (Array.isArray(rawDetails)) return rawDetails;
+  if (typeof rawDetails === 'string') {
+    try {
+      const parsed = JSON.parse(rawDetails);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && Array.isArray(parsed.items)) return parsed.items;
+      return [parsed];
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
+}
+
+/**
+ * 🟢 RÉSOLUTION DIRECTE DE NAME_KDS SANS AUCUN DICTIONNAIRE EN DUR
+ */
+function resolveKdsDisplayName(obj, fallback = '') {
+  if (obj === null || obj === undefined) return fallback;
+
+  if (typeof obj === 'string') {
+    const rawStr = obj.trim();
+    return rawStr || fallback;
+  }
+
+  // 1. Lecture directe de name_kds sans devinette
+  const kdsCandidates = [
+    obj.name_kds,
+    obj.kds_name,
+    obj.nameKds,
+    obj.kdsName,
+    obj.option?.name_kds,
+    obj.option?.kds_name,
+    obj.sub_option?.name_kds,
+    obj.sub_option?.kds_name,
+    obj.product?.name_kds,
+    obj.product?.kds_name,
+    obj.item?.name_kds,
+    obj.item?.kds_name
+  ];
+
+  for (const candidate of kdsCandidates) {
+    if (candidate !== null && candidate !== undefined) {
+      const trimmed = String(candidate).trim();
+      if (trimmed !== '' && trimmed.toLowerCase() !== 'null' && trimmed.toLowerCase() !== 'undefined') {
+        return trimmed;
+      }
+    }
+  }
+
+  // 2. Repli direct sur name si aucun name_kds n'a été spécifié
+  const nameCandidates = [
+    obj.name,
+    obj.option?.name,
+    obj.sub_option?.name,
+    obj.product?.name,
+    obj.item?.name,
+    obj.label
+  ];
+
+  for (const nameCand of nameCandidates) {
+    if (nameCand !== null && nameCand !== undefined) {
+      const trimmedName = String(nameCand).trim();
+      if (trimmedName !== '') {
+        return trimmedName;
+      }
+    }
+  }
+
+  return fallback;
+}
+
+function extractOrderComment(orderData) {
+  if (!orderData || typeof orderData !== 'object') return '';
+
+  const candidates = [
+    orderData.comment,
+    orderData.notes,
+    orderData.order_comment,
+    orderData.orderComment,
+    orderData.deliveryNotes,
+    orderData.delivery_notes,
+    orderData.delivery?.deliveryNotes,
+    orderData.delivery?.notes,
+    orderData.delivery?.comment,
+    orderData.note
+  ];
+
+  for (const c of candidates) {
+    if (c !== null && c !== undefined) {
+      const s = String(c).trim();
+      if (s && s !== 'null' && s !== 'undefined') return s;
+    }
+  }
+
+  return '';
+}
+
+// ----------------------------------------------------------------------------
+// 👨‍🍳 TICKET CUISINE
+// ----------------------------------------------------------------------------
+function buildKitchenHtml(orderData, widthMm = '72') {
+  const settings = env.readSettings();
+  const bodyWidth = getSafePrintableWidth(widthMm);
+
+  const fontScale = settings.kitchen_font_scale || 'normal';
+  const invertedHeader = settings.kitchen_inverted_header !== 'false' && settings.kitchen_inverted_header !== false;
+  const highlightMultiQty = settings.highlight_multi_qty !== 'false' && settings.highlight_multi_qty !== false;
+  const showPrices = settings.kitchen_show_prices === 'true' || settings.kitchen_show_prices === true;
+
+  let itemFontSize = '15px';
+  let noteFontSize = '13px';
+  if (fontScale === 'large') {
+    itemFontSize = '17px';
+    noteFontSize = '15px';
+  } else if (fontScale === 'xlarge') {
+    itemFontSize = '19px';
+    noteFontSize = '17px';
+  }
+  
+  let orderNumDisplay = String(orderData.orderNumber || orderData.order_number || orderData.number || '001')
+    .toUpperCase()
+    .replace(/^CMD\s*#?/i, '')
+    .trim();
+
+  let orderTime = '';
+  if (orderData.orderDate) {
+    const parts = String(orderData.orderDate).split(' ');
+    orderTime = parts.length > 1 ? parts[1].substring(0, 5) : parts[0].substring(0, 5);
+  } else if (orderData.created_at) {
+    const d = new Date(orderData.created_at);
+    orderTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+  if (!orderTime) {
+    const d = new Date();
+    orderTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  let orderTypeLabel = 'SUR PLACE';
+  const rawType = String(orderData.orderType || orderData.type || '').toLowerCase();
+  if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'À EMPORTER';
+  if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
+
+  const items = parseOrderItems(orderData.items || orderData.order_details);
+
+  const sortedItems = [...items].sort((a, b) => {
+    const orderA = Number(a.kds_sort_order ?? a.product?.kds_sort_order ?? a.sort_order ?? a.product?.sort_order ?? 999);
+    const orderB = Number(b.kds_sort_order ?? b.product?.kds_sort_order ?? b.sort_order ?? b.product?.sort_order ?? 999);
+    return orderA - orderB;
+  });
+
+  let totalItemsCount = 0;
+
+  const itemsHtml = sortedItems.map((item, idx) => {
+    const qty = Number(item.qty || item.quantity || 1);
+    totalItemsCount += qty;
+    
+    const isSolo = item.isSolo === true || item.is_solo === true || item.product?.isSolo === true || /\bseul\b/i.test(item.name || item.product?.name || '');
+
+    const baseName = resolveKdsDisplayName(item, 'Article');
+    let finalDisplayName = baseName;
+    if (isSolo && !/\bseul\b/i.test(finalDisplayName)) {
+      finalDisplayName = `${finalDisplayName.replace(/^menu\s+/i, '').trim()} Seul`;
+    }
+    const name = escapeHtml(finalDisplayName).toUpperCase();
+
+    let notesHtml = '';
+    
+    const candidates = [item.notes, item.options, item.selectedSubOptions, item.sub_options, item.selectedOptions]
+      .filter(arr => Array.isArray(arr) && arr.length > 0);
+    const rawNotes = candidates[0] || [];
+
+    if (rawNotes.length > 0) {
+      notesHtml = rawNotes.map(n => {
+        const noteName = resolveKdsDisplayName(n, '');
+        if (!noteName) return '';
+
+        const isSans = (typeof n === 'object' && (n.isSans || n.is_sans)) || String(noteName).trim().toUpperCase().startsWith('SANS ');
+        
+        if (isSans) {
+          return `
+            <div style="font-size: ${noteFontSize}; font-weight: 900; text-transform: uppercase; margin-top: 3px; padding: 2px 4px; color: #000; border: 2px dashed #000; width: 100%; word-break: break-word;">
+              [X] ${escapeHtml(noteName)}
+            </div>
+          `;
+        }
+
+        return `
+          <div style="font-size: ${noteFontSize}; font-weight: 800; text-transform: uppercase; margin-top: 2px; padding-left: 4px; color: #000; word-break: break-word;">
+            • ${escapeHtml(noteName)}
+          </div>
+        `;
+      }).join('');
+    }
+
+    let qtyBadgeHtml = `${qty}X`;
+    if (highlightMultiQty && qty > 1) {
+      if (invertedHeader) {
+        qtyBadgeHtml = `<span style="background-color: #fff; color: #000; padding: 0px 5px; margin-right: 4px; font-weight: 900; border-radius: 2px; -webkit-print-color-adjust: exact;">${qty}X</span>`;
+      } else {
+        qtyBadgeHtml = `<span style="background-color: #000; color: #fff; padding: 0px 5px; margin-right: 4px; font-weight: 900; border-radius: 2px; -webkit-print-color-adjust: exact;">${qty}X</span>`;
+      }
+    }
+
+    const itemPriceNum = Number(item.unitPrice || item.price || 0) * qty;
+    const priceSuffix = (showPrices && itemPriceNum > 0) ? `<span style="float: right;">${itemPriceNum.toFixed(2)}€</span>` : '';
+
+    const headerStyle = invertedHeader
+      ? `background-color: #000; color: #fff; font-weight: 900; font-size: ${itemFontSize}; padding: 5px 6px; text-transform: uppercase; word-break: break-word; -webkit-print-color-adjust: exact;`
+      : `background-color: #fff; color: #000; border: 2.5px solid #000; font-weight: 900; font-size: ${itemFontSize}; padding: 4px 6px; text-transform: uppercase; word-break: break-word;`;
+
+    const separatorStyle = idx < sortedItems.length - 1 ? 'border-bottom: 2px dashed #000; padding-bottom: 8px; margin-bottom: 8px;' : 'margin-bottom: 6px;';
+
+    return `
+      <div style="${separatorStyle}">
+        <div style="${headerStyle}">
+          ${qtyBadgeHtml} ${name} ${priceSuffix}
+        </div>
+        <div style="margin-top: 2px;">${notesHtml}</div>
+      </div>
+    `;
+  }).join('');
+
+  const customerName = escapeHtml(orderData.customer_name || orderData.customerName || (orderData.delivery && (orderData.delivery.customerName || orderData.delivery.name)) || '');
+  const customerAddress = escapeHtml(orderData.customer_address || orderData.address || (orderData.delivery && orderData.delivery.address) || '');
+  const addressComplement = escapeHtml(
+    orderData.customer_address_complement || 
+    orderData.address_complement || 
+    (orderData.delivery && (orderData.delivery.customer_address_complement || orderData.delivery.address_complement || orderData.delivery.additionalInfo)) || 
+    ''
+  );
+  
+  const rawComment = extractOrderComment(orderData);
+  const comment = escapeHtml(rawComment);
+
+  let footerHtml = `
+    <div style="border-top: 2.5px solid #000; margin-top: 6px; padding-top: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 900;">
+      <span>TOTAL ARTICLES :</span>
+      <span style="font-size: 16px;">${totalItemsCount}</span>
+    </div>
+  `;
+
+  if (customerName || customerAddress || addressComplement || comment) {
+    footerHtml += `
+      <div style="border: 2px solid #000; margin-top: 6px; padding: 5px; font-size: 13px; font-weight: 900; text-transform: uppercase; word-break: break-word;">
+        ${customerName ? `<div style="margin-bottom: 2px;">👤 CLIENT : ${customerName}</div>` : ''}
+        ${customerAddress ? `<div style="margin-top: 2px; font-size: 11px;">📍 ADR : ${customerAddress}</div>` : ''}
+        ${addressComplement ? `<div style="margin-top: 2px; font-size: 11px; padding-left: 6px; color: #000;">↳ COMPL : ${addressComplement}</div>` : ''}
+        ${comment ? `
+          <div style="border: 3px solid #000; margin-top: 6px; padding: 5px; font-size: 14px; font-weight: 900; color: #000; background-color: #fff;">
+            <div style="font-size: 11px; text-decoration: underline; margin-bottom: 2px;">⚠️ NOTE / COMMENTAIRE :</div>
+            <div style="font-size: 15px; font-weight: 900;">${comment}</div>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          @page { margin: 0; size: auto; }
+          * { box-sizing: border-box; }
+          html, body { 
+            font-family: Arial, Helvetica, sans-serif; 
+            margin: 0; 
+            padding: 2px 2mm 2px 3mm; 
+            width: ${bodyWidth}; 
+            max-width: ${bodyWidth}; 
+            height: auto; 
+            overflow: hidden; 
+            color: #000; 
+            line-height: 1.2; 
+            -webkit-print-color-adjust: exact; 
+            print-color-adjust: exact; 
+          }
+        </style>
+      </head>
+      <body>
+        <div style="background-color: #000; color: #fff; text-align: center; font-size: 32px; font-weight: 900; padding: 4px 0; letter-spacing: 1px; -webkit-print-color-adjust: exact;">
+          ${orderNumDisplay}
+        </div>
+
+        <div style="border: 2.5px solid #000; border-top: none; padding: 5px 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 14px; font-weight: 900;">${orderTime}</span>
+          <span style="font-size: 16px; font-weight: 900; text-transform: uppercase; text-decoration: underline;">${orderTypeLabel}</span>
+        </div>
+
+        ${comment ? `
+          <div style="border: 3px solid #000; padding: 5px 6px; margin-bottom: 8px; font-size: 13px; font-weight: 900; text-transform: uppercase; color: #000;">
+            <span style="background-color: #000; color: #fff; padding: 1px 4px; font-size: 11px; margin-right: 4px; -webkit-print-color-adjust: exact;">NOTE CLIENT</span>
+            <span style="font-size: 14px; text-decoration: underline;">${comment}</span>
+          </div>
+        ` : ''}
+
+        <div>${itemsHtml}</div>
+
+        ${footerHtml}
+      </body>
+    </html>
+  `;
+}
+
+// ----------------------------------------------------------------------------
+// 🛵 TICKET CLÔTURE LIVREUR
+// ----------------------------------------------------------------------------
+function buildDriverSettlementHtml(data, widthMm = '72') {
+  const is58mm = Number(widthMm) <= 60;
+  const bodyWidth = getSafePrintableWidth(widthMm);
+  const fontSize = is58mm ? '10px' : '11px';
+  const n = (v) => (Number(v) || 0).toFixed(2);
+  const hasCollected = data.collectedTotal !== undefined && data.collectedTotal !== null && data.collectedTotal !== '';
+  const gap = hasCollected ? Number(data.collectedTotal) - Number(data.expectedTotal || 0) : 0;
+  const ordersRows = Array.isArray(data.orders) ? data.orders.map(o => `
+        <div class="row"><span>#${escapeHtml(o.number)} ${escapeHtml(o.client || '')}</span><span>${n(o.total)} € ${escapeHtml(o.mode || '')}</span></div>`).join('') : '';
+
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          @page { margin: 0; size: auto; }
+          * { box-sizing: border-box; }
+          html, body {
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: ${fontSize};
+            margin: 0;
+            padding: 2px 2mm 2px 3mm;
+            width: ${bodyWidth};
+            max-width: ${bodyWidth};
+            height: auto;
+            overflow: hidden;
+            color: #000;
+            line-height: 1.25;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          .center { text-align: center; width: 100%; }
+          .row { display: flex; justify-content: space-between; align-items: baseline; margin: 2px 0; gap: 4px; }
+          .row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          .row span:last-child { white-space: nowrap; font-weight: 700; }
+          hr { border: none; border-top: 1.5px dashed #000; margin: 5px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="center">
+          <div style="font-size: 12px; font-weight: 900; border: 2px solid #000; padding: 3px;">*** ${escapeHtml(data.title || 'CLÔTURE LIVREUR')} ***</div>
+          <div style="font-size: 14px; font-weight: 900; margin-top: 4px; text-transform: uppercase;">${escapeHtml(data.driverName || 'Livreur')}</div>
+          <div style="font-size: 10px;">${escapeHtml(data.date || new Date().toLocaleString('fr-FR'))}</div>
+        </div>
+        <hr />
+        <div class="row"><span>Courses livrées</span><span>${Number(data.totalCourses || 0)}</span></div>
+        <div class="row"><span>Espèces encaissées</span><span>${n(data.cashOrders)} €</span></div>
+        ${data.cbTotal !== undefined ? `<div class="row"><span>Carte bancaire</span><span>${n(data.cbTotal)} €</span></div>` : ''}
+        ${data.cashFloat !== undefined ? `<div class="row"><span>Sacoche (monnaie)</span><span>${n(data.cashFloat)} €</span></div>` : ''}
+        <hr />
+        <div class="row" style="font-size: 13px; font-weight: 900;"><span>À REMETTRE</span><span>${n(data.expectedTotal)} €</span></div>
+        ${hasCollected ? `<div class="row"><span>Reçu</span><span>${n(data.collectedTotal)} €</span></div>` : ''}
+        ${hasCollected && Math.abs(gap) >= 0.01 ? `<div class="row" style="font-weight: 900;"><span>${gap > 0 ? 'Excédent' : 'Manque'}</span><span>${n(Math.abs(gap))} €</span></div>` : ''}
+        ${ordersRows ? `<hr /><div style="font-weight: 800;">DÉTAIL</div>${ordersRows}` : ''}
+        <hr />
+        <div style="margin-top: 14px;">Signature livreur :</div>
+        <div style="height: 28px;"></div>
+      </body>
+    </html>
+  `;
+}
+
+// ----------------------------------------------------------------------------
+// 📊 TICKET X / TICKET Z
+// ----------------------------------------------------------------------------
+function buildZReportHtml(reportData, widthMm = '72') {
+  const isZ = reportData.type === 'Z' || String(reportData.orderType || '').toUpperCase().includes('Z');
+  const title = isZ ? 'RAPPORT Z - CLÔTURE' : 'RAPPORT X - PROVISOIRE';
+  const is58mm = Number(widthMm) <= 60;
+  const bodyWidth = getSafePrintableWidth(widthMm);
+  const fontSize = is58mm ? '10px' : '11px';
+
+  const restoName = escapeHtml(reportData.name || reportData.restaurantName || reportData.restaurant_name || 'VOTRE RESTAURANT');
+  const restoAddress = reportData.restaurantAddress || reportData.address ? escapeHtml(reportData.restaurantAddress || reportData.address) : null;
+  const restoPhone = reportData.restaurantPhone || reportData.phone ? escapeHtml(reportData.restaurantPhone || reportData.phone) : null;
+
+  const totalTtc = Number(reportData.totalSales ?? reportData.total ?? 0);
+  const rawTva = Number(reportData.tvaRate ?? reportData.tva ?? 10);
+  const tvaRate = rawTva > 0 ? rawTva : 10;
+  
+  const totalHt = totalTtc / (1 + tvaRate / 100);
+  const totalTva = totalTtc - totalHt;
+
+  const cashSales = Number(reportData.totalCash || 0);
+  const cardSales = Number(reportData.totalCard || 0);
+  const ticketRestoSales = Number(reportData.totalTicketResto || 0);
+
+  const openingFloat = Number(reportData.openingFloat || 0);
+  const expectedCashTotal = openingFloat + cashSales;
+  const actualCashCounted = Number(reportData.closingFloatActual || expectedCashTotal);
+  const discrepancy = actualCashCounted - expectedCashTotal;
+
+  const totalOrders = Number(reportData.totalOrders || 0);
+  const avgBasket = totalOrders > 0 ? (totalTtc / totalOrders).toFixed(2) : '0.00';
+
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          @page { margin: 0; size: auto; }
+          * { box-sizing: border-box; }
+          html, body { 
+            font-family: Arial, Helvetica, sans-serif; 
+            font-size: ${fontSize}; 
+            margin: 0; 
+            padding: 2px 2mm 2px 3mm; 
+            width: ${bodyWidth}; 
+            max-width: ${bodyWidth};
+            height: auto;
+            overflow: hidden;
+            color: #000; 
+            line-height: 1.25; 
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          .center { text-align: center; width: 100%; }
+          .bold { font-weight: 800; }
+          .row { display: flex; justify-content: space-between; align-items: baseline; margin: 2px 0; gap: 4px; }
+          .row span:last-child { white-space: nowrap; font-weight: 700; }
+          hr { border: none; border-top: 1.5px dashed #000; margin: 5px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="center">
+          <div style="font-size: 14px; font-weight: 900; text-transform: uppercase;">${restoName}</div>
+          ${restoAddress ? `<div style="font-size: 10px;">${restoAddress}</div>` : ''}
+          ${restoPhone ? `<div style="font-size: 10px;">Tél: ${restoPhone}</div>` : ''}
+          
+          <div style="font-size: 12px; font-weight: 900; margin-top: 5px; border: 2px solid #000; padding: 3px;">
+            *** ${title} ***
+          </div>
+          <div style="margin-top: 3px; font-size: 10px;">Session N° : ${reportData.sessionId || 'N/A'}</div>
+          <div style="font-size: 10px;">Imprimé le : ${new Date().toLocaleString('fr-FR')}</div>
+        </div>
+
+        <hr />
+
+        <div class="bold">DATES DE SESSION</div>
+        <div class="row">
+          <span>Ouverture :</span>
+          <span>${reportData.openedAt ? new Date(reportData.openedAt).toLocaleString('fr-FR') : '-'}</span>
+        </div>
+        <div class="row">
+          <span>Fermeture :</span>
+          <span>${reportData.closedAt ? new Date(reportData.closedAt).toLocaleString('fr-FR') : 'EN COURS'}</span>
+        </div>
+
+        <hr />
+
+        <div class="bold">CHIFFRE D'AFFAIRES</div>
+        <div class="row" style="font-size: 13px; font-weight: 900;">
+          <span>TOTAL TTC :</span>
+          <span>${totalTtc.toFixed(2)} €</span>
+        </div>
+        <div class="row">
+          <span>Total HT :</span>
+          <span>${totalHt.toFixed(2)} €</span>
+        </div>
+        <div class="row">
+          <span>Total TVA (${tvaRate}%) :</span>
+          <span>${totalTva.toFixed(2)} €</span>
+        </div>
+
+        <hr />
+
+        <div class="bold">VENTILATION PAIEMENTS</div>
+        <div class="row">
+          <span>ESPÈCES :</span>
+          <span>${cashSales.toFixed(2)} €</span>
+        </div>
+        <div class="row">
+          <span>CARTE BANCAIRE :</span>
+          <span>${cardSales.toFixed(2)} €</span>
+        </div>
+        ${ticketRestoSales > 0 ? `
+        <div class="row">
+          <span>TICKETS RESTO :</span>
+          <span>${ticketRestoSales.toFixed(2)} €</span>
+        </div>
+        ` : ''}
+
+        <hr />
+
+        <div class="bold">STATISTIQUES DE VENTE</div>
+        <div class="row">
+          <span>Nb Commandes :</span>
+          <span>${totalOrders}</span>
+        </div>
+        <div class="row">
+          <span>Panier Moyen :</span>
+          <span>${avgBasket} €</span>
+        </div>
+
+        <hr />
+
+        <div class="bold">TIROIR ESPÈCES</div>
+        <div class="row">
+          <span>Fond initial :</span>
+          <span>${openingFloat.toFixed(2)} €</span>
+        </div>
+        <div class="row">
+          <span>+ Ventes Espèces :</span>
+          <span>${cashSales.toFixed(2)} €</span>
+        </div>
+        <div class="row bold">
+          <span>= Théorique :</span>
+          <span>${expectedCashTotal.toFixed(2)} €</span>
+        </div>
+        ${isZ ? `
+        <div class="row">
+          <span>Compté réel :</span>
+          <span>${actualCashCounted.toFixed(2)} €</span>
+        </div>
+        <div class="row bold">
+          <span>Écart de caisse :</span>
+          <span>${discrepancy >= 0 ? '+' : ''}${discrepancy.toFixed(2)} €</span>
+        </div>
+        ` : ''}
+
+        <hr />
+
+        <div class="center bold" style="margin-top: 5px; font-size: 10px;">
+          --- FIN DU TICKET ${reportData.type || (isZ ? 'Z' : 'X')} ---
+        </div>
+      </body>
+    </html>
+  `;
+}
+
+// ----------------------------------------------------------------------------
+// 📜 TICKET CLIENT
+// ----------------------------------------------------------------------------
+async function buildReceiptHtml(orderData, widthMm = '72') {
+  const settings = env.readSettings();
+
+  const is58mm = Number(widthMm) <= 60;
+  const bodyWidth = getSafePrintableWidth(widthMm);
+  const highlightMultiQty = settings.highlight_multi_qty !== 'false' && settings.highlight_multi_qty !== false;
+  
+  let fontSize = is58mm ? '10px' : '12px';
+  let headerFontSize = is58mm ? '15px' : '17px';
+  if (settings.receipt_font_size === 'small') {
+    fontSize = '10px'; headerFontSize = '14px';
+  } else if (settings.receipt_font_size === 'large') {
+    fontSize = '13px'; headerFontSize = '19px';
+  }
+
+  // 3 mm à gauche minimum : certains pilotes commencent la zone imprimable plus loin du bord
+  const bodyPadding = settings.receipt_margin_type === 'standard' ? '6px 3mm 6px 5mm' : '2px 2mm 2px 3mm';
+
+  const showHeaderInfo = settings.show_header_info !== 'false';
+  const showLogo = settings.show_logo !== 'false';
+  const showTaxDetails = settings.show_tax_details !== 'false';
+  const showFooterMessage = settings.show_footer_message !== 'false';
+  const footerMessage = escapeHtml(settings.footer_custom_message || 'Merci de votre visite !\nÀ bientôt.');
+  const showQrCode = settings.show_qr_code === 'true';
+
+  const currentRestaurantId = orderData.restaurant_id || orderData.restaurantId || settings.pos_restaurant_id;
+
+  const logoTargetUrl = (showLogo && (orderData.restaurantLogoUrl || orderData.logo_url || settings.restaurant_logo_url)) 
+    ? String(orderData.restaurantLogoUrl || orderData.logo_url || settings.restaurant_logo_url) 
+    : '';
+
+  const logoDataUrl = logoTargetUrl ? await env.getLogo(logoTargetUrl, currentRestaurantId) : '';
+  
+  const logoHtml = logoDataUrl 
+    ? `
+      <div style="text-align: center; width: 100%; margin: 0 auto 6px auto; background-color: #ffffff;">
+        <img 
+          src="${logoDataUrl}" 
+          style="
+            width: auto; 
+            max-width: 50%; 
+            max-height: 55px; 
+            object-fit: contain; 
+            display: block; 
+            margin: 0 auto; 
+            background-color: #ffffff;
+            filter: grayscale(100%);
+            image-rendering: pixelated;
+            -webkit-print-color-adjust: exact; 
+            print-color-adjust: exact;
+          " 
+        />
+      </div>
+    ` 
+    : '';
+
+  const restaurantName = escapeHtml(
+    orderData.name || 
+    orderData.restaurant_name || 
+    orderData.restaurantName || 
+    settings.restaurant_name || 
+    'VOTRE RESTAURANT'
+  );
+  const restaurantAddress = escapeHtml(orderData.restaurantAddress || orderData.address || '');
+  const restaurantPhone = escapeHtml(orderData.restaurantPhone || orderData.phone || '');
+  
+  const cleanOrderNumber = escapeHtml(
+    String(orderData.order_number || orderData.orderNumber || orderData.id || '001')
+      .toUpperCase()
+      .replace(/^CMD\s*#?/i, '')
+      .trim()
+  );
+  const orderDate = escapeHtml(orderData.orderDate || (orderData.created_at ? new Date(orderData.created_at).toLocaleString('fr-FR') : new Date().toLocaleString('fr-FR')));
+  
+  let orderTypeLabel = 'SUR PLACE';
+  const rawType = String(orderData.orderType || orderData.type || '').toLowerCase();
+  if (rawType.includes('emporte') || rawType.includes('takeaway')) orderTypeLabel = 'À EMPORTER';
+  if (rawType.includes('livraison') || rawType.includes('delivery')) orderTypeLabel = 'LIVRAISON';
+
+  const rawPayment = String(
+    orderData.payment_method ?? 
+    orderData.paymentMethod ?? 
+    orderData.payment_mode ?? 
+    'counter'
+  ).trim();
+
+  const normalizedStr = rawPayment
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  let paymentLabel = 'ESPÈCES';
+
+  if (normalizedStr === 'counter' || normalizedStr.includes('counter') || normalizedStr.includes('espece') || normalizedStr.includes('cash')) {
+    paymentLabel = 'ESPÈCES';
+  } else if (normalizedStr.includes('carte') || normalizedStr.includes('cb') || normalizedStr.includes('card') || normalizedStr.includes('sumup')) {
+    paymentLabel = 'CARTE BANCAIRE';
+  } else if (normalizedStr.includes('ticket') || normalizedStr.includes('resto')) {
+    paymentLabel = 'TICKET RESTO';
+  } else if (normalizedStr.includes('attente') || normalizedStr.includes('pending')) {
+    paymentLabel = 'EN ATTENTE';
+  } else if (rawPayment !== '') {
+    paymentLabel = escapeHtml(rawPayment.toUpperCase());
+  }
+
+  const items = parseOrderItems(orderData.items || orderData.order_details);
+
+  const totalNum = Number(orderData.total_price ?? orderData.total ?? 0);
+  const total = totalNum.toFixed(2);
+
+  const itemsHtml = items.map(item => {
+    const qty = Number(item.qty || item.quantity || 1);
+    const name = escapeHtml(item.name || item.product?.name || 'Article');
+    let baseUnitPrice = Number(item.unitPrice || item.price || 0);
+    
+    let optionsTotalPrice = 0;
+    let notesHtml = '';
+    const notes = Array.isArray(item.options) && item.options.length > 0 
+      ? item.options 
+      : (Array.isArray(item.selectedSubOptions) && item.selectedSubOptions.length > 0 ? item.selectedSubOptions : (Array.isArray(item.notes) ? item.notes : []));
+    
+    if (notes.length > 0) {
+      notesHtml = notes.map(n => {
+        const noteName = typeof n === 'string' ? n : (n.name || n.name_kds || '');
+        if (!noteName) return '';
+        const isSans = (typeof n === 'object' && (n.isSans || n.is_sans)) || String(noteName).trim().toUpperCase().startsWith('SANS ');
+        const optPrice = typeof n === 'object' ? Number(n.price || n.effective_price || 0) : 0;
+        
+        if (optPrice > 0) {
+          optionsTotalPrice += optPrice;
+        }
+
+        const style = isSans 
+          ? 'color: #000; font-weight: 900; text-decoration: underline;' 
+          : 'color: #000; font-weight: 600;';
+        const alreadyHasPrice = /\(\+\s*\d+(?:[.,]\d+)?\s*€?\)/.test(String(noteName));
+        const priceLabel = (optPrice > 0 && !alreadyHasPrice) ? ` (+${optPrice.toFixed(2)} €)` : '';
+        return `<div style="padding-left: 8px; font-size: 10px; margin-top: 1px; word-break: break-word; ${style}">- ${escapeHtml(noteName)}${priceLabel}</div>`;
+      }).join('');
+    }
+
+    const effectiveLineUnitPrice = baseUnitPrice + optionsTotalPrice;
+    const itemTotal = (qty * effectiveLineUnitPrice).toFixed(2);
+
+    const qtyDisplay = (highlightMultiQty && qty > 1)
+      ? `<span style="border: 1.5px solid #000; padding: 0 3px; font-weight: 900;">${qty}x</span>`
+      : `${qty}x`;
+
+    return `
+      <div style="margin-bottom: 5px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; font-weight: 800; font-size: ${fontSize}; color: #000; gap: 4px;">
+          <span style="flex: 1; word-break: break-word;">${qtyDisplay} ${name}</span>
+          <span style="white-space: nowrap; flex-shrink: 0;">${itemTotal} €</span>
+        </div>
+        ${notesHtml}
+      </div>
+    `;
+  }).join('');
+
+  let deliveryBlockHtml = '';
+  const d = orderData.delivery || {};
+  const custName = escapeHtml(d.customerName || d.name || orderData.customer_name || '');
+  const custAddress = escapeHtml(d.address || orderData.customer_address || '');
+  const custAddressComplement = escapeHtml(
+    d.address_complement || 
+    d.additionalInfo || 
+    orderData.customer_address_complement || 
+    orderData.address_complement || 
+    ''
+  );
+  const custPhone = escapeHtml(d.phone || orderData.customer_phone || '');
+
+  const isLivraison = orderTypeLabel.includes('LIVRAISON') || rawType.includes('livraison') || rawType.includes('delivery');
+  const hasClientInfo = !!(custName || custAddress || custPhone);
+
+  if (isLivraison && hasClientInfo) {
+    const deliveryFeeNum = Number(d.fee || d.delivery_fee || orderData.delivery_fee || 0);
+    deliveryBlockHtml = `
+      <div class="delivery-block" style="border: 2px solid #000; color: #000; font-weight: bold; padding: 5px 6px; margin: 6px 0; word-break: break-word;">
+        <div style="background-color: #000; color: #fff; text-align: center; padding: 2px; margin-bottom: 4px; font-size: 11px; font-weight: 900; text-transform: uppercase; -webkit-print-color-adjust: exact;">
+          *** FICHE LIVRAISON ***
+        </div>
+        ${custName ? `<div style="font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">CLIENT :</span> ${custName}</div>` : ''}
+        ${custAddress ? `<div style="margin-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">ADRESSE :</span> ${custAddress}</div>` : ''}
+        ${custAddressComplement ? `<div style="margin-top: 2px; font-size: 11px; padding-left: 6px;"><span style="font-size: 10px; font-weight: 900;">COMPLÉMENT :</span> ${custAddressComplement}</div>` : ''}
+        ${custPhone ? `<div style="margin-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">TÉL :</span> ${custPhone}</div>` : ''}
+        ${deliveryFeeNum > 0 ? `<div style="margin-top: 3px; border-top: 1px dashed #000; padding-top: 2px; font-size: 11px;"><span style="font-size: 10px; font-weight: 900;">FRAIS DE LIVRAISON :</span> ${deliveryFeeNum.toFixed(2)} €</div>` : ''}
+      </div>
+    `;
+  }
+
+  const orderComment = escapeHtml(
+    orderData.comment || 
+    orderData.notes || 
+    orderData.order_comment || 
+    orderData.deliveryNotes || 
+    (orderData.delivery && (orderData.delivery.deliveryNotes || orderData.delivery.notes)) || 
+    ''
+  );
+
+  let commentBlockHtml = '';
+  if (orderComment) {
+    commentBlockHtml = `
+      <div style="border: 2px dashed #000; padding: 4px 6px; margin: 6px 0; font-size: 11px; font-weight: 800; text-transform: uppercase; word-break: break-word;">
+        <span style="background-color: #000; color: #fff; padding: 1px 4px; font-size: 10px; margin-right: 4px; -webkit-print-color-adjust: exact;">NOTE</span>
+        ${orderComment}
+      </div>
+    `;
+  }
+
+  const rawTva = orderData.tva ?? orderData.restaurant_tva ?? settings.restaurant_tva ?? 10;
+  const tvaRate = Number(rawTva) > 0 ? Number(rawTva) : 10;
+  
+  let taxDetailsHtml = '';
+  if (showTaxDetails && totalNum > 0) {
+    const divisor = 1 + (tvaRate / 100);
+    const ht = (totalNum / divisor).toFixed(2);
+    const tvaAmount = (totalNum - totalNum / divisor).toFixed(2);
+    taxDetailsHtml = `
+      <div style="font-size: 10px; font-weight: 700; margin-top: 3px; color: #000;">
+        <div style="display: flex; justify-content: space-between;"><span>Sous-total HT :</span><span style="white-space: nowrap;">${ht} €</span></div>
+        <div style="display: flex; justify-content: space-between;"><span>TVA (${tvaRate}%) :</span><span style="white-space: nowrap;">${tvaAmount} €</span></div>
+      </div>
+    `;
+  }
+
+  let qrCodeHtml = '';
+  if (showQrCode) {
+    let qrUrl = settings.qr_code_custom_url || 'https://google.com';
+    try {
+      const qrDataUrl = await QRCode.toDataURL(qrUrl, { margin: 1, width: 100 });
+      qrCodeHtml = `
+        <div style="text-align: center; width: 100%; margin: 8px auto 0 auto;">
+          <img src="${qrDataUrl}" style="width: 90px; height: 90px; display: block; margin: 0 auto;" />
+        </div>
+      `;
+    } catch (e) {
+      console.error("[PrinterManager] Erreur génération QR local:", e);
+    }
+  }
+
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          @page { margin: 0; size: auto; }
+          * { box-sizing: border-box; }
+          html, body { 
+            font-family: Arial, Helvetica, sans-serif; 
+            font-size: ${fontSize}; 
+            margin: 0; 
+            padding: ${bodyPadding}; 
+            width: ${bodyWidth}; 
+            max-width: ${bodyWidth}; 
+            height: auto; 
+            overflow: hidden; 
+            color: #000; 
+            background-color: #fff;
+            line-height: 1.2; 
+            text-align: left; 
+            -webkit-print-color-adjust: exact; 
+            print-color-adjust: exact; 
+          }
+          .center { text-align: center; width: 100%; }
+          .bold { font-weight: bold; }
+          hr { border: none; border-top: 1.5px dashed #000; margin: 6px 0; }
+        </style>
+      </head>
+      <body>
+        ${logoHtml}
+
+        <div class="center">
+          <div style="font-size: ${headerFontSize}; font-weight: 900; text-transform: uppercase; word-break: break-word;">${restaurantName}</div>
+          ${showHeaderInfo && restaurantAddress ? `<div style="font-size: 10px; font-weight: 700; word-break: break-word;">${restaurantAddress}</div>` : ''}
+          ${showHeaderInfo && restaurantPhone ? `<div style="font-size: 10px; font-weight: 700;">Tél : ${restaurantPhone}</div>` : ''}
+          <div style="font-size: 10px; font-weight: 700; margin-top: 2px;">${orderDate}</div>
+        </div>
+
+        <hr />
+
+        <div>${itemsHtml}</div>
+
+        ${deliveryBlockHtml}
+
+        ${commentBlockHtml}
+
+        <hr />
+
+        ${taxDetailsHtml}
+
+        <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 10px; font-weight: 800; margin-top: 2px; gap: 4px;">
+          <span>Mode de règlement :</span>
+          <span style="white-space: nowrap;">${paymentLabel}</span>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 15px; font-weight: 900; margin-top: 5px; border-top: 2px solid #000; padding-top: 4px; gap: 4px;">
+          <span>TOTAL TTC</span>
+          <span style="white-space: nowrap;">${total} €</span>
+        </div>
+
+        <div style="border: 2.5px solid #000; text-align: center; width: 100%; margin: 8px auto 4px auto; padding: 5px 3px;">
+          <div style="font-size: 10px; font-weight: 800; text-transform: uppercase;">VOTRE NUMÉRO DE COMMANDE</div>
+          <div style="font-size: 24px; font-weight: 900; letter-spacing: 1px; margin: 2px 0;">${cleanOrderNumber}</div>
+          <div style="background-color: #000; color: #fff; font-size: 12px; font-weight: 900; display: inline-block; padding: 2px 8px; margin-top: 2px; -webkit-print-color-adjust: exact;">
+            ${orderTypeLabel}
+          </div>
+        </div>
+
+        ${(showFooterMessage || showQrCode) ? '<hr />' : ''}
+
+        ${showFooterMessage ? `
+          <div style="text-align: center; width: 100%; margin: 5px auto 3px auto;">
+            <div style="font-size: 10px; font-weight: 700; text-align: center; width: 100%; white-space: pre-wrap; word-break: break-word;">${footerMessage}</div>
+          </div>
+        ` : ''}
+
+        ${qrCodeHtml}
+      </body>
+    </html>
+  `;
+}
+
+export { escapeHtml, parseOrderItems, buildKitchenHtml, buildDriverSettlementHtml, buildZReportHtml, buildReceiptHtml };

@@ -1,3 +1,5 @@
+// Caisse Android : imprimantes USB / réseau (avant tout le reste, la caisse lit ses réglages au chargement)
+import './lib/androidPrinting';
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx';
 import './index.css';
