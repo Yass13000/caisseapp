@@ -14,6 +14,7 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import {
   configureTicketTemplates,
+  escapeHtml,
   parseOrderItems,
   buildKitchenHtml,
   buildDriverSettlementHtml,
@@ -110,18 +111,26 @@ const readFound = (): Found[] => {
 
 let found: Found[] = readFound();
 let scanning: Promise<Found[]> | null = null;
+/** Réglages façon borne : erreur de la dernière recherche et recherche déjà faite */
+let lastScanError = '';
+let scannedOnce = false;
 
 const discover = (network = true): Promise<Found[]> => {
   if (scanning) return scanning;
   scanning = Native.discover({ network, timeoutMs: 3500 })
     .then(({ printers }) => {
+      lastScanError = '';
+      scannedOnce = true;
       const fresh = withLabels(printers || []);
       // Recherche USB seule : on garde les imprimantes réseau déjà connues
       found = network ? fresh : [...fresh, ...found.filter((p) => p.type === 'network')];
       try { localStorage.setItem(FOUND_KEY, JSON.stringify(found)); } catch { /* sans effet */ }
       return found;
     })
-    .catch(() => found)
+    .catch((e) => {
+      lastScanError = String(e?.message || e || 'Recherche impossible');
+      return found;
+    })
     .finally(() => { scanning = null; });
   return scanning;
 };
@@ -295,6 +304,121 @@ const getPrinters = async () => {
   return list.map((p) => ({ name: p.label, displayName: p.label, description: p.type === 'usb' ? 'USB' : `Réseau ${p.ip}`, isDefault: false, status: 0 }));
 };
 
+// ───────────── Écran de réglages façon borne (lecture seule pour l'impression) ─────────────
+
+/** Dernière impression (affichée dans les réglages, comme sur la borne) */
+const lastPrint = { at: null as string | null, ok: null as boolean | null, printer: '', error: '', label: '' };
+
+const ticketLabel = (orderData: any) => {
+  const t = String(orderData?.orderType || orderData?.type || '').toUpperCase();
+  if (String(orderData?.orderNumber || '').toUpperCase().includes('TEST')) return 'Ticket test';
+  if (orderData?.type === 'DRIVER_SETTLEMENT') return 'Clôture livreur';
+  if (t.includes('RAPPORT') || t === 'Z' || t === 'X' || orderData?.totalSales !== undefined) return 'Rapport';
+  if (t.includes('CUISINE')) return 'Bon cuisine';
+  return 'Ticket client';
+};
+
+/** Note le résultat sans jamais le modifier */
+const recordPrint = (label: string, res: any, fallbackPrinter = '') => {
+  try {
+    Object.assign(lastPrint, {
+      at: new Date().toISOString(),
+      ok: !!res?.success,
+      printer: String(res?.printerName || fallbackPrinter || ''),
+      error: res?.success ? '' : String(res?.error || ''),
+      label,
+    });
+  } catch { /* sans effet */ }
+};
+
+/** Réglages consultés pour un rôle, dans le même ordre que resolveTarget */
+const roleChain = (role: string): unknown[] => {
+  const s = settingsView();
+  return role === 'cuisine' ? [s.imprimante_cuisine, s.imprimante_caisse]
+    : role === 'livraison' ? [s.imprimante_livraison, s.imprimante_caisse]
+      : role === 'rapports' ? [s.imprimante_rapports, s.imprimante_caisse, s.imprimante_cuisine]
+        : [s.imprimante_caisse, s.imprimante_cuisine];
+};
+
+/** Même choix automatique que resolveTarget : USB, puis imprimante ticket connue, puis la première */
+const bestGuess = (): Found | null =>
+  found.find((p) => p.type === 'usb')
+  || found.find((p) => /tm|epson|star|pos|80|ticket|receipt|thermal|xprinter|bixolon|citizen/i.test(p.label))
+  || found[0]
+  || null;
+
+type PickReason = 'choisie' | 'automatique' | 'remplacement' | 'aucune';
+
+/** Imprimante qu'utilisera la caisse pour ce rôle (affichage seulement) */
+const pickFor = (savedName: string, role: string): { printer: Found | null; reason: PickReason } => {
+  const saved = findByName(savedName);
+  if (saved) return { printer: saved, reason: 'choisie' };
+  if (!savedName) {
+    const dependsOn = roleChain(role).slice(1).find((n) => !!n);
+    const p = findByName(dependsOn);
+    if (p) return { printer: p, reason: 'automatique' };
+  }
+  const best = bestGuess();
+  if (best) return { printer: best, reason: savedName ? 'remplacement' : 'automatique' };
+  return { printer: null, reason: 'aucune' };
+};
+
+/** Accès USB demandé une seule fois à la fois (4 cartes de réglage ouvertes ensemble) */
+let authorizing: Promise<void> | null = null;
+const authorizeUsb = (): Promise<void> => {
+  if (authorizing) return authorizing;
+  authorizing = (async () => {
+    for (const p of found) {
+      if (p.type === 'usb' && !p.permission) {
+        p.permission = (await Native.authorize({ target: p.id }).catch(() => ({ granted: false }))).granted;
+      }
+    }
+  })().finally(() => { authorizing = null; });
+  return authorizing;
+};
+
+/** Même interface que la borne (TicketPrinterCard) */
+const printerAuto = async (savedName = '', refresh = false, role = 'caisse') => {
+  if (refresh || !scannedOnce) {
+    await discover(true);
+    await authorizeUsb();
+  }
+  const { printer, reason } = pickFor(savedName, role);
+  const auto = pickFor('', role).printer;
+  return {
+    selected: printer ? printer.label : '',
+    reason,
+    auto: auto ? auto.label : '',
+    printers: found.map((p) => ({
+      name: p.label,
+      port: p.type === 'usb' ? 'USB' : `IP_${p.ip}`,
+      driver: p.type === 'usb' ? (p.permission ? 'Imprimante USB' : 'Imprimante USB (accès refusé)') : 'Imprimante réseau (port 9100)',
+      score: 50,
+      virtual: false,
+      isDefault: false,
+    })),
+    lastPrint: { ...lastPrint },
+    appVersion: 'Android',
+    errors: lastScanError ? [lastScanError] : [],
+  };
+};
+
+/** Tests depuis les réglages : petit ticket « TEST CAISSE » ou texte brut ESC/POS (dépannage) */
+const printTest = async (printerName = '', mode: 'html' | 'raw' = 'raw', role = 'caisse'): Promise<Result> => {
+  const target = await resolveTarget(printerName, role);
+  if (!target) return { success: false, error: 'Aucune imprimante trouvée' };
+  if (mode === 'html') {
+    const html = `<div style="font:700 28px Arial;text-align:center;padding:12px 0">TEST CAISSE</div><div style="font:16px Arial;text-align:center">${escapeHtml(target.label)}<br>${new Date().toLocaleString('fr-FR')}</div>`;
+    const res = await printOn(target, html, String(getSetting('receipt_width', '72')), 1);
+    recordPrint('Ticket test', res, target.label);
+    return res;
+  }
+  const text = `\x1b@\x1ba\x01TEST CAISSE\n${new Date().toLocaleString('fr-FR')}\n${target.label}\n\n[ GAUCHE                  DROITE ]\n\n\n\n\x1dVB\x00`;
+  // Sans accents, octets ESC/POS conservés (ESC, GS, NUL), le reste en « ? »
+  const ascii = Array.from(text.normalize('NFD')).filter((c) => !/\p{M}/u.test(c)).map((c) => (c.charCodeAt(0) < 128 ? c : '?')).join('');
+  return Native.sendRaw({ target: target.id, base64: btoa(ascii) }).catch((e) => ({ success: false, error: String(e?.message || e) }));
+};
+
 // ─────────────────────────── Commandes hors connexion ───────────────────────────
 
 const readOffline = (): any[] => {
@@ -317,8 +441,13 @@ const install = () => {
 
   (window as any).electronAPI = {
     platform: 'android',
-    printReceipt: (data: any, printerName?: string) => printReceipt(data, printerName),
+    printReceipt: (data: any, printerName?: string) => printReceipt(data, printerName).then((res) => {
+      recordPrint(ticketLabel(data), res, printerName);
+      return res;
+    }),
     getPrinters,
+    printerAuto,
+    printTest,
     openDrawer,
     getSetting,
     setSetting,
@@ -336,4 +465,19 @@ const install = () => {
   setTimeout(() => { discover(true); }, 4000);
 };
 
+/** Installe le pont si le module natif est prêt (sans effet sur Windows ou déjà installé) */
+export const ensureAndroidPrinting = (): boolean => {
+  install();
+  return typeof window !== 'undefined' && (window as any).electronAPI?.platform === 'android';
+};
+
 install();
+
+// Vieilles WebView : le module natif peut répondre après le chargement de la page → nouveaux essais pendant 30 s
+if (typeof window !== 'undefined' && !(window as any).electronAPI) {
+  let tries = 0;
+  const timer = setInterval(() => {
+    install();
+    if ((window as any).electronAPI || ++tries >= 60) clearInterval(timer);
+  }, 500);
+}

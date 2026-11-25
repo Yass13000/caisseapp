@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import PosSetup from '@/components/PosSetup';
 import CustomerDisplaySettings from '@/components/CustomerDisplaySettings';
 import SumUpSoloSettings from '@/components/SumUpSoloSettings';
+import TicketPrinterCard, { hasAutoPrinter, PrinterCardsBoundary } from '@/components/TicketPrinterCard';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -97,9 +98,26 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     }
   };
 
+  // Caisse Android : même réglage automatique que la borne (une carte par imprimante).
+  // Windows : rien ne change (ancienne liste). En cas d'erreur des cartes : retour à l'ancienne liste.
+  const [autoPrinter, setAutoPrinter] = useState(() => hasAutoPrinter());
+  const [cardsFailed, setCardsFailed] = useState(false);
+  const showCards = autoPrinter && !cardsFailed;
+
   useEffect(() => {
-    fetchPrinters();
+    if (!hasAutoPrinter()) fetchPrinters();
   }, []);
+
+  // Module d'impression Android prêt après l'ouverture des réglages (vieilles WebView)
+  useEffect(() => {
+    if (autoPrinter || (window as any).electronAPI) return;
+    let tries = 0;
+    const timer = setInterval(() => {
+      if (hasAutoPrinter()) { setAutoPrinter(true); clearInterval(timer); }
+      else if ((window as any).electronAPI || ++tries >= 60) clearInterval(timer);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [autoPrinter]);
 
   const handleTestPrint = async (targetPrinter?: string, isKitchenTest: boolean = false) => {
     if (!(window as any).electronAPI) {
@@ -421,7 +439,46 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                     </div>
                   </div>
 
+                  {/* IMPRIMANTES — caisse Android : même interface que la borne */}
+                  {showCards && (
+                    <PrinterCardsBoundary onError={() => setCardsFailed(true)}>
+                      <div className="space-y-3">
+                        <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Imprimantes</h3>
+                        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                          <TicketPrinterCard
+                            title="Imprimante ticket client"
+                            role="caisse"
+                            savedName={caissePrinter}
+                            onSave={(n) => { setCaissePrinter(n); setSecureSetting('imprimante_caisse', n); }}
+                          />
+                          <TicketPrinterCard
+                            title="Imprimante bon cuisine"
+                            role="cuisine"
+                            autoHint="même que le ticket client"
+                            savedName={kitchenPrinter}
+                            onSave={(n) => { setKitchenPrinter(n); setSecureSetting('imprimante_cuisine', n); }}
+                          />
+                          <TicketPrinterCard
+                            title="Imprimante rapports Z/X"
+                            role="rapports"
+                            autoHint="même que le ticket client"
+                            savedName={reportsPrinter}
+                            onSave={(n) => { setReportsPrinter(n); setSecureSetting('imprimante_rapports', n); }}
+                          />
+                          <TicketPrinterCard
+                            title="Imprimante livraison"
+                            role="livraison"
+                            autoHint="même que le ticket client"
+                            savedName={deliveryPrinter}
+                            onSave={(n) => { setDeliveryPrinter(n); setSecureSetting('imprimante_livraison', n); }}
+                          />
+                        </div>
+                      </div>
+                    </PrinterCardsBoundary>
+                  )}
+
                   {/* AFFECTATION DES IMPRIMANTES */}
+                  {!showCards && (
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
                     <div className="flex items-center justify-between">
                       <h3 className="text-lg font-black text-secondary uppercase tracking-wide">Affectation des Imprimantes</h3>
@@ -497,6 +554,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                       </div>
                     </div>
                   </div>
+                  )}
 
                   {/* FORMAT ET MISE EN PAGE */}
                   <div className="p-6 bg-gray-50 rounded-2xl border border-gray-200 shadow-sm space-y-6">
