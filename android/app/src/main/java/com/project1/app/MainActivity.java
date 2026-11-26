@@ -13,6 +13,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(EpsonPrinterPlugin.class);
         // Imprimantes ticket USB / réseau (recherche + impression du ticket en image, comme sur Windows)
         registerPlugin(CaissePrinterPlugin.class);
+        // Écran client (second écran des caisses à double écran), comme sous Windows
+        registerPlugin(CustomerDisplayPlugin.class);
 
         super.onCreate(savedInstanceState);
 

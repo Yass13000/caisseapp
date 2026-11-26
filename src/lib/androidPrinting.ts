@@ -35,6 +35,46 @@ interface CaissePrinterPlugin {
 }
 
 const Native = registerPlugin<CaissePrinterPlugin>('CaissePrinter');
+
+// ─────────────────────────── Écran client (second écran) ───────────────────────────
+// Caisses Android à double écran : la page #/ecran-client s'ouvre sur l'écran secondaire
+// (module natif CustomerDisplay, présent à partir de l'APK 1.5.0) et reçoit le panier en direct.
+interface CustomerDisplayPlugin {
+  status(): Promise<{ displays: number; open: boolean }>;
+  open(o: { url: string }): Promise<void>;
+  close(): Promise<void>;
+  update(o: { state: unknown }): Promise<void>;
+  configChanged(): Promise<void>;
+  refresh(): Promise<void>;
+}
+const CustomerScreen = registerPlugin<CustomerDisplayPlugin>('CustomerDisplay');
+const hasCustomerScreen = () => Capacitor.isPluginAvailable('CustomerDisplay');
+
+const syncCustomerScreen = () => {
+  if (!hasCustomerScreen()) return;
+  let enabled = true;
+  try { enabled = localStorage.getItem('customer_display_enabled') !== 'false'; } catch { /* activé par défaut */ }
+  if (enabled) CustomerScreen.open({ url: `${window.location.origin}/#/ecran-client` }).catch(() => {});
+  else CustomerScreen.close().catch(() => {});
+};
+
+let lastCustomerScreenState: unknown = null;
+const customerScreenApi = () => ({
+  update: (state: unknown) => {
+    lastCustomerScreenState = state;
+    CustomerScreen.update({ state }).catch(() => {});
+  },
+  onState: () => () => {},
+  onConfigChanged: () => () => {},
+  getState: async () => lastCustomerScreenState,
+  getStatus: () => CustomerScreen.status(),
+  // Image de fond personnelle : fichier local, disponible sous Windows seulement
+  supportsImage: false,
+  pickBackground: async () => ({ success: false, canceled: true }),
+  getBackground: async () => null,
+  clearBackground: async () => ({ success: true }),
+  refresh: () => { CustomerScreen.refresh().catch(() => {}); },
+});
 const FOUND_KEY = 'android_printers_found';
 const OFFLINE_KEY = 'android_offline_orders';
 const ROLE_KEYS = ['imprimante_caisse', 'imprimante_cuisine', 'imprimante_livraison', 'imprimante_rapports'] as const;
@@ -450,7 +490,16 @@ const install = () => {
     printTest,
     openDrawer,
     getSetting,
-    setSetting,
+    setSetting: (key: string, value: unknown) => {
+      const ok = setSetting(key, value);
+      // Réglages de l'écran client : affichage ouvert / fermé, fond et pubs relus par l'écran
+      if (String(key).startsWith('customer_display_')) {
+        if (key === 'customer_display_enabled') syncCustomerScreen();
+        else if (hasCustomerScreen()) CustomerScreen.configChanged().catch(() => {});
+      }
+      return ok;
+    },
+    ...(hasCustomerScreen() ? { customerDisplay: customerScreenApi() } : {}),
     closeApp: () => { Native.exitApp().catch(() => {}); },
     saveOfflineOrder: async (order: any) => {
       try { writeOffline([...readOffline(), order]); return { success: true }; } catch (e: any) { return { success: false, error: e?.message }; }
@@ -463,6 +512,8 @@ const install = () => {
 
   // Recherche en arrière-plan au démarrage : la première impression part sans attendre
   setTimeout(() => { discover(true); }, 4000);
+  // Écran client : ouvert tout de suite s'il y a un second écran (comme sous Windows)
+  syncCustomerScreen();
 };
 
 /** Installe le pont si le module natif est prêt (sans effet sur Windows ou déjà installé) */

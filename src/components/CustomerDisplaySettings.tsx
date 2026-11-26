@@ -187,7 +187,8 @@ const CustomerDisplaySettings = () => {
           })}
         </div>
 
-        {/* Image */}
+        {/* Image (fichier local : Windows seulement) */}
+        {api.supportsImage !== false && (
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -227,6 +228,7 @@ const CustomerDisplaySettings = () => {
             </>
           )}
         </div>
+        )}
       </div>
 
       <CustomerDisplayAds />

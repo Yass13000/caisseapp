@@ -50,6 +50,8 @@ interface CustomerDisplayAPI {
   getCachedAds?: () => Promise<CustomerAd[]>;
   syncAds?: (list: { id: string; url: string; type: 'image' | 'video'; duration: number }[]) => Promise<CustomerAd[]>;
   refresh?: () => void;
+  /** Image de fond personnelle possible (Windows) ; absent = oui */
+  supportsImage?: boolean;
 }
 
 /** Pub prête à l'affichage (fichier en cache local) */
@@ -139,8 +141,46 @@ export const readAdImageDuration = () => {
   }
 };
 
+// Écran client des caisses Android (page ouverte sur le second écran par le module natif) :
+// l'état arrive par des événements de la fenêtre, et se relit au chargement auprès du module.
+let androidScreenApi: CustomerDisplayAPI | null = null;
+const ANDROID_ADS_KEY = 'customer_display_android_ads';
+const androidScreenAPI = (): CustomerDisplayAPI | null => {
+  const native = typeof window !== 'undefined' ? (window as any).CaisseCustomerDisplayNative : null;
+  if (!native) return null;
+  if (androidScreenApi) return androidScreenApi;
+  const listen = (event: string, cb: (detail: any) => void) => {
+    const handler = (e: Event) => cb((e as CustomEvent).detail);
+    window.addEventListener(event, handler);
+    return () => window.removeEventListener(event, handler);
+  };
+  androidScreenApi = {
+    update: () => {},
+    onState: cb => listen('caisse-cd-state', s => { if (s) cb(s); }),
+    onConfigChanged: cb => listen('caisse-cd-config', () => cb()),
+    getState: async () => {
+      try { return JSON.parse(String(native.getState())); } catch { return null; }
+    },
+    getStatus: async () => ({ displays: 2, open: true }),
+    supportsImage: false,
+    pickBackground: async () => ({ success: false, canceled: true }),
+    getBackground: async () => null,
+    clearBackground: async () => ({ success: true }),
+    // Pubs lues en ligne (le navigateur les garde en cache) ; dernière liste gardée pour le hors-ligne
+    getCachedAds: async () => {
+      try { return JSON.parse(localStorage.getItem(ANDROID_ADS_KEY) || '[]'); } catch { return []; }
+    },
+    syncAds: async list => {
+      const ads = list.map(a => ({ id: a.id, type: a.type, duration: a.duration, src: a.url }));
+      try { localStorage.setItem(ANDROID_ADS_KEY, JSON.stringify(ads)); } catch { /* stockage indisponible */ }
+      return ads;
+    },
+  };
+  return androidScreenApi;
+};
+
 export const getCustomerDisplayAPI = (): CustomerDisplayAPI | null =>
-  ((window as any).electronAPI?.customerDisplay as CustomerDisplayAPI | undefined) || null;
+  ((window as any).electronAPI?.customerDisplay as CustomerDisplayAPI | undefined) || androidScreenAPI() || null;
 
 // ---------------------------------------------------------------------------
 // Fonds
