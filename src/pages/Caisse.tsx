@@ -46,7 +46,7 @@ import { buildLoadedCartItem, normalizeLinesForSave, tillLineTotal, extractRealP
 import { publishCustomerCart, publishCustomerPayment, showCustomerThanks } from '@/lib/customerDisplay';
 import { isCategoryOpen, categoryScheduleLabel, hasCategorySchedule } from '@/lib/categorySchedule';
 import { TapToPayIcon, publicAsset } from '@/components/MaskIcon';
-import { refreshStaff, resolvePin, setCurrentUser, useCurrentUser, staffOrderFields, logAction } from '@/lib/staff';
+import { refreshStaff, readStaffCache, resolvePin, setCurrentUser, useCurrentUser, staffOrderFields, logAction } from '@/lib/staff';
 import PermissionGate, { requirePermission } from '@/components/PermissionGate';
 
 export interface Product {
@@ -1203,9 +1203,13 @@ const Caisse = () => {
     const masterPin = getSecureSetting('pos_pin', '1234');
     (async () => {
       let user = resolvePin(pinCode, masterPin, posRestoId);
-      // Code inconnu : un profil vient peut-être d'être créé sur une autre caisse
-      if (!user && navigator.onLine && posRestoId) {
-        await refreshStaff(posRestoId);
+      // Code inconnu : un profil vient peut-être d'être créé sur une autre caisse.
+      // Seulement si des profils existent déjà ou si la liste date de plus de 30 s,
+      // et jamais plus de 3 s d'attente (sinon « Code incorrect » comme avant).
+      const cache = readStaffCache(posRestoId);
+      const stale = !cache || Date.now() - (cache.fetchedAt || 0) > 30000;
+      if (!user && navigator.onLine && posRestoId && (stale || (cache?.staff.length ?? 0) > 0)) {
+        await Promise.race([refreshStaff(posRestoId), new Promise(r => setTimeout(r, 3000))]);
         if (cancelled) return;
         user = resolvePin(pinCode, masterPin, posRestoId);
       }
