@@ -1446,7 +1446,8 @@ const Caisse = () => {
   const isLoadedUnchanged = () =>
     loadedSignatureRef.current !== null && ticketSignature(cartState.items) === loadedSignatureRef.current;
   const kitchenStatusForLoaded = (currentStatus?: string | null) =>
-    isLoadedUnchanged() && currentStatus ? currentStatus : 'En cours';
+    // Comme la borne et l'appli : la cuisine reçoit la commande en « Nouvelle » (sonnerie, à accepter)
+    isLoadedUnchanged() && currentStatus ? currentStatus : 'Nouvelle';
 
   // ── Commande rouverte modifiée : ticket cuisine des seules différences ──
   // Une ligne = même produit, mêmes options, même prix unitaire, mêmes ingrédients retirés.
@@ -1865,7 +1866,7 @@ const Caisse = () => {
         is_paid: true,
         payment_status: 'paid',
         // Commande rouverte sans modification : statut cuisine laissé tel quel (clé absente)
-        status: (loadedOrderId && isLoadedUnchanged()) ? undefined : 'En cours',
+        status: (loadedOrderId && isLoadedUnchanged()) ? undefined : 'Nouvelle',
         payment_method: cleanPaymentMethod,
         cash_amount: cashAmount,
         // Code de la transaction SumUp (TPE Solo) : retrouver ou rembourser le paiement
@@ -2141,7 +2142,7 @@ const Caisse = () => {
         is_paid: false,
         payment_status: 'pending',
         // Commande rouverte sans modification : statut cuisine laissé tel quel (clé absente)
-        status: (loadedOrderId && isLoadedUnchanged()) ? undefined : 'En cours',
+        status: (loadedOrderId && isLoadedUnchanged()) ? undefined : 'Nouvelle',
         payment_method: deliveryPayLabel(deliveryPay),
         // Espèces à la livraison : billet du client (pour préparer la monnaie). Non compté tant que non payée.
         cash_amount: deliveryPay?.method === 'Espèces' ? deliveryPay.cashGiven : 0,
