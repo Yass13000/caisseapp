@@ -2,13 +2,16 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { 
-  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft, Eye, Monitor, CreditCard
+  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft, Eye, Monitor, CreditCard, Users
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PosSetup from '@/components/PosSetup';
 import CustomerDisplaySettings from '@/components/CustomerDisplaySettings';
 import SumUpSoloSettings from '@/components/SumUpSoloSettings';
 import TicketPrinterCard, { hasAutoPrinter, PrinterCardsBoundary } from '@/components/TicketPrinterCard';
+import StaffSettings from '@/components/StaffSettings';
+import { can, isPinTakenByStaff, readStaffCache } from '@/lib/staff';
+import { getActiveRestaurantId } from '@/lib/supabaseClient';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -37,6 +40,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
   const [activeTab, setActiveTab] = useState('printing');
   const [showPowerMenu, setShowPowerMenu] = useState(false);
   const [gearClicks, setGearClicks] = useState(0);
+  const [, setStaffVersion] = useState(0);
   
   // --- ÉTATS SÉCURITÉ ---
   const [currentPin, setCurrentPin] = useState('');
@@ -192,6 +196,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     if (currentPin !== savedPin) return toast.error("Le code actuel est incorrect");
     if (newPin.length !== 4) return toast.error("Le nouveau code doit faire 4 chiffres");
     if (newPin !== confirmPin) return toast.error("Les nouveaux codes ne correspondent pas");
+    if (isPinTakenByStaff(newPin, getActiveRestaurantId())) return toast.error("Ce code est déjà celui d'un profil utilisateur");
 
     setSecureSetting('pos_pin', newPin);
     toast.success("Code PIN modifié !");
@@ -246,7 +251,14 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     { id: 'customer-display', icon: Monitor, label: 'Écran client', description: 'Second écran' },
     { id: 'tpe', icon: CreditCard, label: 'TPE', description: 'SumUp Solo' },
     { id: 'security', icon: ShieldCheck, label: 'Sécurité', description: 'Code PIN d\'accès' },
-  ];
+    { id: 'users', icon: Users, label: 'Utilisateurs', description: 'Profils, codes et droits' },
+  ].filter(item => {
+    // Profils : réservé à « Gérer les profils » (le profil Standard a tous les droits, comme avant)
+    if (item.id === 'users') return can('profils');
+    // Profil Standard supprimé : son code ne sert plus, l'onglet Sécurité est masqué
+    if (item.id === 'security') return readStaffCache(getActiveRestaurantId())?.masterCodeDisabled !== true;
+    return true;
+  });
 
   // 🟢 TRIPLE-CLIC : Affichage direct du composant PosSetup (source de vérité unique)
   if (activeTab === 'secret-system') {
@@ -859,6 +871,17 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                 <h2 className="text-3xl font-black text-secondary uppercase">TPE SumUp Solo</h2>
               </div>
               <SumUpSoloSettings />
+            </div>
+          )}
+
+          {/* ONGLET UTILISATEURS */}
+          {activeTab === 'users' && can('profils') && (
+            <div className="max-w-4xl animate-in fade-in duration-300">
+              <div className="mb-8">
+                <h2 className="text-3xl font-black text-secondary uppercase">Utilisateurs</h2>
+                <p className="text-gray-500 font-bold mt-2">Chaque profil a son prénom, son code personnel, son rôle et ses droits.</p>
+              </div>
+              <StaffSettings masterPin={getSecureSetting('pos_pin', '1234')} onChange={() => setStaffVersion(v => v + 1)} />
             </div>
           )}
 

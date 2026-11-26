@@ -33,6 +33,7 @@ import { getFormattedOrderOptions, fetchOptionGroupMapping, buildReceiptPayloadF
 import { DeliveryDispatchModal } from '@/components/DeliveryDispatchModal';
 import { toast } from 'sonner';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
+import { requirePermission } from '@/components/PermissionGate';
 import { prepTimingPatch } from '@/lib/prepTiming';
 
 interface Order {
@@ -815,7 +816,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
           
           <button 
             type="button"
-            onClick={() => setActiveTab('livraisons')} 
+            onClick={async () => { if (await requirePermission('dispatch')) setActiveTab('livraisons'); }} 
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-none font-black text-xs uppercase transition-all shrink-0 active:scale-95 ${
               activeTab === 'livraisons' 
                 ? 'bg-blue-600 text-white shadow-md' 

@@ -46,6 +46,8 @@ import { buildLoadedCartItem, normalizeLinesForSave, tillLineTotal, extractRealP
 import { publishCustomerCart, publishCustomerPayment, showCustomerThanks } from '@/lib/customerDisplay';
 import { isCategoryOpen, categoryScheduleLabel, hasCategorySchedule } from '@/lib/categorySchedule';
 import { TapToPayIcon, publicAsset } from '@/components/MaskIcon';
+import { refreshStaff, resolvePin, setCurrentUser, useCurrentUser, staffOrderFields, logAction } from '@/lib/staff';
+import PermissionGate, { requirePermission } from '@/components/PermissionGate';
 
 export interface Product {
   id: number | string;
@@ -625,7 +627,7 @@ export const PaymentModal = ({ subtotal, deliveryFee = 0, themeColors, onClose, 
               {onOffer && lines.length === 0 && !discount && (
                 <button
                   type="button"
-                  onClick={() => setDiscountOpen(true)}
+                  onClick={async () => { if (await requirePermission('remise')) setDiscountOpen(true); }}
                   disabled={busy}
                   title="Remise (employé, promo)"
                   aria-label="Appliquer une remise"
@@ -829,6 +831,7 @@ const Caisse = () => {
   
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [pinCode, setPinCode] = useState("");
+  const currentUser = useCurrentUser();
 
   const [restaurantLogo, setRestaurantLogo] = useState<string | null>(null);
   const [restaurantName, setRestaurantName] = useState<string>("VOTRE RESTAURANT");
@@ -1186,9 +1189,29 @@ const Caisse = () => {
     // currentSessionId : une ouverture de caisse relance l'envoi des tickets restés en local
   }, [isOnline, isAuthenticated, posRestoId, currentSessionId]);
 
+  // Profils utilisateurs : rechargés à chaque affichage de l'écran verrouillé (copie locale pour le hors-ligne)
   useEffect(() => {
-    if (pinCode.length === 4) {
-      if (pinCode === (getSecureSetting('pos_pin', '1234'))) {
+    if (!isAuthenticated) {
+      setCurrentUser(null);
+      if (posRestoId) refreshStaff(posRestoId);
+    }
+  }, [isAuthenticated, posRestoId]);
+
+  useEffect(() => {
+    if (pinCode.length !== 4) return;
+    let cancelled = false;
+    const masterPin = getSecureSetting('pos_pin', '1234');
+    (async () => {
+      let user = resolvePin(pinCode, masterPin, posRestoId);
+      // Code inconnu : un profil vient peut-être d'être créé sur une autre caisse
+      if (!user && navigator.onLine && posRestoId) {
+        await refreshStaff(posRestoId);
+        if (cancelled) return;
+        user = resolvePin(pinCode, masterPin, posRestoId);
+      }
+      if (cancelled) return;
+      if (user) {
+        setCurrentUser(user);
         setIsAuthenticated(true);
         setPinCode("");
 
@@ -1201,12 +1224,13 @@ const Caisse = () => {
           setOrderType(getDefaultOrderType());
         }
 
-        customToast("Caisse déverrouillée", "success", { duration: 800 });
+        customToast(user.isStandard ? "Caisse déverrouillée" : `Bonjour ${user.name}`, "success", { duration: 800 });
       } else {
         customToast("Code incorrect", "error");
         setTimeout(() => setPinCode(""), 300);
       }
-    }
+    })();
+    return () => { cancelled = true; };
   }, [pinCode]);
 
   useEffect(() => {
@@ -1821,6 +1845,8 @@ const Caisse = () => {
       const offlineId = `offline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const orderPayload = {
         offline_id: offlineId,
+        // Prénom du profil connecté (rien pour le profil Standard : enregistrement identique à avant)
+        ...staffOrderFields(),
         is_update: !!loadedOrderId,
         target_id: loadedOrderId || null,
         // Référence unique de la vente : la synchro hors-ligne ne l'insère jamais deux fois
@@ -1853,6 +1879,7 @@ const Caisse = () => {
         if ((window as any).electronAPI?.saveOfflineOrder) {
           await (window as any).electronAPI.saveOfflineOrder(orderPayload);
           customToast(isOffered ? `${method} : ${finalTotal.toFixed(2)}€ envoyés en cuisine (hors-ligne)` : `Encaissé (Hors-ligne) ${recordedTotal.toFixed(2)}€`, "success");
+          if (discount) logAction(isOffered ? 'offert' : 'remise', { orderId: loadedOrderId || offlineId, details: { montant: discountAmount, libelle: discount.label, motif: discount.reason, total: finalTotal } });
 
           const isCashMethodOffline = String(cleanPaymentMethod).toLowerCase().includes('espece') || 
                                       String(cleanPaymentMethod).toLowerCase().includes('espèces') || 
@@ -1956,6 +1983,7 @@ const Caisse = () => {
         }
 
         customToast(isOffered ? `${method} : ${finalTotal.toFixed(2)}€ envoyés en cuisine` : `Encaissé ${recordedTotal.toFixed(2)}€${discount ? ` (remise -${discountAmount.toFixed(2)}€)` : ''}`, "success");
+        if (discount) logAction(isOffered ? 'offert' : 'remise', { orderId: loadedOrderId || offlineId, details: { montant: discountAmount, libelle: discount.label, motif: discount.reason, total: finalTotal } });
 
         const isCashMethodOnline = String(cleanPaymentMethod).toLowerCase().includes('espece') || 
                                    String(cleanPaymentMethod).toLowerCase().includes('espèces') || 
@@ -2014,6 +2042,7 @@ const Caisse = () => {
           orderPayload.order_number = targetOrderNumber;
           await (window as any).electronAPI.saveOfflineOrder(orderPayload);
           customToast(isOffered ? `${method} : ${finalTotal.toFixed(2)}€ envoyés en cuisine (local)` : `Encaissé (Local de secours) ${recordedTotal.toFixed(2)}€`, "success");
+          if (discount) logAction(isOffered ? 'offert' : 'remise', { orderId: loadedOrderId || offlineId, details: { montant: discountAmount, libelle: discount.label, motif: discount.reason, total: finalTotal } });
           
           const isAutoPrintReceiptEnabled = getSecureSetting('auto_print_receipt', 'true') !== 'false';
           if (isAutoPrintReceiptEnabled && !isOffered) {
@@ -2093,6 +2122,8 @@ const Caisse = () => {
       const offlineId = `offline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const orderPayload = {
         offline_id: offlineId,
+        // Prénom du profil connecté (rien pour le profil Standard : enregistrement identique à avant)
+        ...staffOrderFields(),
         is_update: !!loadedOrderId,
         target_id: loadedOrderId || null,
         // Référence unique de la vente : la synchro hors-ligne ne l'insère jamais deux fois
@@ -2356,6 +2387,14 @@ const Caisse = () => {
         </div>
         <div className="absolute left-1/2 -translate-x-1/2 text-white font-black text-[13px] tracking-[0.2em]"><LiveClock kind="time" /></div>
         <div className="flex items-center gap-4">
+          {currentUser && !currentUser.isStandard && (
+            <>
+              <span className="flex items-center gap-1.5 text-white" title={currentUser.role}>
+                <UserRound size={14} /> <span>{currentUser.name}</span>
+              </span>
+              <div className="w-px h-3 bg-white/20"></div>
+            </>
+          )}
           <CalendarDays size={14} /> <span><LiveClock kind="date" /></span>
           <div className="w-px h-3 bg-white/20"></div>
           <button 
@@ -2617,7 +2656,7 @@ const Caisse = () => {
 
               <button 
                 disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current} 
-                onClick={() => (orderType === 'LIVRAISON' ? setIsDeliveryPayOpen(true) : setIsPaymentModalOpen(true))} 
+                onClick={async () => { if (!(await requirePermission('encaisser'))) return; if (orderType === 'LIVRAISON') setIsDeliveryPayOpen(true); else setIsPaymentModalOpen(true); }} 
                 className="flex-1 text-white font-black text-xl py-3 rounded-xl shadow-md active:scale-95 disabled:opacity-50 transition-transform uppercase tracking-wider cursor-pointer" 
                 style={{ backgroundColor: themeColors.primary }}
               >
@@ -2673,19 +2712,19 @@ const Caisse = () => {
               </AnimatePresence>
             </button>
             <button onClick={() => setIsHistoryOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><History size={24} /></button>
-            <button onClick={() => openCashDrawer(false)} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Ouvrir le tiroir caisse"><ArchiveRestore size={24} /></button>
+            <button onClick={async () => { if (await requirePermission('tiroir')) { logAction('tiroir'); openCashDrawer(false); } }} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Ouvrir le tiroir caisse"><ArchiveRestore size={24} /></button>
             
             <button onClick={() => setIsCashSessionModalOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Gestion Caisse (Ticket X/Z)"><Calculator size={24} /></button>
             
-            <button onClick={() => setIsStockOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Gérer les stocks"><Package size={24} /></button>
-            <button onClick={() => setIsSettingsOpen(true)} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Settings size={24} /></button>
+            <button onClick={async () => { if (await requirePermission('stocks')) setIsStockOpen(true); }} className={rightBarBtnClass} style={{ color: themeColors.primary }} title="Gérer les stocks"><Package size={24} /></button>
+            <button onClick={async () => { if (await requirePermission('reglages')) setIsSettingsOpen(true); }} className={rightBarBtnClass} style={{ color: themeColors.primary }}><Settings size={24} /></button>
           </div>
           
           <div className="w-full px-2 pb-1 flex flex-col items-center gap-1.5">
             {/* Paiement carte en un geste : tout le montant en « Carte bancaire » */}
             <button
               disabled={cartItemCount === 0 || isProcessing || isSubmittingRef.current}
-              onClick={() => (orderType === 'LIVRAISON' ? setIsDeliveryPayOpen(true) : payWithTerminal('Carte bancaire', 0))}
+              onClick={async () => { if (!(await requirePermission('encaisser'))) return; if (orderType === 'LIVRAISON') setIsDeliveryPayOpen(true); else payWithTerminal('Carte bancaire', 0); }}
               className="w-[56px] h-[56px] mx-auto flex items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm hover:bg-blue-700 active:scale-95 disabled:bg-gray-700/50 disabled:text-gray-500 disabled:cursor-not-allowed transition-all cursor-pointer"
               title="Paiement carte (montant total)"
               aria-label="Paiement carte"
@@ -2852,6 +2891,7 @@ const Caisse = () => {
       )}
 
       <React.Suspense fallback={null}>
+      <PermissionGate />
       {isDashboardOpen && <OrdersDashboardModal onClose={() => setIsDashboardOpen(false)} />}
       {isOrderTrackerOpen && <OrderTrackerModal onClose={() => setIsOrderTrackerOpen(false)} onLoadOrder={handleLoadOrderIntoCart} />}
       {isHistoryOpen && <OrderHistoryModal onClose={() => setIsHistoryOpen(false)} />}

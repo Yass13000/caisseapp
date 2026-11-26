@@ -778,6 +778,11 @@ const OrderHistoryModal = ({ onClose, restaurantName = "VOTRE RESTAURANT" }: Ord
                             <span className="font-bold text-gray-800 text-base truncate">
                               {order.customer_name || ''}
                             </span>
+                            {order.staff_name && (
+                              <span className="shrink-0 px-2 py-0.5 rounded-md bg-gray-100 text-gray-500 text-xs font-bold" title="Encaissé par">
+                                par {order.staff_name}
+                              </span>
+                            )}
                           </div>
                         </td>
                         

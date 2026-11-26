@@ -27,6 +27,8 @@ import { addLoyaltyPointsThreadSafe, getActiveRestoId } from '@/lib/loyaltyPoint
 import { mapOrderItemsForTill, extractOrderItems, orderItemName } from '@/lib/loadedOrderPricing';
 import { PaymentModal } from '@/pages/Caisse';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
+import { requirePermission } from '@/components/PermissionGate';
+import { staffOrderFields, logAction } from '@/lib/staff';
 
 interface OrderTrackerModalProps {
   onClose: () => void;
@@ -282,7 +284,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const toggleExpand = (id: string | number) => setExpandedOrderId(prev => prev === id ? null : id);
 
-  const handleSelectOrder = (order: any) => {
+  const handleSelectOrder = async (order: any) => {
+    if (!(await requirePermission('rouvrir'))) return;
     let items = [];
     try {
       // Calcul commun (aussi vérifié par « npm run verif:encaissement »)
@@ -385,6 +388,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
   /** Livraison réglée au retour du livreur : rien ne part sur le TPE (la carte a été passée sur celui du livreur) */
   const handleSettleDelivery = async (e: React.MouseEvent, order: any, method: 'CB' | 'Espèces') => {
     e.stopPropagation();
+    if (!(await requirePermission('encaisser'))) return;
     const lockKey = String(order.id);
     if (payingOrderIdsRef.current.has(lockKey)) return;
     payingOrderIdsRef.current.add(lockKey);
@@ -405,6 +409,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         payment_method: method === 'CB' ? 'Carte bancaire' : 'Espèces',
         cash_amount: method === 'Espèces' ? total : 0,
         session_id: activeSessionId,
+        ...staffOrderFields(),
       };
       // Jamais deux fois : seulement si elle est encore non payée
       const { data: updated, error } = await supabase
@@ -437,6 +442,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const handleQuickPay = async (e: React.MouseEvent, order: any) => {
     e.stopPropagation();
+    if (!(await requirePermission('encaisser'))) return;
     const lockKey = String(order.id);
     if (payingOrderIdsRef.current.has(lockKey)) return;
     payingOrderIdsRef.current.add(lockKey);
@@ -456,7 +462,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       const updatePayload: any = { 
         is_paid: true,
         payment_status: 'paid',
-        payment_method: 'Carte bancaire'
+        payment_method: 'Carte bancaire',
+        ...staffOrderFields(),
       };
 
       if (activeSessionId) {
@@ -509,8 +516,9 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
     }
   };
 
-  const handleOpenCashPaymentModal = (e: React.MouseEvent, order: any) => {
+  const handleOpenCashPaymentModal = async (e: React.MouseEvent, order: any) => {
     e.stopPropagation();
+    if (!(await requirePermission('encaisser'))) return;
     setPaymentOrder(order);
     setIsPaymentModalOpen(true);
   };
@@ -538,7 +546,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         is_paid: true,
         payment_status: 'paid',
         payment_method: method,
-        cash_amount: cashAmount
+        cash_amount: cashAmount,
+        ...staffOrderFields(),
       };
 
       if (activeSessionId) {
@@ -608,6 +617,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
 
   const handleDeleteOrder = async (e: React.MouseEvent, order: any) => {
     e.stopPropagation();
+    if (!(await requirePermission('annuler'))) return;
     const confirmDelete = window.confirm(`Annuler la commande #${order.order_number || order.id.toString().slice(0, 4)} ?\nElle restera consultable dans l'historique des commandes.`);
     if (!confirmDelete) return;
 
@@ -620,6 +630,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         .eq('id', order.id);
       if (error) throw error;
       toast.success("Commande annulée");
+      logAction('annulation', { orderId: order.id, details: { numero: order.order_number || null, total: order.total_price ?? null } });
       setOrders(prevOrders => prevOrders.filter(o => o.id !== order.id));
     } catch (err: any) {
       console.error("Annulation refusée :", err?.code, err?.message, err?.details);

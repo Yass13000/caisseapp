@@ -9,6 +9,8 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
+import { requirePermission } from '@/components/PermissionGate';
+import { staffSessionFields, logAction } from '@/lib/staff';
 
 interface CashSessionModalProps {
   onClose: (isSuccess?: boolean) => void;
@@ -82,6 +84,28 @@ const CashSessionModal = ({
         .neq('status', 'Annulée');
       // Jamais de Z à 0 € parce que la lecture des ventes a échoué
       if (ordersErr) throw ordersErr;
+
+      // Ventes par profil utilisateur (lecture à part : si elle échoue, le Z reste identique)
+      let staffBreakdown: { name: string; total: number; count: number }[] = [];
+      try {
+        const { data: staffRows, error: staffErr } = await supabase
+          .from('orders')
+          .select('total_price, staff_name')
+          .eq('session_id', sessionId)
+          .eq('is_paid', true)
+          .neq('status', 'Annulée')
+          .not('staff_name', 'is', null);
+        if (!staffErr && staffRows && staffRows.length > 0) {
+          const byName = new Map<string, { name: string; total: number; count: number }>();
+          staffRows.forEach((r: any) => {
+            const cur = byName.get(r.staff_name) || { name: r.staff_name, total: 0, count: 0 };
+            cur.total = round2(cur.total + round2(r.total_price || 0));
+            cur.count += 1;
+            byName.set(r.staff_name, cur);
+          });
+          staffBreakdown = [...byName.values()].sort((a, b) => b.total - a.total);
+        }
+      } catch { /* sans effet sur le Z */ }
 
       // Livraisons encore à régler (payées au livreur, pas encore validées) : rappel avant le Z
       const { data: unpaidDeliveries } = await supabase
@@ -169,7 +193,9 @@ const CashSessionModal = ({
         totalOrders: orders?.length || 0,
         unpaidDeliveries: unpaidDeliveries || [],
         openingFloat: openingFloatVal,
-        expectedCash: expectedCashVal
+        expectedCash: expectedCashVal,
+        staffBreakdown,
+        openedByName: session.opened_by_name || null
       };
 
       setSessionReport(reportObj);
@@ -218,6 +244,7 @@ const CashSessionModal = ({
 
   // 3. Ouverture de Caisse
   const handleOpenSession = async () => {
+    if (!(await requirePermission('caisse'))) return;
     const floatAmount = round2(parseFloat(openingFloatStr));
     if (isNaN(floatAmount) || floatAmount < 0) {
       return toast.error("Montant de fond de caisse invalide");
@@ -235,7 +262,8 @@ const CashSessionModal = ({
           opening_float: floatAmount,
           opening_cash_balance: floatAmount,
           status: 'OPEN',
-          opened_at: new Date().toISOString()
+          opened_at: new Date().toISOString(),
+          ...staffSessionFields('opened')
         }])
         .select('id')
         .single();
@@ -243,6 +271,7 @@ const CashSessionModal = ({
       if (error) throw error;
 
       toast.success("Caisse ouverte avec succès !");
+      logAction('ouverture_caisse', { sessionId: data.id, details: { fond: floatAmount } });
       onSessionOpened(data.id);
       onClose(true);
     } catch (e) {
@@ -292,7 +321,9 @@ const CashSessionModal = ({
         cardSalesApp: report.cardSalesApp,
         expectedCash: report.expectedCash,
         closing_cash_counted: actualCashCounted,
-        difference: discrepancy
+        difference: discrepancy,
+        ...(report.staffBreakdown?.length ? { staffBreakdown: report.staffBreakdown } : {}),
+        ...(report.openedByName ? { opened_by_name: report.openedByName } : {})
       };
 
       // Mise à jour de tous les champs de clôture
@@ -308,11 +339,13 @@ const CashSessionModal = ({
           total_cash: report.totalCash,
           total_card: report.totalCard,
           total_ticket_resto: report.totalTicketResto,
-          z_ticket_snapshot: JSON.stringify(snapshot)
+          z_ticket_snapshot: JSON.stringify(snapshot),
+          ...staffSessionFields('closed')
         })
         .eq('id', currentSessionId);
 
       if (error) throw error;
+      logAction('z', { sessionId: currentSessionId, details: { total: report.totalSales, especes_comptees: actualCashCounted, ecart: discrepancy } });
 
       const finalZPayload = {
         ...report,
@@ -477,9 +510,34 @@ const CashSessionModal = ({
                   <div className="text-2xl font-bold text-slate-700">{sessionReport.openingFloat.toFixed(2)} €</div>
                   <div className="text-[10px] text-slate-500 mt-1">
                     {new Date(sessionReport.openedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                    {sessionReport.openedByName ? ` · ${sessionReport.openedByName}` : ''}
                   </div>
                 </div>
               </div>
+
+              {/* Ventes par profil utilisateur (seulement si des profils ont encaissé) */}
+              {sessionReport.staffBreakdown?.length > 0 && (
+                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+                  <span className="text-slate-400 font-medium text-[11px] block mb-2">Ventes par utilisateur</span>
+                  <div className="flex flex-wrap gap-2">
+                    {sessionReport.staffBreakdown.map((st: any) => (
+                      <div key={st.name} className="px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
+                        <div className="text-xs font-semibold text-slate-700">{st.name}</div>
+                        <div className="text-sm font-bold text-slate-900">{Number(st.total).toFixed(2)} € <span className="text-[10px] font-medium text-slate-500">({st.count})</span></div>
+                      </div>
+                    ))}
+                    {(() => {
+                      const rest = Math.round((sessionReport.totalSales - sessionReport.staffBreakdown.reduce((t: number, st: any) => t + st.total, 0)) * 100) / 100;
+                      return rest > 0.004 ? (
+                        <div className="px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
+                          <div className="text-xs font-semibold text-slate-500">Sans profil (Standard, borne, appli…)</div>
+                          <div className="text-sm font-bold text-slate-700">{rest.toFixed(2)} €</div>
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
+                </div>
+              )}
 
               {/* Action Ticket X (Provisoire) */}
               <div className="bg-white px-5 py-3.5 rounded-xl border border-slate-200 flex items-center justify-between shadow-xs">
@@ -491,7 +549,7 @@ const CashSessionModal = ({
                 </div>
                 <button
                   type="button"
-                  onClick={() => printReportTicket({ ...sessionReport, type: 'X' })}
+                  onClick={async () => { if (await requirePermission('caisse')) printReportTicket({ ...sessionReport, type: 'X' }); }}
                   className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
                 >
                   <Printer size={13} />
@@ -566,7 +624,7 @@ const CashSessionModal = ({
                 {!isClosingConfirm ? (
                   <button
                     type="button"
-                    onClick={() => setIsClosingConfirm(true)}
+                    onClick={async () => { if (await requirePermission('z')) setIsClosingConfirm(true); }}
                     className="w-full py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs uppercase tracking-wider transition-all active:scale-95 shadow-sm flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <Lock size={15} />
