@@ -44,8 +44,6 @@ export interface StaffProfile {
   id: string;
   first_name: string;
   role: string;
-  pin_salt: string;
-  pin_hash: string;
   permissions: Permissions;
   color: string | null;
   active: boolean;
@@ -170,17 +168,74 @@ const toCurrentUser = (p: StaffProfile): CurrentUser => ({
   id: p.id, name: p.first_name, role: p.role, isStandard: false, permissions: p.permissions || {},
 });
 
+// Codes personnels : vérifiés par le serveur (jamais d'empreinte téléchargée).
+// Hors ligne : seuls les profils déjà connectés une fois sur CET appareil sont reconnus,
+// grâce à une empreinte propre à l'appareil gardée en local.
+const OFFLINE_KEY = 'pos_staff_offline';
+const DEVICE_SALT_KEY = 'pos_staff_device_salt';
+
+const deviceSalt = (): string => {
+  try {
+    let v = localStorage.getItem(DEVICE_SALT_KEY);
+    if (!v) { v = newSalt(); localStorage.setItem(DEVICE_SALT_KEY, v); }
+    return v;
+  } catch {
+    return 'appareil';
+  }
+};
+const offlineHash = (id: string, pin: string) => sha256Hex(`${deviceSalt()}:${id}:${pin}`);
+const readOffline = (restaurantId: string): Record<string, string> => {
+  try {
+    const v = JSON.parse(localStorage.getItem(OFFLINE_KEY) || '{}');
+    return (v && v[restaurantId]) || {};
+  } catch {
+    return {};
+  }
+};
+const rememberOffline = (restaurantId: string, id: string, pin: string) => {
+  try {
+    const all = JSON.parse(localStorage.getItem(OFFLINE_KEY) || '{}') || {};
+    all[restaurantId] = { ...(all[restaurantId] || {}), [id]: offlineHash(id, pin) };
+    localStorage.setItem(OFFLINE_KEY, JSON.stringify(all));
+  } catch { /* sans effet */ }
+};
+
 /**
- * Trouve à qui appartient un code. Le code d'accès de la caisse (profil Standard)
- * est essayé en premier, sauf s'il a été supprimé. Renvoie null si code inconnu.
+ * Reconnaissance immédiate, sans réseau : code d'accès de la caisse (profil Standard,
+ * sauf s'il a été supprimé), puis profils déjà connectés sur cet appareil. Null sinon.
  */
 export const resolvePin = (pin: string, masterPin: string, restaurantId: string | null | undefined): CurrentUser | null => {
   const cache = readStaffCache(restaurantId);
   if (!cache?.masterCodeDisabled && pin === String(masterPin)) return STANDARD_USER;
+  if (!restaurantId) return null;
+  const known = readOffline(restaurantId);
   for (const p of cache?.staff || []) {
-    if (p.active && p.pin_salt && p.pin_hash && hashPin(p.pin_salt, pin) === p.pin_hash) return toCurrentUser(p);
+    if (p.active && known[p.id] && known[p.id] === offlineHash(p.id, pin)) return toCurrentUser(p);
   }
   return null;
+};
+
+/** Ce code est-il celui d'un profil déjà connecté sur cet appareil ? (contrôle local, sans réseau) */
+export const isPinKnownLocally = (pin: string, restaurantId: string | null | undefined): boolean => {
+  if (!restaurantId) return false;
+  const known = readOffline(restaurantId);
+  return Object.keys(known).some(id => known[id] === offlineHash(id, pin));
+};
+
+/** Vérification par le serveur (limite d'essais côté serveur). Renvoie le profil, null si code inconnu. */
+export const loginStaffOnline = async (
+  pin: string, restaurantId: string | null | undefined
+): Promise<{ user: CurrentUser | null; error?: string }> => {
+  if (!restaurantId) return { user: null };
+  try {
+    const { data, error } = await supabase.rpc('pos_staff_login', { p_restaurant_id: restaurantId, p_pin: pin });
+    if (error) return { user: null, error: error.code === 'PGRST202' ? undefined : error.message };
+    if (!data || !data.id) return { user: null };
+    rememberOffline(restaurantId, data.id, pin);
+    return { user: toCurrentUser(data as StaffProfile) };
+  } catch {
+    return { user: null };
+  }
 };
 
 // ── Utilisateur connecté ─────────────────────────────────────────────────────
@@ -188,11 +243,16 @@ export const resolvePin = (pin: string, masterPin: string, restaurantId: string 
 let current: CurrentUser | null = null;
 const listeners = new Set<() => void>();
 
+let currentManagerPin: string | null = null;
+
 export const getCurrentUser = () => current;
-export const setCurrentUser = (u: CurrentUser | null) => {
+/** pin : gardé en mémoire (jamais enregistré) si le profil peut « Gérer les profils », pour valider ses changements */
+export const setCurrentUser = (u: CurrentUser | null, pin?: string) => {
   current = u;
+  currentManagerPin = u && !u.isStandard && u.permissions?.profils && pin ? pin : null;
   listeners.forEach(l => l());
 };
+export const getCurrentManagerPin = () => currentManagerPin;
 
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
 export const useCurrentUser = () => useSyncExternalStore(subscribe, getCurrentUser, getCurrentUser);
@@ -210,12 +270,6 @@ const rpcError = (error: any, fallback: string) =>
     ? "Profils pas encore installés dans Supabase (docs/utilisateurs-caisse.sql)"
     : (String(error?.message || '') || fallback));
 
-/** Le code est-il déjà pris par un profil actif (autre que exceptId) ? */
-export const isPinTakenByStaff = (pin: string, restaurantId: string | null | undefined, exceptId?: string | null): boolean => {
-  const cache = readStaffCache(restaurantId);
-  return (cache?.staff || []).some(p => p.active && p.id !== exceptId && p.pin_salt && hashPin(p.pin_salt, pin) === p.pin_hash);
-};
-
 export interface StaffDraft {
   id: string | null;
   first_name: string;
@@ -223,11 +277,11 @@ export interface StaffDraft {
   permissions: Permissions;
   active: boolean;
   pin?: string | null;          // null / vide = code inchangé (modification)
+  managerPin?: string | null;   // code d'un profil « Gérer les profils » (exigé par le serveur dès qu'il en existe un)
 }
 
 /** Crée ou modifie un profil, puis recharge la liste. Lève une erreur lisible en cas de refus. */
 export const saveStaff = async (restaurantId: string, draft: StaffDraft): Promise<StaffState | null> => {
-  const salt = draft.pin ? newSalt() : null;
   const { error } = await supabase.rpc('pos_staff_save', {
     p_restaurant_id: restaurantId,
     p_id: draft.id,
@@ -236,8 +290,8 @@ export const saveStaff = async (restaurantId: string, draft: StaffDraft): Promis
     p_permissions: draft.permissions,
     p_color: null,
     p_active: draft.active,
-    p_pin_salt: salt,
-    p_pin_hash: salt && draft.pin ? hashPin(salt, draft.pin) : null,
+    p_pin: draft.pin || null,
+    p_manager_pin: draft.managerPin || null,
   });
   if (error) throw rpcError(error, "Enregistrement impossible");
   const state = await refreshStaff(restaurantId);
@@ -249,8 +303,10 @@ export const saveStaff = async (restaurantId: string, draft: StaffDraft): Promis
 };
 
 /** Supprime (true) ou réactive (false) le profil Standard (code d'accès des caisses). */
-export const setMasterCodeDisabled = async (restaurantId: string, disabled: boolean): Promise<StaffState | null> => {
-  const { error } = await supabase.rpc('pos_set_master_code_disabled', { p_restaurant_id: restaurantId, p_disabled: disabled });
+export const setMasterCodeDisabled = async (restaurantId: string, disabled: boolean, managerPin?: string | null): Promise<StaffState | null> => {
+  const { error } = await supabase.rpc('pos_set_master_code_disabled', {
+    p_restaurant_id: restaurantId, p_disabled: disabled, p_manager_pin: managerPin || null,
+  });
   if (error) throw rpcError(error, "Modification impossible");
   return refreshStaff(restaurantId);
 };

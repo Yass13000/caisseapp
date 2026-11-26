@@ -23,6 +23,17 @@ let mainWindow;
 
 const APP_URL = process.env.VITE_APP_URL || 'https://caisseapp.vercel.app/#/caisse';
 const ALLOWED_ORIGIN = 'https://caisseapp.vercel.app';
+// Adresse de confiance : comparaison exacte de l'origine (un simple « commence par »
+// acceptait aussi https://caisseapp.vercel.app.site-pirate.com). localhost : développement seulement.
+const isTrustedUrl = (url) => {
+  try {
+    const u = new URL(url);
+    if (u.origin === ALLOWED_ORIGIN) return true;
+    return process.env.NODE_ENV === 'development' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
+  } catch {
+    return false;
+  }
+};
 
 let retryDelayMs = 3000;
 const MAX_RETRY_DELAY_MS = 30000;
@@ -78,13 +89,17 @@ function createWindow() {
 
   // Restreindre la navigation au domaine de confiance uniquement (Sécurité POS Kiosque)
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(ALLOWED_ORIGIN) && !url.startsWith('http://localhost')) {
+    if (!isTrustedUrl(url)) {
       event.preventDefault();
     }
   });
 
+  mainWindow.webContents.on('will-redirect', (event, url) => {
+    if (!isTrustedUrl(url)) event.preventDefault();
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(ALLOWED_ORIGIN) && !url.startsWith('http://localhost')) {
+    if (!isTrustedUrl(url)) {
       return { action: 'deny' };
     }
     return { action: 'allow' };
@@ -524,7 +539,7 @@ function createCustomerWindow(display) {
   });
 
   win.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(ALLOWED_ORIGIN) && !url.startsWith('http://localhost')) event.preventDefault();
+    if (!isTrustedUrl(url)) event.preventDefault();
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 

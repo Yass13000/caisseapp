@@ -5,7 +5,7 @@ import { Plus, Pencil, ShieldCheck, ShieldOff, Save, X, UserRound, Loader2, Rota
 import { getActiveRestaurantId } from '@/lib/supabaseClient';
 import {
   PERMISSIONS, ROLE_PRESETS, type Permissions, type StaffProfile, type StaffState,
-  readStaffCache, refreshStaff, saveStaff, setMasterCodeDisabled, isPinTakenByStaff, hashPin,
+  readStaffCache, refreshStaff, saveStaff, setMasterCodeDisabled, getCurrentManagerPin,
   fetchAuditLog, AUDIT_LABELS, type AuditEntry,
 } from '@/lib/staff';
 
@@ -116,7 +116,9 @@ const StaffSettings: React.FC<Props> = ({ masterPin, onChange }) => {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [managerPin, setManagerPin] = useState('');
+  // Code d'un profil « Gérer les profils » : exigé par le serveur dès qu'il en existe un
+  // (pré-rempli si la personne connectée est elle-même gérante)
+  const [managerPin, setManagerPin] = useState(() => getCurrentManagerPin() || '');
 
   useEffect(() => {
     let alive = true;
@@ -146,13 +148,13 @@ const StaffSettings: React.FC<Props> = ({ masterPin, onChange }) => {
       if (!/^\d{4}$/.test(draft.pin)) return toast.error("Le code doit faire 4 chiffres");
       if (draft.pin !== draft.pin2) return toast.error("Les deux codes ne correspondent pas");
       if (draft.pin === String(masterPin)) return toast.error("Ce code est celui du profil Standard : choisissez-en un autre");
-      if (isPinTakenByStaff(draft.pin, restaurantId, draft.id)) return toast.error("Ce code est déjà utilisé par un autre profil");
     }
+    if (managers.length > 0 && !/^\d{4}$/.test(managerPin)) return toast.error("Tapez le code d'un profil qui peut « Gérer les profils » pour valider");
     setSaving(true);
     try {
       const s = await saveStaff(restaurantId, {
         id: draft.id, first_name: draft.first_name, role, permissions: draft.permissions,
-        active: draft.active, pin: draft.pin || null,
+        active: draft.active, pin: draft.pin || null, managerPin: managerPin || null,
       });
       setState(s);
       onChange?.();
@@ -168,14 +170,12 @@ const StaffSettings: React.FC<Props> = ({ masterPin, onChange }) => {
   // ── Profil Standard ──
   const handleDeleteStandard = async () => {
     if (!restaurantId) return;
-    const ok = managers.some(p => hashPin(p.pin_salt, managerPin) === p.pin_hash);
-    if (!ok) return toast.error("Code incorrect : tapez le code d'un profil qui peut « Gérer les profils »");
     setSaving(true);
     try {
-      setState(await setMasterCodeDisabled(restaurantId, true));
+      // Code du gérant vérifié par le serveur
+      setState(await setMasterCodeDisabled(restaurantId, true, managerPin));
       onChange?.();
       setConfirmDelete(false);
-      setManagerPin('');
       toast.success("Profil Standard supprimé : le code d'accès des caisses ne fonctionne plus");
     } catch (e: any) {
       toast.error(e?.message || "Suppression impossible");
@@ -188,7 +188,11 @@ const StaffSettings: React.FC<Props> = ({ masterPin, onChange }) => {
     if (!restaurantId) return;
     setSaving(true);
     try {
-      setState(await setMasterCodeDisabled(restaurantId, false));
+      if (!/^\d{4}$/.test(managerPin)) {
+        toast.error("Tapez le code d'un profil qui peut « Gérer les profils » pour valider");
+        return;
+      }
+      setState(await setMasterCodeDisabled(restaurantId, false, managerPin));
       onChange?.();
       toast.success("Profil Standard réactivé");
     } catch (e: any) {
@@ -253,6 +257,14 @@ const StaffSettings: React.FC<Props> = ({ masterPin, onChange }) => {
             </div>
           </div>
 
+          {managers.length > 0 && (
+            <div className="pt-6 border-t border-gray-100">
+              <label className={labelClass}>Code d'un gérant pour valider</label>
+              <input type="password" inputMode="numeric" maxLength={4} className={pinInputClass} value={managerPin} onChange={e => setManagerPin(e.target.value.replace(/\D/g, ''))} placeholder="••••" />
+              <p className="text-xs font-bold text-gray-400 mt-2">Code d'un profil qui peut « Gérer les profils » (vérifié par le serveur).</p>
+            </div>
+          )}
+
           {!isNew && (
             <label className="flex items-center gap-3 pt-6 border-t border-gray-100 font-bold text-secondary cursor-pointer">
               <input type="checkbox" className="w-6 h-6 accent-primary" checked={draft.active} onChange={e => setDraft({ ...draft, active: e.target.checked })} />
@@ -289,9 +301,14 @@ const StaffSettings: React.FC<Props> = ({ masterPin, onChange }) => {
             </div>
           </div>
           {masterDisabled ? (
-            <button onClick={handleRestoreStandard} disabled={saving} className="px-5 py-3 rounded-xl bg-gray-100 text-secondary font-black uppercase text-sm flex items-center gap-2 hover:bg-gray-200 disabled:opacity-50 cursor-pointer">
-              <RotateCcw size={18} /> Réactiver
-            </button>
+            <div className="flex items-center gap-2">
+              <input type="password" inputMode="numeric" maxLength={4} aria-label="Code d'un gérant"
+                className="w-28 bg-gray-50 border-2 border-gray-200 rounded-xl px-3 py-2 text-lg font-black tracking-[0.5em] focus:outline-none focus:border-primary"
+                value={managerPin} onChange={e => setManagerPin(e.target.value.replace(/\D/g, ''))} placeholder="Code" />
+              <button onClick={handleRestoreStandard} disabled={saving || managerPin.length !== 4} className="px-5 py-3 rounded-xl bg-gray-100 text-secondary font-black uppercase text-sm flex items-center gap-2 hover:bg-gray-200 disabled:opacity-50 cursor-pointer">
+                <RotateCcw size={18} /> Réactiver
+              </button>
+            </div>
           ) : (
             <button onClick={() => setConfirmDelete(v => !v)} disabled={managers.length === 0}
               title={managers.length === 0 ? "Créez d'abord un profil actif avec « Gérer les profils »" : undefined}
@@ -309,7 +326,7 @@ const StaffSettings: React.FC<Props> = ({ masterPin, onChange }) => {
             <div className="flex items-center gap-3">
               <input type="password" inputMode="numeric" maxLength={4} className={pinInputClass} value={managerPin} onChange={e => setManagerPin(e.target.value.replace(/\D/g, ''))} placeholder="••••" />
               <button onClick={handleDeleteStandard} disabled={saving || managerPin.length !== 4} className="px-6 py-4 bg-red-600 text-white rounded-xl font-black uppercase hover:bg-red-700 disabled:opacity-50 cursor-pointer">Confirmer</button>
-              <button onClick={() => { setConfirmDelete(false); setManagerPin(''); }} className="px-6 py-4 bg-white border border-gray-200 text-gray-600 rounded-xl font-black uppercase cursor-pointer">Annuler</button>
+              <button onClick={() => setConfirmDelete(false)} className="px-6 py-4 bg-white border border-gray-200 text-gray-600 rounded-xl font-black uppercase cursor-pointer">Annuler</button>
             </div>
           </div>
         )}

@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom';
 import { Delete, ShieldAlert, X } from 'lucide-react';
 import { getActiveRestaurantId } from '@/lib/supabaseClient';
 import {
-  can, getCurrentUser, getMasterPin, logAction, permissionLabel, resolvePin,
+  can, getCurrentUser, getMasterPin, logAction, loginStaffOnline, permissionLabel, resolvePin,
   type CurrentUser, type PermissionKey,
 } from '@/lib/staff';
 
@@ -53,16 +53,30 @@ const PermissionGate: React.FC = () => {
 
   useEffect(() => {
     if (!req || pin.length !== 4) return;
-    const user = resolvePin(pin, getMasterPin(), getActiveRestaurantId());
-    if (user && (user.isStandard || user.permissions?.[req.perm] === true)) {
-      lastApproval = { perm: req.perm, by: user, at: Date.now() };
-      logAction('autorisation', { details: { droit: permissionLabel(req.perm) }, approvedBy: user });
-      finish(true);
-    } else {
-      setError(true);
-      const t = setTimeout(() => { setPin(''); setError(false); }, 500);
-      return () => clearTimeout(t);
-    }
+    let cancelled = false;
+    let resetTimer: ReturnType<typeof setTimeout> | null = null;
+    (async () => {
+      const restaurantId = getActiveRestaurantId();
+      // Sans réseau d'abord (code d'accès, profils déjà connectés ici), puis vérification serveur
+      let user = resolvePin(pin, getMasterPin(), restaurantId);
+      if (!user && navigator.onLine) {
+        const res = await Promise.race([
+          loginStaffOnline(pin, restaurantId),
+          new Promise<{ user: null }>(r => setTimeout(() => r({ user: null }), 3000)),
+        ]);
+        user = res.user;
+      }
+      if (cancelled) return;
+      if (user && (user.isStandard || user.permissions?.[req.perm] === true)) {
+        lastApproval = { perm: req.perm, by: user, at: Date.now() };
+        logAction('autorisation', { details: { droit: permissionLabel(req.perm) }, approvedBy: user });
+        finish(true);
+      } else {
+        setError(true);
+        resetTimer = setTimeout(() => { setPin(''); setError(false); }, 500);
+      }
+    })();
+    return () => { cancelled = true; if (resetTimer) clearTimeout(resetTimer); };
   }, [pin, req]);
 
   if (!req) return null;

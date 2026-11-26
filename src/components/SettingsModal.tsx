@@ -10,7 +10,7 @@ import CustomerDisplaySettings from '@/components/CustomerDisplaySettings';
 import SumUpSoloSettings from '@/components/SumUpSoloSettings';
 import TicketPrinterCard, { hasAutoPrinter, PrinterCardsBoundary } from '@/components/TicketPrinterCard';
 import StaffSettings from '@/components/StaffSettings';
-import { can, isPinTakenByStaff, readStaffCache } from '@/lib/staff';
+import { can, isPinKnownLocally, readStaffCache } from '@/lib/staff';
 import { getActiveRestaurantId } from '@/lib/supabaseClient';
 
 interface SettingsModalProps {
@@ -196,7 +196,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     if (currentPin !== savedPin) return toast.error("Le code actuel est incorrect");
     if (newPin.length !== 4) return toast.error("Le nouveau code doit faire 4 chiffres");
     if (newPin !== confirmPin) return toast.error("Les nouveaux codes ne correspondent pas");
-    if (isPinTakenByStaff(newPin, getActiveRestaurantId())) return toast.error("Ce code est déjà celui d'un profil utilisateur");
+    if (isPinKnownLocally(newPin, getActiveRestaurantId())) return toast.error("Ce code est déjà celui d'un profil utilisateur");
 
     setSecureSetting('pos_pin', newPin);
     toast.success("Code PIN modifié !");

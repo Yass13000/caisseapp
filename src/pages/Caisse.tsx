@@ -46,7 +46,7 @@ import { buildLoadedCartItem, normalizeLinesForSave, tillLineTotal, extractRealP
 import { publishCustomerCart, publishCustomerPayment, showCustomerThanks } from '@/lib/customerDisplay';
 import { isCategoryOpen, categoryScheduleLabel, hasCategorySchedule } from '@/lib/categorySchedule';
 import { TapToPayIcon, publicAsset } from '@/components/MaskIcon';
-import { refreshStaff, readStaffCache, resolvePin, setCurrentUser, useCurrentUser, staffOrderFields, logAction } from '@/lib/staff';
+import { refreshStaff, resolvePin, loginStaffOnline, setCurrentUser, useCurrentUser, staffOrderFields, logAction } from '@/lib/staff';
 import PermissionGate, { requirePermission } from '@/components/PermissionGate';
 
 export interface Product {
@@ -1202,20 +1202,23 @@ const Caisse = () => {
     let cancelled = false;
     const masterPin = getSecureSetting('pos_pin', '1234');
     (async () => {
+      // 1. Sans réseau : code d'accès de la caisse, ou profil déjà connecté sur cet appareil
       let user = resolvePin(pinCode, masterPin, posRestoId);
-      // Code inconnu : un profil vient peut-être d'être créé sur une autre caisse.
-      // Seulement si des profils existent déjà ou si la liste date de plus de 30 s,
-      // et jamais plus de 3 s d'attente (sinon « Code incorrect » comme avant).
-      const cache = readStaffCache(posRestoId);
-      const stale = !cache || Date.now() - (cache.fetchedAt || 0) > 30000;
-      if (!user && navigator.onLine && posRestoId && (stale || (cache?.staff.length ?? 0) > 0)) {
-        await Promise.race([refreshStaff(posRestoId), new Promise(r => setTimeout(r, 3000))]);
+      let serverError: string | undefined;
+      // 2. Sinon, code personnel vérifié par le serveur (jamais plus de 3 s d'attente :
+      //    au-delà, « Code incorrect » comme avant)
+      if (!user && navigator.onLine && posRestoId) {
+        const res = await Promise.race([
+          loginStaffOnline(pinCode, posRestoId),
+          new Promise<{ user: null }>(r => setTimeout(() => r({ user: null }), 3000)),
+        ]);
         if (cancelled) return;
-        user = resolvePin(pinCode, masterPin, posRestoId);
+        user = res.user;
+        serverError = (res as { error?: string }).error;
       }
       if (cancelled) return;
       if (user) {
-        setCurrentUser(user);
+        setCurrentUser(user, pinCode);
         setIsAuthenticated(true);
         setPinCode("");
 
@@ -1230,7 +1233,7 @@ const Caisse = () => {
 
         customToast(user.isStandard ? "Caisse déverrouillée" : `Bonjour ${user.name}`, "success", { duration: 800 });
       } else {
-        customToast("Code incorrect", "error");
+        customToast(serverError || "Code incorrect", "error");
         setTimeout(() => setPinCode(""), 300);
       }
     })();
