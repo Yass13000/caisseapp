@@ -788,9 +788,9 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
       <div className="bg-[#F3F4F6] w-[1200px] h-[750px] max-w-[95vw] max-h-[95vh] rounded-[1.5rem] shadow-2xl flex flex-col overflow-hidden border border-white/20">
         
         {/* EN-TÊTE : Titre et Filtres */}
-        <div className="bg-white border-b border-gray-200 p-6 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-6">
-            <h2 className="text-2xl font-black text-secondary uppercase tracking-tight">Suivi Commandes</h2>
+        <div className="bg-white border-b border-gray-200 p-4 lg:p-6 flex items-start justify-between gap-3 flex-shrink-0">
+          <div className="flex items-center gap-3 lg:gap-6 flex-wrap min-w-0">
+            <h2 className="text-xl lg:text-2xl font-black text-secondary uppercase tracking-tight whitespace-nowrap">Suivi Commandes</h2>
 
             <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl border border-gray-200">
               {([
@@ -800,7 +800,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                 <button
                   key={key}
                   onClick={() => { setView(key); setExpandedOrderId(null); }}
-                  className={`h-10 px-4 rounded-lg font-black text-sm uppercase tracking-wide flex items-center gap-2 transition active:scale-95 ${view === key ? 'bg-white text-secondary shadow-sm' : 'text-gray-500 hover:text-secondary'}`}
+                  className={`h-10 px-3 lg:px-4 rounded-lg font-black text-sm uppercase tracking-wide whitespace-nowrap flex items-center gap-2 transition active:scale-95 ${view === key ? 'bg-white text-secondary shadow-sm' : 'text-gray-500 hover:text-secondary'}`}
                 >
                   <Icon size={16} /> {label}
                   <span className={`min-w-6 h-6 px-1.5 rounded-full text-xs flex items-center justify-center ${count > 0 ? (key === 'livraisons' ? 'bg-purple-600 text-white' : 'bg-red-600 text-white') : 'bg-gray-200 text-gray-500'}`}>{count}</span>
@@ -815,7 +815,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                   <ChevronLeft className="w-5 h-5" />
                 </button>
                 
-                <div className="flex items-center gap-2 px-4 justify-center min-w-[160px]">
+                <div className="flex items-center gap-2 px-3 justify-center min-w-[140px] whitespace-nowrap">
                   <Calendar className="text-primary w-5 h-5" />
                   <span className="font-bold text-secondary text-base capitalize">
                     {getFormattedDateLabel()}
@@ -827,14 +827,14 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                 </button>
               </div>
 
-              <button onClick={() => setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc')} className="flex items-center gap-2 px-4 py-2 bg-white hover:bg-gray-100 border border-gray-200 text-secondary rounded-lg font-bold text-sm active:scale-95 transition-all shadow-sm h-full">
+              <button onClick={() => setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc')} className="flex items-center gap-2 px-3 py-2 bg-white hover:bg-gray-100 border border-gray-200 text-secondary rounded-lg font-bold text-sm whitespace-nowrap active:scale-95 transition-all shadow-sm h-full">
                 <Clock className={`w-5 h-5 ${sortOrder === 'desc' ? 'text-primary' : 'text-gray-400'}`} />
                 {sortOrder === 'desc' ? 'Plus récents' : 'Plus anciens'}
               </button>
             </div>
           </div>
 
-          <button onClick={onClose} className="w-10 h-10 bg-red-100 text-red-600 rounded-lg flex items-center justify-center font-black hover:bg-red-200 active:scale-90 transition-all">
+          <button onClick={onClose} aria-label="Fermer" className="w-10 h-10 shrink-0 bg-red-100 text-red-600 rounded-lg flex items-center justify-center font-black hover:bg-red-200 active:scale-90 transition-all">
             <X size={24} />
           </button>
         </div>
@@ -861,8 +861,8 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                     <th className="p-4 w-[100px]">Heure</th>
                     <th className="p-4 w-[120px]">N° Cmd</th>
                     <th className="p-4">Client / Origine</th>
-                    <th className="p-4 text-right w-[100px]">Total</th>
-                    <th className="p-4 w-[300px] text-center">Actions</th>
+                    <th className="p-4 text-right w-[110px] whitespace-nowrap">Total</th>
+                    <th className="p-4 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -928,10 +928,11 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                               );
                             })()}
                           </td>
-                          <td className="p-4 text-right font-black text-lg text-secondary">
+                          <td className="p-4 text-right font-black text-lg text-secondary whitespace-nowrap">
                             {order.total_price.toFixed(2)} €
                           </td>
-                          <td className="p-4 flex items-center justify-end gap-2">
+                          <td className="p-4 align-middle">
+                          <div className="flex flex-wrap items-center justify-end gap-2">
                             <button onClick={(e) => handleDeleteOrder(e, order)} className="w-10 h-10 flex items-center justify-center bg-red-100 text-red-600 rounded-lg hover:bg-red-200 active:scale-95 transition-all shadow-sm flex-shrink-0" title="Supprimer la commande">
                               <Trash2 size={18} />
                             </button>
@@ -970,6 +971,7 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
                                 </button>
                               </>
                             )}
+                          </div>
                           </td>
                         </tr>
                         {expandedOrderId === order.id && (
