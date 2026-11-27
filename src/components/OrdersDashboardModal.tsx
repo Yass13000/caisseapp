@@ -26,6 +26,7 @@ import {
   Info,
   Printer,
   ChefHat,
+  Settings,
   AlertTriangle
 } from 'lucide-react';
 import { supabase, RESTAURANT_ID, getActiveRestaurantId } from '@/lib/supabaseClient';
@@ -159,6 +160,9 @@ const FitHeader = ({ className, onClick, children }: { className: string; onClic
   );
 };
 
+const COLS_STORAGE_KEY = 'dashboard_colonnes';
+const COLS_MAX = 8;
+
 const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -195,8 +199,28 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
   const [colCount, setColCount] = useState(4);
 
+  // Nombre de colonnes choisi avec la roue dentée (mémorisé sur cet appareil).
+  // 'auto' = comportement d'origine selon la largeur de l'écran.
+  const [colPref, setColPref] = useState<'auto' | number>(() => {
+    try {
+      const v = parseInt(localStorage.getItem(COLS_STORAGE_KEY) || '', 10);
+      return v >= 1 && v <= COLS_MAX ? v : 'auto';
+    } catch { return 'auto'; }
+  });
+  const [isColMenuOpen, setIsColMenuOpen] = useState(false);
+
+  const chooseCols = (value: 'auto' | number) => {
+    setColPref(value);
+    setIsColMenuOpen(false);
+    try {
+      if (value === 'auto') localStorage.removeItem(COLS_STORAGE_KEY);
+      else localStorage.setItem(COLS_STORAGE_KEY, String(value));
+    } catch {}
+  };
+
   useEffect(() => {
     const updateColCount = () => {
+      if (colPref !== 'auto') { setColCount(colPref); return; }
       const w = window.innerWidth;
       // Largeur des cartes d'origine (nombre de colonnes selon l'écran)
       if (w >= 1600) setColCount(6);
@@ -209,7 +233,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
     updateColCount();
     window.addEventListener('resize', updateColCount);
     return () => window.removeEventListener('resize', updateColCount);
-  }, []);
+  }, [colPref]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 10000);
@@ -741,7 +765,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                                 }`}
                               >
                                 <span>{qty}x</span> 
-                                <span className="truncate">{prodName}</span>
+                                <span className="min-w-0 break-words [overflow-wrap:anywhere]">{prodName}</span>
                               </div>
 
                               {optionGroups.length > 0 && (
@@ -806,7 +830,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
                     {/* PIED DU TICKET */}
                     <div className={`flex flex-col z-10 flex-shrink-0 ${getStatusFooterStyles(order.status)}`}>
-                      <div className="px-2 py-1.5 truncate text-[11px] font-black uppercase text-white min-w-0 leading-tight">
+                      <div className="px-2 py-1.5 break-words [overflow-wrap:anywhere] text-[11px] font-black uppercase text-white min-w-0 leading-tight">
                         {customerName} <span className="opacity-70">•</span> {order.total_price?.toFixed(2)} €
                       </div>
 
@@ -912,6 +936,47 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
               >
                 <X size={12} />
               </button>
+            )}
+          </div>
+
+          {/* Roue dentée : nombre de cartes par ligne */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsColMenuOpen(o => !o)}
+              className={`h-9 w-9 flex items-center justify-center rounded-none transition-all active:scale-95 ${isColMenuOpen ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'}`}
+              title="Nombre de cartes par ligne"
+              aria-label="Nombre de cartes par ligne"
+            >
+              <Settings size={18} />
+            </button>
+            {isColMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setIsColMenuOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 z-50 w-64 max-w-[calc(100vw-16px)] bg-slate-900 border-2 border-slate-700 shadow-xl p-3">
+                  <p className="text-[11px] font-black uppercase tracking-wider text-slate-300 mb-2">Cartes par ligne</p>
+                  <button
+                    type="button"
+                    onClick={() => chooseCols('auto')}
+                    className={`w-full h-11 mb-2 font-black text-xs uppercase transition-all active:scale-95 ${colPref === 'auto' ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'}`}
+                  >
+                    Automatique (selon l'écran)
+                  </button>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {Array.from({ length: COLS_MAX }, (_, i) => i + 1).map(n => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => chooseCols(n)}
+                        className={`h-11 font-black text-lg tabular-nums transition-all active:scale-95 ${colPref === n ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'}`}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-2 leading-snug">Réglage gardé sur cet appareil. Le contenu des cartes s'adapte toujours à la place.</p>
+                </div>
+              </>
             )}
           </div>
 
