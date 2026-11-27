@@ -644,7 +644,6 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                 const isCollapsed = isClosed && !inFocus && !expandedClosedIds[order.id];
 
                 const typeInfo = getOrderTypeDetails(order);
-                const TypeIcon = typeInfo.Icon;
                 const nextStatusAction = getNextStatusAction(order.status);
 
                 const orderNum = (order.order_number && String(order.order_number).toLowerCase() !== 'nan' && String(order.order_number).trim() !== '')
@@ -671,7 +670,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                           className={`min-h-[44px] ${f.px} flex items-center ${f.gap} ${f.num} font-black text-white leading-none cursor-pointer tracking-tight whitespace-nowrap shrink-0 active:bg-white/20`}
                           title={`${typeInfo.label} — toucher pour ${inFocus ? 'fermer' : 'voir la commande en grand'}`}
                         >
-                          <TypeIcon size={f.type} className="opacity-80 shrink-0" aria-label={typeInfo.label} />
+                          <span className="sr-only">{typeInfo.label} </span>
                           {orderNum}
                         </h3>
                         {!isPaid && (

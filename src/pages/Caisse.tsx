@@ -2702,16 +2702,17 @@ const Caisse = () => {
                     animate={{ scale: 1 }}
                     exit={{ scale: 0 }}
                     transition={{ type: 'spring', stiffness: 500, damping: 18 }}
-                    className="pointer-events-none absolute -right-1.5 -top-1.5 flex h-6 min-w-6 items-center justify-center"
+                    className="pointer-events-none absolute right-1 top-1 flex h-5 min-w-5 items-center justify-center"
                   >
                     {/* Quelques pulsations à chaque nouveau montant, puis l'animation s'arrête (pas d'animation 24h/24) */}
-                    <span key={`ping-${pendingPaymentCount}`} className="absolute inset-0 animate-ping rounded-full bg-red-500 opacity-60" style={{ animationIterationCount: 4 }} />
+                    <span key={`ping-${pendingPaymentCount}`} className="absolute inset-0 animate-ping rounded-full bg-red-500 opacity-40" style={{ animationIterationCount: 3 }} />
                     <motion.span
                       key={pendingPaymentCount}
                       initial={{ scale: 1.5 }}
                       animate={{ scale: 1 }}
                       transition={{ type: 'spring', stiffness: 600, damping: 15 }}
-                      className="relative flex h-6 min-w-6 items-center justify-center rounded-full bg-red-600 px-1.5 text-[12px] font-black leading-none text-white shadow-md ring-2 ring-white"
+                      className="relative flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[11px] font-bold leading-none text-white tabular-nums"
+                      style={{ boxShadow: `0 0 0 2px ${themeColors.secondary}` }}
                     >
                       {pendingPaymentCount > 99 ? '99+' : pendingPaymentCount}
                     </motion.span>
