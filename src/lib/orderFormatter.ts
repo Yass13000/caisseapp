@@ -814,15 +814,23 @@ export const buildKitchenReceiptPayload = (params: {
     };
   });
 
+  // Nom du client en petit SOUS le numéro, dans le bandeau noir du bon cuisine (une seule fois :
+  // il n'est plus répété en bas). Passé avec le numéro : le modèle de ticket de l'exe Windows reste le même.
+  const headerName = kitchenCustomerName(customer_name).toUpperCase().slice(0, 24).trim();
+  const safeName = headerName.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c] as string));
+  const numberWithName = headerName
+    ? `${orderNumber}<div style="font-size:15px;font-weight:900;letter-spacing:0;line-height:1.1;margin-top:1px;">${safeName}</div>`
+    : orderNumber;
+
   return {
     orderType: `CUISINE - ${orderType}`,
     order_number: orderNumber,
-    orderNumber: orderNumber,
+    orderNumber: numberWithName,
     orderDate: orderDate || new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
     restaurant_name: 'CUISINE',
     restaurantName: 'CUISINE',
     items: formattedItems,
-    customer_name,
+    customer_name: headerName ? '' : customer_name,
     customer_address,
     customer_address_complement,
     comment: flattenTicketComment(comment),
