@@ -589,21 +589,21 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                     {/* EN-TÊTE DU TICKET */}
                     <div 
                       onClick={isClosed ? (e) => toggleClosedExpanded(order.id, e) : undefined}
-                      className={`${typeInfo.bgClass} px-2 py-1.5 border-b border-black/30 text-white flex justify-between items-center w-full min-w-0 flex-shrink-0 relative select-none gap-1 ${isClosed ? 'cursor-pointer min-h-[48px]' : ''}`}
+                      className={`${typeInfo.bgClass} px-2 py-1.5 border-b border-black/30 text-white flex justify-between items-center w-full min-w-0 flex-shrink-0 relative select-none gap-1 overflow-hidden ${isClosed ? 'cursor-pointer min-h-[48px]' : ''}`}
                     >
                       {/* Côté gauche : numéro et alerte non payé, sur toute la hauteur du bandeau */}
-                      <div className="flex items-stretch gap-0.5 shrink-0 self-stretch -my-1.5 -ml-2 min-w-0">
+                      <div className="flex items-stretch gap-0.5 shrink self-stretch -my-1.5 -ml-2 min-w-0">
                         <h3 
                           onClick={(e) => toggleFocus(order.id, e)}
-                          className="min-h-[44px] px-2 flex items-center gap-1.5 text-xl font-black text-white leading-none cursor-pointer tracking-tight shrink-0 active:bg-white/20"
+                          className="min-h-[44px] px-2 flex items-center gap-1.5 text-xl font-black text-white leading-none cursor-pointer tracking-tight min-w-0 active:bg-white/20"
                           title={`${typeInfo.label} — toucher pour ${inFocus ? 'fermer' : 'voir la commande en grand'}`}
                         >
-                          <TypeIcon size={16} className="opacity-80" aria-label={typeInfo.label} />
-                          {orderNum}
+                          <TypeIcon size={16} className="opacity-80 shrink-0" aria-label={typeInfo.label} />
+                          <span className="truncate">{orderNum}</span>
                         </h3>
                         {!isPaid && (
                           <span
-                            className="min-w-[44px] flex items-center justify-center bg-red-600 text-white border-x-2 border-white/70 shrink-0 animate-pulse"
+                            className="min-w-[36px] flex items-center justify-center bg-red-600 text-white border-x-2 border-white/70 shrink-0 animate-pulse"
                             title="Non payé"
                             aria-label="Non payé"
                             role="img"
@@ -617,7 +617,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                         <button
                           type="button"
                           onClick={(e) => openCustomerSheet(order.id, e)}
-                          className={`min-w-[40px] min-h-[44px] flex items-center justify-center transition-all active:scale-95 ${
+                          className={`min-w-[34px] min-h-[44px] flex items-center justify-center transition-all active:scale-95 ${
                             isCustomerOpen ? 'bg-amber-400 text-slate-950 shadow' : 'text-white hover:bg-white/20 active:bg-white/30'
                           }`}
                           title="Fiche client"
@@ -629,7 +629,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                         <button
                           type="button"
                           onClick={(e) => handleRecallOrder(order.id, e)}
-                          className={`min-w-[40px] min-h-[44px] flex items-center justify-center transition-all active:scale-95 ${
+                          className={`min-w-[34px] min-h-[44px] flex items-center justify-center transition-all active:scale-95 ${
                             isRecalled 
                               ? 'bg-amber-400 text-slate-950 animate-pulse ring-2 ring-inset ring-amber-300' 
                               : 'text-white hover:bg-amber-500 hover:text-slate-950 active:bg-white/30'
@@ -642,7 +642,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
 
                         {/* Minuteur bord à bord, couleur selon l'attente */}
                         <div
-                          className={`min-w-[48px] px-1 flex items-center justify-center text-lg font-black leading-none tabular-nums shrink-0 transition-colors ${getTimerBadgeClass(order.created_at, isClosed)}`}
+                          className={`min-w-[42px] px-1 flex items-center justify-center text-lg font-black leading-none tabular-nums shrink-0 transition-colors ${getTimerBadgeClass(order.created_at, isClosed)}`}
                           title="Temps écoulé depuis la commande"
                         >
                           {getTimeElapsed(order.created_at)}
@@ -651,7 +651,7 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                         <button 
                           type="button"
                           onClick={(e) => { e.stopPropagation(); setActiveMenuOrderId(order.id); }} 
-                          className="min-w-[50px] min-h-[44px] text-white hover:bg-white/20 active:bg-white/30 active:scale-95 transition-all flex items-center justify-center"
+                          className="min-w-[40px] min-h-[44px] text-white hover:bg-white/20 active:bg-white/30 active:scale-95 transition-all flex items-center justify-center"
                           title="Statut et impression"
                           aria-label="Changer le statut ou imprimer"
                         >
