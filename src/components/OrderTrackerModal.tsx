@@ -29,6 +29,8 @@ import { PaymentModal } from '@/pages/Caisse';
 import { ORDER_TYPE_ID } from '@/lib/orderTypes';
 import { requirePermission } from '@/components/PermissionGate';
 import { staffOrderFields, logAction } from '@/lib/staff';
+import SumUpSoloPayment, { type SoloPaymentOutcome } from '@/components/SumUpSoloPayment';
+import { getSelectedReader, isSoloEnabled } from '@/services/sumupSolo';
 
 interface OrderTrackerModalProps {
   onClose: () => void;
@@ -129,6 +131,45 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
   const [isProcessing, setIsProcessing] = useState(false);
   // Verrou anti double-appui : empêche de payer (et d'imprimer) deux fois la même commande
   const payingOrderIdsRef = useRef<Set<string>>(new Set());
+
+  // TPE SumUp Solo : même fonctionnement que l'encaissement de la caisse.
+  // Sans TPE Solo réglé sur cette caisse, rien ne change (validation directe comme avant).
+  const [soloPayment, setSoloPayment] = useState<null | {
+    reader: { id: string; name: string };
+    amountCents: number;
+    resolve: (outcome: SoloPaymentOutcome) => void;
+  }>(null);
+
+  /** Part CB d'un mode de paiement (« Carte bancaire » = tout, « Fractionné (CB: 12.50€ + …) » = la part CB) */
+  const cardCentsFor = (method: string, total: number) => {
+    if (method === 'Carte bancaire') return Math.max(0, Math.round(Number(total || 0) * 100));
+    const part = String(method || '').match(/CB: (\d+(?:\.\d+)?)/);
+    return part ? Math.round(parseFloat(part[1]) * 100) : 0;
+  };
+
+  /**
+   * Fait payer la part CB sur le TPE avant de valider la commande.
+   * Renvoie null si le paiement n'a pas abouti (rien ne doit être validé),
+   * sinon le code de transaction SumUp (ou '' si pas de TPE / pas de part CB).
+   */
+  const chargeOnTerminal = async (order: any, cardCents: number): Promise<string | null> => {
+    const reader = isSoloEnabled() ? getSelectedReader() : null;
+    if (!reader || cardCents <= 0) return '';
+    // Jamais débiter une commande déjà encaissée ailleurs entre-temps
+    const { data: current, error } = await supabase.from('orders').select('is_paid, payment_status, status').eq('id', order.id).maybeSingle();
+    if (error) { toast.error("Vérification de la commande impossible : réessayez"); return null; }
+    if (!current || current.is_paid || current.payment_status === 'paid' || current.status === 'Annulée') {
+      toast.error(!current ? "Commande introuvable" : current.status === 'Annulée' ? "Commande annulée entre-temps" : "Commande déjà encaissée");
+      if (current?.is_paid || current?.payment_status === 'paid') setOrders(prev => prev.filter(o => o.id !== order.id));
+      return null;
+    }
+    const outcome = await new Promise<SoloPaymentOutcome>((resolve) => {
+      setSoloPayment({ reader, amountCents: cardCents, resolve });
+    });
+    setSoloPayment(null);
+    if (!outcome.ok) return null;
+    return outcome.code || '';
+  };
   const [optionGroupMapping, setOptionGroupMapping] = useState<Record<string, string>>({});
   
   const getLocalToday = () => {
@@ -459,10 +500,16 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         return;
       }
 
+      // Commande comptoir / borne : le montant part sur le TPE. Une livraison est seulement validée.
+      const isDelivery = String(order?.order_type_id || '') === ORDER_TYPE_ID.LIVRAISON;
+      const txCode = isDelivery ? '' : await chargeOnTerminal(order, cardCentsFor('Carte bancaire', order.total_price));
+      if (txCode === null) return;
+
       const updatePayload: any = { 
         is_paid: true,
         payment_status: 'paid',
         payment_method: 'Carte bancaire',
+        ...(txCode ? { sumup_transaction_id: txCode } : {}),
         ...staffOrderFields(),
       };
 
@@ -542,11 +589,16 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
         return;
       }
 
+      const isDelivery = String(paymentOrder?.order_type_id || '') === ORDER_TYPE_ID.LIVRAISON;
+      const txCode = isDelivery ? '' : await chargeOnTerminal(paymentOrder, cardCentsFor(method, paymentOrder.total_price));
+      if (txCode === null) return;
+
       const updatePayload: any = {
         is_paid: true,
         payment_status: 'paid',
         payment_method: method,
         cash_amount: cashAmount,
+        ...(txCode ? { sumup_transaction_id: txCode } : {}),
         ...staffOrderFields(),
       };
 
@@ -968,6 +1020,15 @@ const OrderTrackerModal = ({ onClose, onLoadOrder, restaurantName = "VOTRE RESTA
             />
           )}
         </AnimatePresence>
+
+        {soloPayment && (
+          <SumUpSoloPayment
+            reader={soloPayment.reader}
+            amountCents={soloPayment.amountCents}
+            description="Caisse"
+            onDone={soloPayment.resolve}
+          />
+        )}
 
       </div>
     </div>,
