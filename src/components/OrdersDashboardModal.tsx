@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   X, 
@@ -109,6 +109,55 @@ const parseOrderDetails = (details: any): any[] => {
 };
 
 const PREPARED_STORAGE_KEY = 'dashboard_prepared_items';
+
+// En-tête de carte : tout doit rester visible. Si la carte est trop étroite,
+// on réduit les tailles par paliers (0 = taille normale) ; en dernier recours
+// le bandeau passe sur deux lignes au lieu de cacher quoi que ce soit.
+const HEADER_FIT = [
+  { num: 'text-xl', gap: 'gap-1.5', px: 'px-2', type: 16, cash: 44, cashIcon: 24, btn: 40, btnIcon: 22, timer: 48, timerText: 'text-lg', dots: 50, dotsIcon: 28, chev: 18 },
+  { num: 'text-lg', gap: 'gap-1', px: 'px-1.5', type: 14, cash: 34, cashIcon: 20, btn: 32, btnIcon: 20, timer: 40, timerText: 'text-base', dots: 38, dotsIcon: 24, chev: 16 },
+  { num: 'text-base', gap: 'gap-0.5', px: 'px-1', type: 12, cash: 28, cashIcon: 18, btn: 28, btnIcon: 18, timer: 34, timerText: 'text-sm', dots: 32, dotsIcon: 22, chev: 14 },
+  { num: 'text-sm', gap: 'gap-0.5', px: 'px-1', type: 11, cash: 24, cashIcon: 16, btn: 24, btnIcon: 16, timer: 30, timerText: 'text-xs', dots: 28, dotsIcon: 20, chev: 12 },
+];
+const HEADER_WRAP_LEVEL = HEADER_FIT.length;
+
+const FitHeader = ({ className, onClick, children }: { className: string; onClick?: any; children: (lvl: number) => React.ReactNode }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [lvl, setLvl] = useState(0);
+  const lastWidth = useRef(0);
+
+  // Après chaque rendu : si ça dépasse, palier suivant.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || lvl >= HEADER_WRAP_LEVEL) return;
+    if (el.scrollWidth > el.clientWidth + 1) setLvl(lvl + 1);
+  });
+
+  // Si la largeur de la carte change, on repart de la taille normale.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    lastWidth.current = el.clientWidth;
+    const check = () => {
+      const w = el.clientWidth;
+      if (Math.abs(w - lastWidth.current) > 1) { lastWidth.current = w; setLvl(0); }
+    };
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(check);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
+  const wrap = lvl >= HEADER_WRAP_LEVEL;
+  return (
+    <div ref={ref} onClick={onClick} className={`${className} ${wrap ? 'flex-wrap' : 'overflow-hidden'}`}>
+      {children(Math.min(lvl, HEADER_FIT.length - 1))}
+    </div>
+  );
+};
 
 const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -587,49 +636,52 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                   >
                     
                     {/* EN-TÊTE DU TICKET */}
-                    <div 
+                    <FitHeader 
                       onClick={isClosed ? (e) => toggleClosedExpanded(order.id, e) : undefined}
-                      className={`${typeInfo.bgClass} px-2 py-1.5 border-b border-black/30 text-white flex justify-between items-center w-full min-w-0 flex-shrink-0 relative select-none gap-1 overflow-hidden ${isClosed ? 'cursor-pointer min-h-[48px]' : ''}`}
-                    >
+                      className={`${typeInfo.bgClass} px-2 py-1.5 border-b border-black/30 text-white flex justify-between items-center w-full min-w-0 flex-shrink-0 relative select-none gap-1 ${isClosed ? 'cursor-pointer min-h-[48px]' : ''}`}
+                    >{(lvl) => { const f = HEADER_FIT[lvl]; return (<>
                       {/* Côté gauche : numéro et alerte non payé, sur toute la hauteur du bandeau */}
-                      <div className="flex items-stretch gap-0.5 shrink self-stretch -my-1.5 -ml-2 min-w-0">
+                      <div className="flex items-stretch gap-0.5 shrink-0 self-stretch -my-1.5 -ml-2">
                         <h3 
                           onClick={(e) => toggleFocus(order.id, e)}
-                          className="min-h-[44px] px-2 flex items-center gap-1.5 text-xl font-black text-white leading-none cursor-pointer tracking-tight min-w-0 active:bg-white/20"
+                          className={`min-h-[44px] ${f.px} flex items-center ${f.gap} ${f.num} font-black text-white leading-none cursor-pointer tracking-tight whitespace-nowrap shrink-0 active:bg-white/20`}
                           title={`${typeInfo.label} — toucher pour ${inFocus ? 'fermer' : 'voir la commande en grand'}`}
                         >
-                          <TypeIcon size={16} className="opacity-80 shrink-0" aria-label={typeInfo.label} />
-                          <span className="truncate">{orderNum}</span>
+                          <TypeIcon size={f.type} className="opacity-80 shrink-0" aria-label={typeInfo.label} />
+                          {orderNum}
                         </h3>
                         {!isPaid && (
                           <span
-                            className="min-w-[36px] flex items-center justify-center bg-red-600 text-white border-x-2 border-white/70 shrink-0 animate-pulse"
+                            className="flex items-center justify-center bg-red-600 text-white border-x-2 border-white/70 shrink-0 animate-pulse"
+                            style={{ minWidth: f.cash }}
                             title="Non payé"
                             aria-label="Non payé"
                             role="img"
                           >
-                            <Banknote size={24} strokeWidth={2.5} />
+                            <Banknote size={f.cashIcon} strokeWidth={2.5} />
                           </span>
                         )}
                       </div>
 
-                      <div className="flex items-stretch gap-0.5 shrink-0 self-stretch -my-1.5 -mr-2">
+                      <div className="flex items-stretch gap-0.5 shrink-0 self-stretch -my-1.5 -mr-2 ml-auto">
                         <button
                           type="button"
                           onClick={(e) => openCustomerSheet(order.id, e)}
-                          className={`min-w-[34px] min-h-[44px] flex items-center justify-center transition-all active:scale-95 ${
+                          style={{ minWidth: f.btn }}
+                          className={`min-h-[44px] shrink-0 flex items-center justify-center transition-all active:scale-95 ${
                             isCustomerOpen ? 'bg-amber-400 text-slate-950 shadow' : 'text-white hover:bg-white/20 active:bg-white/30'
                           }`}
                           title="Fiche client"
                           aria-label="Fiche client"
                         >
-                          <User size={22} />
+                          <User size={f.btnIcon} />
                         </button>
 
                         <button
                           type="button"
                           onClick={(e) => handleRecallOrder(order.id, e)}
-                          className={`min-w-[34px] min-h-[44px] flex items-center justify-center transition-all active:scale-95 ${
+                          style={{ minWidth: f.btn }}
+                          className={`min-h-[44px] shrink-0 flex items-center justify-center transition-all active:scale-95 ${
                             isRecalled 
                               ? 'bg-amber-400 text-slate-950 animate-pulse ring-2 ring-inset ring-amber-300' 
                               : 'text-white hover:bg-amber-500 hover:text-slate-950 active:bg-white/30'
@@ -637,12 +689,13 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                           title="Faire sonner la commande"
                           aria-label="Faire sonner la commande"
                         >
-                          <Bell size={22} />
+                          <Bell size={f.btnIcon} />
                         </button>
 
                         {/* Minuteur bord à bord, couleur selon l'attente */}
                         <div
-                          className={`min-w-[42px] px-1 flex items-center justify-center text-lg font-black leading-none tabular-nums shrink-0 transition-colors ${getTimerBadgeClass(order.created_at, isClosed)}`}
+                          style={{ minWidth: f.timer }}
+                          className={`px-1 flex items-center justify-center ${f.timerText} font-black leading-none tabular-nums whitespace-nowrap shrink-0 transition-colors ${getTimerBadgeClass(order.created_at, isClosed)}`}
                           title="Temps écoulé depuis la commande"
                         >
                           {getTimeElapsed(order.created_at)}
@@ -651,20 +704,21 @@ const OrdersDashboardModal = ({ onClose }: DashboardProps) => {
                         <button 
                           type="button"
                           onClick={(e) => { e.stopPropagation(); setActiveMenuOrderId(order.id); }} 
-                          className="min-w-[40px] min-h-[44px] text-white hover:bg-white/20 active:bg-white/30 active:scale-95 transition-all flex items-center justify-center"
+                          style={{ minWidth: f.dots }}
+                          className="min-h-[44px] shrink-0 text-white hover:bg-white/20 active:bg-white/30 active:scale-95 transition-all flex items-center justify-center"
                           title="Statut et impression"
                           aria-label="Changer le statut ou imprimer"
                         >
-                          <CircleEllipsis size={28} strokeWidth={2.25} />
+                          <CircleEllipsis size={f.dotsIcon} strokeWidth={2.25} />
                         </button>
 
                         {isClosed && !inFocus && (
                           <span className="text-white/80 flex items-center pr-1" aria-hidden>
-                            {isCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+                            {isCollapsed ? <ChevronDown size={f.chev} /> : <ChevronUp size={f.chev} />}
                           </span>
                         )}
                       </div>
-                    </div>
+                    </>); }}</FitHeader>
 
                     {!isCollapsed && (<>
                     {/* CORPS DU TICKET */}
