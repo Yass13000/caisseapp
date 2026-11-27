@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { 
-  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft, Eye, Monitor, CreditCard, Users
+  X, Save, ShieldCheck, ChevronRight, Printer, Settings, Power, RefreshCw, ShoppingBag, ArrowLeft, Eye, Monitor, CreditCard, Users, Inbox
 } from 'lucide-react';
 import { toast } from 'sonner';
 import PosSetup from '@/components/PosSetup';
@@ -10,6 +10,7 @@ import CustomerDisplaySettings from '@/components/CustomerDisplaySettings';
 import SumUpSoloSettings from '@/components/SumUpSoloSettings';
 import TicketPrinterCard, { hasAutoPrinter, PrinterCardsBoundary } from '@/components/TicketPrinterCard';
 import StaffSettings from '@/components/StaffSettings';
+import OrderArrivalSettings from '@/components/OrderArrivalSettings';
 import { can, isPinKnownLocally, readStaffCache } from '@/lib/staff';
 import { getActiveRestaurantId } from '@/lib/supabaseClient';
 
@@ -250,6 +251,7 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
     { id: 'printing', icon: Printer, label: 'Impression', description: 'Tickets et matériels' },
     { id: 'customer-display', icon: Monitor, label: 'Écran client', description: 'Second écran' },
     { id: 'tpe', icon: CreditCard, label: 'TPE', description: 'SumUp Solo' },
+    { id: 'order-arrival', icon: Inbox, label: 'Commandes', description: 'Statut à l\'arrivée' },
     { id: 'security', icon: ShieldCheck, label: 'Sécurité', description: 'Code PIN d\'accès' },
     { id: 'users', icon: Users, label: 'Utilisateurs', description: 'Profils, codes et droits' },
   ].filter(item => {
@@ -871,6 +873,17 @@ const SettingsModal = ({ onClose, currentCategories }: SettingsModalProps) => {
                 <h2 className="text-3xl font-black text-secondary uppercase">TPE SumUp Solo</h2>
               </div>
               <SumUpSoloSettings />
+            </div>
+          )}
+
+          {/* ONGLET STATUT À L'ARRIVÉE DES COMMANDES */}
+          {activeTab === 'order-arrival' && (
+            <div className="max-w-3xl animate-in fade-in duration-300">
+              <div className="mb-8">
+                <h2 className="text-3xl font-black text-secondary uppercase">Arrivée des commandes</h2>
+                <p className="text-gray-500 font-bold mt-2">Pour chaque canal, choisissez si une nouvelle commande arrive en « Nouvelle » ou directement en « En cours ».</p>
+              </div>
+              <OrderArrivalSettings />
             </div>
           )}
 
