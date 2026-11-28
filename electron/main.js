@@ -493,12 +493,25 @@ function syncCustomerDisplay() {
     return;
   }
   if (customerWindow && !customerWindow.isDestroyed()) {
-    customerWindow.setFullScreen(false);
-    customerWindow.setBounds(target.bounds);
-    customerWindow.setFullScreen(true);
+    // Ne replacer la fenêtre que si l'écran client a vraiment changé de position ou de taille.
+    // Un simple changement de zone utile (ex. ouverture du clavier tactile Windows) déclenche
+    // aussi l'évènement : replacer la fenêtre à chaque fois volait le focus à la caisse.
+    const b = customerWindow.getBounds();
+    const t = target.bounds;
+    if (b.x !== t.x || b.y !== t.y || b.width !== t.width || b.height !== t.height) {
+      customerWindow.setFullScreen(false);
+      customerWindow.setBounds(t);
+      customerWindow.setFullScreen(true);
+      giveFocusBackToCaisse();
+    }
     return;
   }
   createCustomerWindow(target);
+}
+
+// Le clavier (physique ou tactile) doit toujours rester sur la caisse, jamais sur l'écran client
+function giveFocusBackToCaisse() {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused()) mainWindow.focus();
 }
 
 function createCustomerWindow(display) {
@@ -547,8 +560,11 @@ function createCustomerWindow(display) {
     if (win.isDestroyed()) return;
     win.showInactive();
     win.setFullScreen(true);
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus();
+    giveFocusBackToCaisse();
   });
+
+  // Si Windows active quand même l'écran client, la caisse reprend aussitôt le focus
+  win.on('focus', giveFocusBackToCaisse);
 
   win.on('closed', () => {
     if (customerWindow === win) customerWindow = null;

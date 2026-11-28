@@ -153,12 +153,20 @@ public class CustomerDisplayPlugin extends Plugin {
             presentation = new ScreenPresentation(getActivity(), target);
             presentation.setOnDismissListener(d -> { if (presentation == d) { presentation = null; screenWeb = null; } });
             presentation.show();
+            giveFocusBackToCaisse();
         } catch (WindowManager.InvalidDisplayException e) {
             presentation = null;
             screenWeb = null;
         } catch (Exception e) {
             dismiss();
         }
+    }
+
+    /** Rend le focus (et donc le clavier) à la caisse après l'affichage de l'écran client */
+    private void giveFocusBackToCaisse() {
+        try {
+            if (getBridge() != null && getBridge().getWebView() != null) getBridge().getWebView().requestFocus();
+        } catch (Exception ignored) { }
     }
 
     private class ScreenPresentation extends Presentation {
@@ -171,11 +179,17 @@ public class CustomerDisplayPlugin extends Plugin {
             Window w = getWindow();
             if (w != null) {
                 w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                // L'écran client ne doit jamais prendre le focus clavier : sinon Android ouvre le
+                // clavier sur l'écran secondaire et il n'apparaît plus sur la caisse.
+                w.addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
                 w.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
                         | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
             }
             WebView web = new WebView(getContext());
             web.setBackgroundColor(Color.BLACK);
+            web.setFocusable(false);
+            web.setFocusableInTouchMode(false);
             WebSettings s = web.getSettings();
             s.setJavaScriptEnabled(true);
             s.setDomStorageEnabled(true);
