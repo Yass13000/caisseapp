@@ -37,7 +37,40 @@ export const getActiveRestoId = (restaurantId?: string): string | undefined => {
 };
 
 /**
- * Récupère le solde STRICTEMENT isolé d'un utilisateur pour le restaurant actif
+ * Franchise : le compte client est rangé sous le restaurant principal et les points des
+ * magasins du groupe s'additionnent. Restaurant seul (ou fonctions absentes) : compte = groupe
+ * = le restaurant lui-même, exactement comme avant.
+ */
+const scopeCache = new Map<string, Promise<{ account: string; group: string[] }>>();
+
+export const getLoyaltyScope = (restoId?: string): Promise<{ account?: string; group: string[] }> => {
+  if (!restoId) return Promise.resolve({ account: undefined, group: [] });
+  let cached = scopeCache.get(restoId);
+  if (!cached) {
+    cached = (async () => {
+      const alone = { account: restoId, group: [restoId] };
+      try {
+        const [acc, grp] = await Promise.all([
+          supabase.rpc('franchise_account_id', { p_restaurant_id: restoId }),
+          supabase.rpc('franchise_group_ids', { p_restaurant_id: restoId }),
+        ]);
+        if (acc.error || grp.error) throw new Error('scope');
+        const account = typeof acc.data === 'string' ? acc.data : restoId;
+        const ids = Array.isArray(grp.data) ? grp.data.filter((x: any) => typeof x === 'string') : [];
+        return { account, group: Array.from(new Set([restoId, account, ...ids])) };
+      } catch {
+        // Réseau ou fonction indisponible : comportement d'un restaurant seul, nouvel essai dans 1 min
+        setTimeout(() => scopeCache.delete(restoId), 60000);
+        return alone;
+      }
+    })();
+    scopeCache.set(restoId, cached);
+  }
+  return cached;
+};
+
+/**
+ * Solde d'un client : restaurant actif, ou tous les magasins de sa franchise
  */
 export const getUserLoyaltyBalance = async (userId: string, restaurantId?: string): Promise<number> => {
   if (!userId) return 0;
@@ -51,7 +84,8 @@ export const getUserLoyaltyBalance = async (userId: string, restaurantId?: strin
       .eq('user_id', userId);
 
     if (activeRestoId) {
-      query = query.eq('restaurant_id', activeRestoId);
+      const { group } = await getLoyaltyScope(activeRestoId);
+      query = group.length > 1 ? query.in('restaurant_id', group) : query.eq('restaurant_id', activeRestoId);
     }
 
     const { data, error } = await query;
@@ -100,7 +134,9 @@ export const syncProfileLoyaltyPoints = async (userId: string, restaurantId?: st
       .eq('id', userId);
 
     if (activeRestoId) {
-      query = query.eq('restaurant_id', activeRestoId);
+      // Franchise : la fiche du client est celle du restaurant principal
+      const { account } = await getLoyaltyScope(activeRestoId);
+      query = query.eq('restaurant_id', account || activeRestoId);
     }
 
     await query;
@@ -157,6 +193,20 @@ export const addLoyaltyPoints = async (
   try {
     const activeRestoId = getActiveRestoId(restaurantId);
 
+    // Commande déjà créditée (la base le fait elle-même au paiement) : jamais deux fois
+    if (orderId) {
+      const { data: already } = await supabase
+        .from('loyalty_points')
+        .select('id')
+        .eq('order_id', orderId)
+        .eq('type', 'earned')
+        .limit(1);
+      if (already && already.length > 0) {
+        await syncProfileLoyaltyPoints(userId, activeRestoId);
+        return { success: true };
+      }
+    }
+
     const payload: any = {
       user_id: userId,
       points: points,
@@ -199,7 +249,8 @@ export const getUserLoyaltyStats = async (userId: string, restaurantId?: string)
       .eq('user_id', userId);
 
     if (activeRestoId) {
-      query = query.eq('restaurant_id', activeRestoId);
+      const { group } = await getLoyaltyScope(activeRestoId);
+      query = group.length > 1 ? query.in('restaurant_id', group) : query.eq('restaurant_id', activeRestoId);
     }
 
     const { data, error } = await query.order('created_at', { ascending: false });
